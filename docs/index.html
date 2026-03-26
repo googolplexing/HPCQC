@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2026 Michael Mucciardi -->
+<!-- SPDX-License-Identifier: SSPL-1.0 -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>lumi-hpc-qc v1.0.0b1 — Architecture & Documentation</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap');
+  :root{--bg:#faf9f6;--fg:#1a1a18;--fg2:#5a5a55;--fg3:#8a8a85;--accent:#2c4a7c;--accent2:#1a6e56;--border:#e0ddd5;--card:#fff;--code-bg:#f0ede5;--warn-bg:#fef3cd;--warn-fg:#856404;--err-bg:#f8d7da;--err-fg:#721c24;--ok-bg:#d4edda;--ok-fg:#155724;--sidebar-w:260px;--font-body:'DM Sans',sans-serif;--font-head:'Source Serif 4',serif;--font-mono:'JetBrains Mono',monospace}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:var(--font-body);color:var(--fg);background:var(--bg);line-height:1.7;font-size:15px}
+  nav{position:fixed;top:0;left:0;width:var(--sidebar-w);height:100vh;overflow-y:auto;background:var(--card);border-right:1px solid var(--border);padding:24px 16px;z-index:100}
+  nav h2{font-family:var(--font-head);font-size:18px;font-weight:600;margin-bottom:16px;color:var(--accent)}
+  nav ul{list-style:none}
+  nav li{margin-bottom:2px}
+  nav a{display:block;padding:5px 10px;border-radius:6px;color:var(--fg2);text-decoration:none;font-size:13px;transition:all .15s}
+  nav a:hover,nav a.active{background:var(--code-bg);color:var(--fg)}
+  nav .section-label{font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--fg3);margin:14px 0 6px 10px}
+  main{margin-left:var(--sidebar-w);padding:40px 60px 80px;max-width:900px}
+  h1{font-family:var(--font-head);font-size:32px;font-weight:600;margin-bottom:8px;color:var(--accent)}
+  h2{font-family:var(--font-head);font-size:24px;font-weight:600;margin:48px 0 16px;padding-bottom:8px;border-bottom:2px solid var(--border);color:var(--fg)}
+  h3{font-family:var(--font-head);font-size:18px;font-weight:600;margin:32px 0 12px;color:var(--fg)}
+  h4{font-weight:600;font-size:15px;margin:20px 0 8px;color:var(--fg2)}
+  p{margin-bottom:14px}
+  code{font-family:var(--font-mono);font-size:13px;background:var(--code-bg);padding:2px 6px;border-radius:4px}
+  pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:16px 20px;overflow-x:auto;margin:16px 0;font-family:var(--font-mono);font-size:13px;line-height:1.6}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px}
+  th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+  th{font-weight:600;background:var(--code-bg);font-size:13px}
+  tr:hover{background:var(--code-bg)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600}
+  .badge-ok{background:var(--ok-bg);color:var(--ok-fg)}
+  .badge-warn{background:var(--warn-bg);color:var(--warn-fg)}
+  .badge-err{background:var(--err-bg);color:var(--err-fg)}
+  .badge-info{background:#cce5ff;color:#004085}
+  .callout{border-left:4px solid var(--accent);background:var(--card);padding:16px 20px;border-radius:0 8px 8px 0;margin:16px 0}
+  .callout-warn{border-left-color:#ffc107;background:var(--warn-bg)}
+  .callout-ok{border-left-color:#28a745;background:var(--ok-bg)}
+  .diagram-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin:20px 0;text-align:center}
+  .diagram-box svg{max-width:100%}
+  .layer{display:flex;align-items:center;border-radius:10px;padding:14px 20px;margin:6px 0;font-size:14px;gap:14px}
+  .layer .num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;flex-shrink:0}
+  .l1{background:#eeedfe;color:#534ab7}.l1 .num{background:#534ab7;color:#fff}
+  .l2{background:#e1f5ee;color:#0f6e56}.l2 .num{background:#0f6e56;color:#fff}
+  .l3{background:#e6f1fb;color:#185fa5}.l3 .num{background:#185fa5;color:#fff}
+  .l4{background:#faece7;color:#993c1d}.l4 .num{background:#993c1d;color:#fff}
+  .l5{background:#faeeda;color:#854f0b}.l5 .num{background:#854f0b;color:#fff}
+  .arrow-down{text-align:center;color:var(--fg3);font-size:20px;margin:2px 0}
+  .version-info{font-size:13px;color:var(--fg3);margin-bottom:24px}
+  .file-tree{font-family:var(--font-mono);font-size:13px;line-height:1.8}
+  .file-tree .dir{color:var(--accent);font-weight:500}
+  .file-tree .comment{color:var(--fg3);font-style:italic}
+  details{margin:12px 0}
+  details summary{cursor:pointer;font-weight:500;color:var(--accent);padding:6px 0}
+  details summary:hover{text-decoration:underline}
+  @media(max-width:900px){nav{display:none}main{margin-left:0;padding:20px}}
+</style>
+</head>
+<body>
+<nav>
+  <h2>lumi-hpc-qc</h2>
+  <div class="section-label">Overview</div>
+  <ul>
+    <li><a href="#overview">Project overview</a></li>
+    <li><a href="#motivation">Motivation & background</a></li>
+    <li><a href="#roadmap">Phase roadmap</a></li>
+  </ul>
+  <div class="section-label">Architecture</div>
+  <ul>
+    <li><a href="#five-layers">5-layer architecture</a></li>
+    <li><a href="#dependency-map">Dependency map</a></li>
+    <li><a href="#file-structure">File structure</a></li>
+    <li><a href="#interfaces">Abstract interfaces</a></li>
+    <li><a href="#design-decisions">Design decisions</a></li>
+  </ul>
+  <div class="section-label">Configuration</div>
+  <ul>
+    <li><a href="#env-sh">env.sh — deployment config</a></li>
+    <li><a href="#yaml-config">YAML experiment config</a></li>
+    <li><a href="#container-wrappers">Container wrappers</a></li>
+  </ul>
+  <div class="section-label">Running experiments</div>
+  <ul>
+    <li><a href="#quickstart">Quickstart</a></li>
+    <li><a href="#test-procedures">Test procedures</a></li>
+    <li><a href="#mode-b">Mode B (automated)</a></li>
+    <li><a href="#checkpoint-resume">Checkpoint & resume</a></li>
+    <li><a href="#vqa-summary">Analysing results</a></li>
+  </ul>
+  <div class="section-label">Researcher guide</div>
+  <ul>
+    <li><a href="#plugin-overview">Plugin system overview</a></li>
+    <li><a href="#new-hamiltonian">Adding a Hamiltonian</a></li>
+    <li><a href="#new-ansatz">Adding an ansatz</a></li>
+    <li><a href="#new-optimizer">Adding an optimizer</a></li>
+    <li><a href="#custom-experiment">Custom experiments</a></li>
+    <li><a href="#byo-guide">Bring-Your-Own guide</a></li>
+  </ul>
+  <div class="section-label">Results & analysis</div>
+  <ul>
+    <li><a href="#lumi-results">LUMI test results</a></li>
+    <li><a href="#known-issues">Known issues</a></li>
+    <li><a href="#references">References</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<!-- ================================================================ -->
+<h1 id="overview">lumi-hpc-qc</h1>
+<p class="version-info">Version 1.0.0b1 &middot; 2026-03-26 &middot; 55 Python files &middot; 4,615 lines &middot; LUMI (CSC Finland) + VTT Q50</p>
+
+<p>A modular framework for running Variational Quantum Algorithms on the LUMI supercomputer (AMD MI250X GPUs) and the VTT Q50 quantum processor via FiQCI. Designed so researchers can add new physics models, ansatze, optimizers, and error mitigation strategies as drop-in plugins without touching the core orchestration code.</p>
+
+<div class="callout">
+<strong>Single configuration point:</strong> All deployment-specific paths (containers, wrappers, SLURM account) live in one file: <code>env.sh</code>. Edit it once; every script picks up the change. Experiment configs (YAML) contain only physics and algorithm parameters — zero deployment paths.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="motivation">Motivation & background</h2>
+
+<p>This project evolved from a proof-of-concept (<code>lumi_vqa</code>) that demonstrated VQE workflows on LUMI GPUs. While the PoC validated the science — convergence of 5 physics models, adiabatic initialization, parameter-shift gradients — it was monolithic Python scripts with hardcoded paths, no plugin system, no crash recovery, and no separation of concerns.</p>
+
+<p>The V1.0 redesign addresses four priorities identified during PoC testing:</p>
+
+<ol>
+<li><strong>Checkpointing:</strong> A 2-hour Heisenberg job that crashes at minute 110 should be resumable, not lost.</li>
+<li><strong>Multi-backend:</strong> The same experiment config should run on GPU simulation, CPU MPS, or real quantum hardware with a single field change.</li>
+<li><strong>Plugin extensibility:</strong> Researchers adding a new Hamiltonian should not need to understand SLURM scripts, container bindings, or checkpoint serialization.</li>
+<li><strong>Automated orchestration (Mode B):</strong> Long-running experiments should survive user disconnections and auto-retry from checkpoint on node failures.</li>
+</ol>
+
+<h3>Key references</h3>
+<ul style="margin-bottom:16px">
+<li><a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">FiQCI blog: Simulating Electrons on LUMI + VTT Q50</a> — adiabatic initialization, circuit benchmarking</li>
+<li><a href="https://docs.csc.fi/apps/qiskit/">CSC Qiskit documentation</a></li>
+<li><a href="https://github.com/CSCfi/Quantum/tree/main/Variational-Algorithms-on-Q50">CSC Quantum repository</a></li>
+<li>Wecker et al., "Solving strongly correlated electron models on a quantum computer", Phys. Rev. A 92, 062318 (2015) — HVA ansatz, adiabatic initialization</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="roadmap">Phase roadmap</h2>
+
+<table>
+<tr><th>Phase</th><th>Step</th><th>Status</th><th>Evidence</th></tr>
+<tr><td rowspan="7">Phase 1</td><td>Types + ABCs</td><td><span class="badge badge-ok">Done</span></td><td>9 abstract interfaces</td></tr>
+<tr><td>Plugin registries</td><td><span class="badge badge-ok">Done</span></td><td>Auto-discovery, graceful ImportError skip</td></tr>
+<tr><td>5 Hamiltonian plugins</td><td><span class="badge badge-ok">Done</span></td><td>FH, Heisenberg, QAOA, Molecular, BYO</td></tr>
+<tr><td>5 Ansatz plugins</td><td><span class="badge badge-ok">Done</span></td><td>HVA, SU2, QAOA, UCCSD, BYO</td></tr>
+<tr><td>Gradient + optimizer + initializer plugins</td><td><span class="badge badge-ok">Done</span></td><td>8 plugins total</td></tr>
+<tr><td>Aer GPU backend</td><td><span class="badge badge-ok">Done</span></td><td>Tested: 4–12 qubits on LUMI MI250X</td></tr>
+<tr><td>VQE workflow</td><td><span class="badge badge-ok">Done</span></td><td>BYO TFIM 0.045% error (job 17007219)</td></tr>
+<tr><td rowspan="6">Phase 2</td><td>Checkpoint/resume</td><td><span class="badge badge-ok">Done</span></td><td>Tested: job 17012216</td></tr>
+<tr><td>Aer CPU + IQM QPU backends</td><td><span class="badge badge-ok">Done</span></td><td>Stubs, discoverable by registry</td></tr>
+<tr><td>Mode B controller</td><td><span class="badge badge-ok">Done</span></td><td>Pure bash, small partition</td></tr>
+<tr><td>env.sh centralisation</td><td><span class="badge badge-ok">Done</span></td><td>Zero hardcoded paths in scripts/configs</td></tr>
+<tr><td>Error mitigation (ZNE)</td><td><span class="badge badge-warn">Stub</span></td><td>Discovered, validates config</td></tr>
+<tr><td>MANIFEST + CHANGELOG</td><td><span class="badge badge-ok">Done</span></td><td>SHA256 hash per file</td></tr>
+<tr><td rowspan="4">Phase 3</td><td>QCut circuit cutting</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
+<tr><td>NVIDIA backends (CUDA-Q)</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
+<tr><td>AI/ML training data export</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
+<tr><td>VQD / excited state workflows</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="five-layers">5-layer architecture</h2>
+
+<p>All arrows point downward — no upward dependencies. Layer 3 never imports from Layer 2. Layer 4 never imports from Layer 3. This is Dependency Inversion in practice.</p>
+
+<div class="layer l1"><div class="num">1</div><div><strong>CLI</strong> — Config files (YAML), SLURM submission helpers, status monitoring. The only layer researchers touch directly.</div></div>
+<div class="arrow-down">↓</div>
+<div class="layer l2"><div class="num">2</div><div><strong>Orchestration</strong> — Workflow engine (VQE loop, adiabatic ramp), job scheduler (SLURM submit/monitor), checkpoint manager (save/resume state), controller (Mode A interactive / Mode B automated).</div></div>
+<div class="arrow-down">↓</div>
+<div class="layer l3"><div class="num">3</div><div><strong>Backends</strong> — Pluggable execution: Aer GPU (statevector/density matrix), Aer CPU (MPS), IQM QPU (Q50 via FiQCI), future QCut + CUDA-Q. Each implements the same <code>Backend</code> ABC.</div></div>
+<div class="arrow-down">↓</div>
+<div class="layer l4"><div class="num">4</div><div><strong>Plugins</strong> — 6 sub-packages (hamiltonians, ansatze, optimizers, gradients, initializers, error_mitigation). Auto-discovered. Researchers add a Python file, it's available.</div></div>
+<div class="arrow-down">↓</div>
+<div class="layer l5"><div class="num">5</div><div><strong>Data</strong> — Experiment tracker, provenance collector (all imported modules), timing (3 formats: human/benchmark/ML), result store (JSON with numpy support).</div></div>
+
+<!-- ================================================================ -->
+<h2 id="dependency-map">Dependency map</h2>
+
+<pre>
+User Interface  →  Orchestration  →  Execution Backends
+                        ↓                    ↓
+                   Checkpoint Mgr      Plugin Registry
+                        ↓                    ↓
+                   Data / Tracking  ←  Experiment Store
+</pre>
+
+<p>Key principle: the workflow engine calls plugin <em>interfaces</em> (ABCs), never concrete implementations. Adding a new Hamiltonian means writing one class that inherits from <code>HamiltonianBuilder</code> — zero changes to workflow, backend, or CLI code.</p>
+
+<!-- ================================================================ -->
+<h2 id="file-structure">File structure</h2>
+
+<pre class="file-tree">
+<span class="dir">lumi_hpc_qc/</span>
+├── env.sh                          <span class="comment"># deployment config (containers, account, wrappers)</span>
+├── pyproject.toml                  <span class="comment"># version 1.0.0b1</span>
+├── MANIFEST                        <span class="comment"># SHA256 hash + line count per file</span>
+├── CHANGELOG.md                    <span class="comment"># version history with LUMI job IDs</span>
+├── README.md
+│
+├── <span class="dir">configs/</span>                        <span class="comment"># experiment configs (physics only, no paths)</span>
+│   ├── experiment.yaml.example     <span class="comment"># annotated template</span>
+│   ├── byo_tfim_8q.yaml
+│   ├── fermi_hubbard_2x3_12q.yaml
+│   ├── heisenberg_3x4_12q.yaml
+│   ├── qaoa_maxcut_12q.yaml
+│   └── molecular_h2_4q.yaml
+│
+├── <span class="dir">examples/</span>
+│   └── byo_transverse_ising_8q.json
+│
+├── <span class="dir">src/lumi_hpc_qc/</span>
+│   ├── types.py                    <span class="comment"># 20+ shared dataclasses</span>
+│   │
+│   ├── <span class="dir">cli/</span>
+│   │   ├── main.py                 <span class="comment"># 5 commands: run, submit, status, resume, results</span>
+│   │   ├── config_loader.py        <span class="comment"># YAML → ExperimentConfig + CLI overrides</span>
+│   │   └── slurm_templates.py      <span class="comment"># generates child VQE scripts</span>
+│   │
+│   ├── <span class="dir">orchestration/</span>
+│   │   ├── workflow.py             <span class="comment"># VQEWorkflow: _setup → _initialize → _optimize</span>
+│   │   ├── controller.py           <span class="comment"># Mode A (in-process) + Mode B (pointer to bash)</span>
+│   │   ├── scheduler.py            <span class="comment"># SLURM submit/status/wait/cancel/job_info</span>
+│   │   └── checkpoint.py           <span class="comment"># atomic writes, numpy serialization, cleanup</span>
+│   │
+│   ├── <span class="dir">backends/</span>
+│   │   ├── base.py                 <span class="comment"># Backend ABC</span>
+│   │   ├── registry.py             <span class="comment"># auto-discovers backend classes</span>
+│   │   ├── aer_gpu.py              <span class="comment"># statevector + density_matrix on MI250X</span>
+│   │   ├── aer_cpu.py              <span class="comment"># MPS on standard partition</span>
+│   │   └── iqm_qpu.py              <span class="comment"># VTT Q50 stub with expectation_from_counts</span>
+│   │
+│   ├── <span class="dir">plugins/</span>
+│   │   ├── registry.py             <span class="comment"># auto-discovers all plugin types</span>
+│   │   ├── <span class="dir">hamiltonians/</span>   (base, fermi_hubbard, heisenberg, qaoa_maxcut, molecular, byo)
+│   │   ├── <span class="dir">ansatze/</span>        (base, hva, su2, qaoa, uccsd, byo)
+│   │   ├── <span class="dir">optimizers/</span>     (base, lbfgsb, cobyla, spsa)
+│   │   ├── <span class="dir">gradients/</span>      (base, parameter_shift, finite_difference)
+│   │   ├── <span class="dir">initializers/</span>   (base, random_init, zero_init, adiabatic)
+│   │   └── <span class="dir">error_mitigation/</span> (base, zne)
+│   │
+│   └── <span class="dir">data/</span>
+│       ├── experiment.py           <span class="comment"># ExperimentTracker: start → log → finalize</span>
+│       ├── provenance.py           <span class="comment"># all imported modules, container tag, git commit</span>
+│       ├── timing.py               <span class="comment"># 3 formats: human-readable, benchmark JSON, ML flat</span>
+│       └── result_store.py         <span class="comment"># JSON with numpy array round-trip</span>
+│
+├── <span class="dir">tests/</span>
+│   ├── vqa_summary.sh              <span class="comment"># diagnostic summary for SLURM outputs</span>
+│   ├── vqe_runner.py               <span class="comment"># generic runner (reads CONFIG_PATH env)</span>
+│   ├── resume_runner.py            <span class="comment"># for Mode B checkpoint resumption</span>
+│   ├── smoke_test_runner.py        <span class="comment"># import + plugin discovery test</span>
+│   ├── checkpoint_resume_runner.py <span class="comment"># 2-phase run→resume test</span>
+│   ├── test_smoke.sh, test_byo_tfim_8q.sh, test_fh_2x3_12q.sh, ...
+│   ├── mode_b_controller.sh        <span class="comment"># pure bash, small partition</span>
+│   └── launch_mode_b.sh            <span class="comment"># one-liner to start Mode B</span>
+│
+└── <span class="dir">docs/</span>
+    └── index.html                  <span class="comment"># this file</span>
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="interfaces">Abstract interfaces (ABCs)</h2>
+
+<p>The framework defines 9 abstract base classes. Every plugin implements exactly one of these. The workflow engine calls only these interfaces — never concrete classes.</p>
+
+<table>
+<tr><th>ABC</th><th>Key methods</th><th>Implementations</th></tr>
+<tr><td><code>Backend</code></td><td><code>run_circuits()</code>, <code>compile_circuit()</code>, <code>capabilities()</code></td><td>aer_gpu, aer_cpu, iqm_qpu</td></tr>
+<tr><td><code>HamiltonianBuilder</code></td><td><code>build()</code>, <code>exact_ground_energy()</code>, <code>adiabatic_parameter_name()</code></td><td>fermi_hubbard, heisenberg, qaoa_maxcut, molecular, byo</td></tr>
+<tr><td><code>AnsatzBuilder</code></td><td><code>build()</code> → circuit + AnsatzMetadata</td><td>hva, su2, qaoa, uccsd, byo</td></tr>
+<tr><td><code>OptimizerStrategy</code></td><td><code>minimize()</code> with cost_fn, grad_fn, callback</td><td>l_bfgs_b, cobyla, spsa</td></tr>
+<tr><td><code>GradientStrategy</code></td><td><code>compute()</code>, <code>validate_ansatz()</code></td><td>parameter_shift, finite_difference</td></tr>
+<tr><td><code>InitializerStrategy</code></td><td><code>initialize()</code> → numpy array</td><td>random, zero, adiabatic</td></tr>
+<tr><td><code>ErrorMitigator</code></td><td><code>mitigate()</code>, <code>validate_config()</code></td><td>zne (stub)</td></tr>
+</table>
+
+<h3>Metadata-driven wiring</h3>
+<p>The <code>AnsatzMetadata</code> dataclass declares compatibility constraints that the workflow uses to auto-select plugins:</p>
+<pre>
+@dataclass
+class AnsatzMetadata:
+    num_parameters: int
+    gradient_compatibility: str   # "parameter_shift", "finite_difference", "both"
+    preferred_initializer: str    # "random", "zero", "adiabatic"
+    requires_decomposition: bool  # whether backend must decompose before execution
+</pre>
+<p>Example: UCCSD sets <code>gradient_compatibility="finite_difference"</code> and <code>preferred_initializer="zero"</code>. The workflow reads this and automatically selects the right gradient and initializer — no manual wiring.</p>
+
+<!-- ================================================================ -->
+<h2 id="design-decisions">Design decisions</h2>
+
+<p>Every decision below was tested on LUMI with real GPU hours. The SLURM job IDs are included for reproducibility.</p>
+
+<table>
+<tr><th>Decision</th><th>Why</th><th>Evidence</th></tr>
+<tr><td>Double precision by default</td><td>Single precision gradient noise kills optimizers for ≤36q</td><td>PoC testing</td></tr>
+<tr><td>Parameter-shift gradients (noiseless)</td><td>Exact analytical gradients; finite-diff failed at eps=1e-4</td><td>H2 test: gradient=0</td></tr>
+<tr><td>Central FD with eps=0.1 (UCCSD)</td><td>UCCSD gate coefficients are 0.125×t; small eps below sensitivity</td><td>Job 17008293</td></tr>
+<tr><td>Adiabatic init with GD + backtracking</td><td>L-BFGS-B failed on non-convex VQE landscapes; GD with line search more robust</td><td>FH ramp: L-BFGS-B stuck at U=0</td></tr>
+<tr><td>HF state prepended to UCCSD</td><td>qiskit-nature UCCSD doesn't always include HF reference; at θ=0, |0⟩⊗n gives E=0</td><td>H2 E=0.0 → E=-1.245</td></tr>
+<tr><td>QAOA Hamiltonian H = −C</td><td>VQE minimizes; need H=−C so minimum = best cut</td><td>Job 17008092: E=+2.8 → E=-13.0</td></tr>
+<tr><td>Container launched via GPU wrapper</td><td>Direct <code>singularity exec</code> fails with binding error</td><td>"bindings are not OK" error</td></tr>
+<tr><td>Python in separate .py files</td><td>Inline <code>python -c</code> breaks with multi-line code in SLURM scripts</td><td>Tested on LUMI</td></tr>
+<tr><td>Checkpoint: atomic writes (.tmp → rename)</td><td>Crash during write produces corrupt JSON otherwise</td><td>Design decision</td></tr>
+<tr><td>Mode B: pure bash, not Python in container</td><td>Controller needs sbatch/squeue, not qiskit; minimal CPU allocation</td><td>1 core, 1GB RAM on small partition</td></tr>
+<tr><td>Plugin discovery: try/except ImportError</td><td>Molecular needs PySCF; skip gracefully if not installed</td><td>Smoke test passes without PySCF</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="env-sh">env.sh — deployment configuration</h2>
+
+<p>One file controls all deployment-specific settings. No other file in the project contains hardcoded paths.</p>
+
+<pre>
+# ── SLURM account ──
+export HPCQC_ACCOUNT="project_462001289"
+export SBATCH_ACCOUNT="${HPCQC_ACCOUNT}"
+
+# ── Container paths ──
+export HPCQC_GPU_CONTAINER="/path/to/gpu-container.sif"
+export HPCQC_CPU_CONTAINER="${HPCQC_GPU_CONTAINER}"  # or separate CPU image
+
+# ── Container launch wrappers ──
+export HPCQC_GPU_WRAPPER="/path/to/run-singularity-with-gpu-affinity"
+export HPCQC_CPU_WRAPPER="/path/to/run-singularity"
+
+# ── GPU affinity mask (LUMI MI250X) ──
+export HPCQC_GPU_MASK="mask_cpu:0xfe000000000000,..."
+
+# ── SLURM partitions ──
+export HPCQC_GPU_PARTITION="standard-g"
+export HPCQC_CPU_PARTITION="standard"
+export HPCQC_SMALL_PARTITION="small"
+</pre>
+
+<div class="callout">
+<strong>To deploy on a different system:</strong> Edit <code>env.sh</code> with your container path, wrapper script, and account. Then <code>source env.sh && sbatch tests/test_smoke.sh</code>. If the smoke test passes, everything works.
+</div>
+
+<!-- ================================================================ -->
+<h2 id="yaml-config">YAML experiment configuration</h2>
+
+<p>Configs describe the <strong>experiment</strong> (physics, algorithm, precision) — never deployment paths. Example:</p>
+
+<pre>
+model: fermi_hubbard
+model_params:
+  lattice_rows: 2
+  lattice_cols: 3
+  hopping_t: 1.0
+  interaction_u: 2.0
+
+ansatz: hva
+ansatz_params:
+  reps: 3
+
+optimizer: l_bfgs_b
+optimizer_params:
+  maxiter: 1000
+
+gradient: parameter_shift
+initializer: adiabatic
+initializer_params:
+  adiabatic_steps: 20
+  adiabatic_max_iter: 300
+
+backend: aer_gpu
+precision: double
+
+checkpoint:
+  enabled: true
+  interval: 50
+</pre>
+
+<p>See <code>configs/experiment.yaml.example</code> for all available options with annotations.</p>
+
+<!-- ================================================================ -->
+<h2 id="container-wrappers">Container wrappers</h2>
+
+<p>LUMI requires Singularity containers launched through specific wrapper scripts that handle filesystem bindings and GPU affinity.</p>
+
+<h4>CPU wrapper (<code>run-singularity</code>)</h4>
+<p>Reads bind mount lists from inside the container, sets up MPICH. Used for CPU-only nodes (standard partition, MPS simulation).</p>
+
+<h4>GPU wrapper (<code>run-singularity-with-gpu-affinity</code>)</h4>
+<p>Same as CPU wrapper plus: maps each MPI rank to a specific GCD on the MI250X via <code>ROCR_VISIBLE_DEVICES</code>. The ordering <code>4 5 2 3 6 7 0 1</code> matches NUMA-to-GCD topology so each rank talks to its closest GPU.</p>
+
+<!-- ================================================================ -->
+<h2 id="quickstart">Quickstart</h2>
+
+<pre>
+# 1. Extract and enter project
+cd /your/project/area
+tar -xzf lumi_hpc_qc.tar.gz && cd lumi_hpc_qc
+
+# 2. Edit env.sh with your container/account paths
+vim env.sh
+
+# 3. Source environment (sets SBATCH_ACCOUNT for all submissions)
+source env.sh
+
+# 4. Smoke test — validates container + plugin discovery
+sbatch tests/test_smoke.sh
+# Wait, then check: cat slurm_logs/smoke_test.o&lt;jobid&gt;
+
+# 5. Run the proven model — BYO TFIM 8q, ~9 minutes
+sbatch tests/test_byo_tfim_8q.sh
+# Wait, then check: ./tests/vqa_summary.sh slurm_logs/byo_tfim_8q.o&lt;jobid&gt;
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="test-procedures">Test procedures & expected output</h2>
+
+<h3>Test 1: Smoke test</h3>
+<p><strong>What it validates:</strong> <code>env.sh</code> paths correct, container launches, all plugins discovered.</p>
+<pre>source env.sh && sbatch tests/test_smoke.sh</pre>
+
+<h4>Expected output (pass):</h4>
+<pre>
+=== Plugin Discovery ===
+  hamiltonians: ['byo', 'fermi_hubbard', 'heisenberg', 'molecular', 'qaoa_maxcut']
+  ansatze: ['byo', 'hva', 'qaoa', 'su2', 'uccsd']
+  optimizers: ['cobyla', 'l_bfgs_b', 'spsa']
+  gradients: ['finite_difference', 'parameter_shift']
+  initializers: ['adiabatic', 'random', 'zero']
+  error_mitigation: ['zne']
+  ...
+  SMOKE TEST PASSED
+</pre>
+
+<h4>Failure modes:</h4>
+<ul>
+<li><strong>"bindings are not OK"</strong> → Container path or wrapper path wrong in <code>env.sh</code></li>
+<li><strong>Missing plugins</strong> → Container missing qiskit-nature or PySCF (molecular/FH plugins will be skipped gracefully)</li>
+</ul>
+
+<h3>Test 2: BYO TFIM 8q (acceptance test)</h3>
+<p><strong>What it validates:</strong> Full VQE pipeline end-to-end. Known-good result for comparison.</p>
+<pre>source env.sh && sbatch tests/test_byo_tfim_8q.sh</pre>
+
+<h4>Expected output (~9 minutes):</h4>
+<pre>
+  CONVERGENCE SUMMARY
+  Total iterations        : ~660-700
+  Best energy             :    -7.63714428
+  Exact ground state      :    -7.64059255
+  Best relative error     :      0.045131%
+  PASSED  (error: 0.0451%)
+</pre>
+
+<h4>squeue during run:</h4>
+<pre>
+$ squeue --me
+  JOBID PARTITION   NAME          STATE   TIME
+  12345 standard-g  hpcqc_byo...  RUNNING 5:30
+</pre>
+
+<h3>Test 3: All 5 models</h3>
+<pre>
+source env.sh
+sbatch tests/test_byo_tfim_8q.sh
+sbatch tests/test_qaoa_12q.sh
+sbatch tests/test_mol_h2_4q.sh
+sbatch tests/test_fh_2x3_12q.sh
+sbatch tests/test_heis_3x4_12q.sh
+
+# When all complete:
+./tests/vqa_summary.sh slurm_logs/*.o*
+</pre>
+
+<h4>Expected summary table:</h4>
+<pre>
+========================================================================
+  Model                  Experiment ID          Best E      Exact E    Error%    Time
+  ---------------------- -------------------- ----------- ----------- -------- -------
+  byo_tfim_8q            xxxxxxxx_nnnnn       -7.637      -7.641      0.05%    9m  ✓
+  qaoa_12n_12q           xxxxxxxx_nnnnn      -13.012     -14.000      7.06%   15s  ✓
+  fh_2x3_12q             xxxxxxxx_nnnnn       -1.971      -5.777     65.88%   10m
+  heis_3x4_12q           xxxxxxxx_nnnnn       -1.870     -26.767     93.01%  112m
+  mol_H2_4q              xxxxxxxx_nnnnn       -1.245      -1.857     32.99%   12s
+========================================================================
+</pre>
+
+<h3>Test 4: Checkpoint/resume</h3>
+<pre>source env.sh && sbatch tests/test_checkpoint_resume.sh</pre>
+
+<h4>Expected output:</h4>
+<pre>
+  Phase 1: Short run with checkpointing
+  ...50 iterations, checkpoint at iter 20, 40...
+  Phase 1 best energy: -7.619...
+
+  Phase 2: Resume from checkpoint
+  ...RESUMING from checkpoint: iteration 40
+  ...173 more iterations...
+  Phase 2 best energy: -7.637...
+
+  CHECKPOINT/RESUME TEST PASSED
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="mode-b">Mode B (automated orchestration)</h2>
+
+<p>Mode B runs a lightweight bash controller on a minimal CPU node. The controller submits the actual VQE as a child GPU job, monitors it via <code>squeue</code>, and auto-retries from the latest checkpoint on failure.</p>
+
+<pre>
+# Launch Mode B
+source env.sh
+./tests/launch_mode_b.sh configs/byo_tfim_8q.yaml --walltime 00:15:00
+
+# Monitor both jobs
+squeue --me
+# You'll see:
+#   11111 small      modeb_controller  RUNNING  0:30
+#   22222 standard-g modeb_child_a1    RUNNING  2:15
+
+# Check controller output
+tail -f slurm_logs/modeb_ctrl.o&lt;controller-jobid&gt;
+</pre>
+
+<h4>Controller lifecycle:</h4>
+<ol>
+<li>Generates child VQE script (matching the LUMI launch pattern)</li>
+<li>Submits child to <code>standard-g</code> via <code>sbatch</code></li>
+<li>Polls <code>squeue</code> every 30 seconds, reads progress files from shared filesystem</li>
+<li>On child <strong>COMPLETED</strong> → collects results → done</li>
+<li>On child <strong>FAILED/TIMEOUT</strong> → finds checkpoint → generates resume script → resubmits (up to 3 retries)</li>
+<li>On child <strong>CANCELLED</strong> → aborts</li>
+</ol>
+
+<!-- ================================================================ -->
+<h2 id="checkpoint-resume">Checkpoint & resume</h2>
+
+<p>The VQE workflow saves checkpoints at configurable intervals during optimization. Each checkpoint contains: current parameters, best energy, best parameters, iteration count, and timestamp.</p>
+
+<h4>Checkpoint format:</h4>
+<pre>
+checkpoints/&lt;experiment_id&gt;_iter000050.json
+{
+  "params": {"__ndarray__": true, "data": [0.12, -0.45, ...], "dtype": "float64"},
+  "best_energy": -7.619,
+  "best_params": {"__ndarray__": true, "data": [...]},
+  "iteration": 50,
+  "_checkpoint_meta": {
+    "iteration": 50,
+    "experiment_id": "abc123_12345",
+    "timestamp": "2026-03-26T09:15:30+00:00"
+  }
+}
+</pre>
+
+<p>Resume rebuilds the full pipeline (<code>_setup()</code>: registries, Hamiltonian, ansatz, backend) then calls <code>_optimize()</code> with restored parameters — the optimizer continues from where it left off.</p>
+
+<!-- ================================================================ -->
+<h2 id="vqa-summary">Analysing results</h2>
+
+<pre>
+# Summary of one job
+./tests/vqa_summary.sh slurm_logs/byo_tfim_8q.o12345
+
+# Summary of all jobs (table at bottom)
+./tests/vqa_summary.sh slurm_logs/*.o*
+
+# Check for Python errors
+./tests/vqa_summary.sh slurm_logs/*.e*
+# (only prints .e files that contain "Traceback" or "Error")
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="plugin-overview">Plugin system overview</h2>
+
+<p>The plugin registry auto-discovers classes in each sub-package. To add a new plugin:</p>
+<ol>
+<li>Create a Python file in the right directory (e.g. <code>src/lumi_hpc_qc/plugins/hamiltonians/my_model.py</code>)</li>
+<li>Define a class that inherits from the base ABC</li>
+<li>Set the <code>name</code> class attribute</li>
+<li>Implement the required methods</li>
+</ol>
+<p>That's it. No registration, no config changes. The registry finds it automatically.</p>
+
+<!-- ================================================================ -->
+<h2 id="new-hamiltonian">Adding a new Hamiltonian</h2>
+
+<pre>
+# src/lumi_hpc_qc/plugins/hamiltonians/my_model.py
+
+from lumi_hpc_qc.plugins.hamiltonians.base import HamiltonianBuilder
+from lumi_hpc_qc.types import ExperimentConfig, HamiltonianMetadata
+from qiskit.quantum_info import SparsePauliOp
+import numpy as np
+
+class MyModelHamiltonian(HamiltonianBuilder):
+    name = "my_model"                      # ← used in YAML: model: my_model
+    description = "My custom physics model"
+
+    def build(self, config: ExperimentConfig):
+        p = config.model_params
+        # Build your SparsePauliOp here
+        terms = [("ZZ", p.get("coupling", 1.0)), ("XI", p.get("field", 0.5))]
+        ham = SparsePauliOp.from_list(terms).simplify()
+        meta = HamiltonianMetadata(
+            num_qubits=ham.num_qubits,
+            pauli_term_count=len(ham),
+            description="My model description",
+        )
+        return ham, meta
+
+    def exact_ground_energy(self, hamiltonian):
+        if hamiltonian.num_qubits > 24:
+            return None  # too expensive
+        return float(np.real(np.linalg.eigvalsh(hamiltonian.to_matrix())[0]))
+
+    def adiabatic_parameter_name(self):
+        return "coupling"  # or None if adiabatic init doesn't apply
+
+    def build_at_parameter(self, value, config):
+        config.model_params["coupling"] = value
+        ham, _ = self.build(config)
+        return ham
+</pre>
+
+<p>Then use it in a YAML config:</p>
+<pre>
+model: my_model
+model_params:
+  coupling: 1.5
+  field: 0.3
+ansatz: su2
+...
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="new-ansatz">Adding a new ansatz</h2>
+
+<pre>
+# src/lumi_hpc_qc/plugins/ansatze/my_ansatz.py
+
+from lumi_hpc_qc.plugins.ansatze.base import AnsatzBuilder
+from lumi_hpc_qc.types import AnsatzMetadata, ExperimentConfig
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterVector
+
+class MyAnsatz(AnsatzBuilder):
+    name = "my_ansatz"
+
+    def build(self, num_qubits, config):
+        reps = config.ansatz_params.get("reps", 2)
+        n_params = num_qubits * reps
+        params = ParameterVector('θ', n_params)
+        qc = QuantumCircuit(num_qubits)
+
+        idx = 0
+        for r in range(reps):
+            for q in range(num_qubits):
+                qc.ry(params[idx], q)
+                idx += 1
+            for q in range(num_qubits - 1):
+                qc.cx(q, q + 1)
+
+        meta = AnsatzMetadata(
+            num_parameters=n_params,
+            parameter_names=[f"p{i}" for i in range(n_params)],
+            gradient_compatibility="parameter_shift",  # or "finite_difference"
+            preferred_initializer="random",             # or "zero", "adiabatic"
+            requires_decomposition=False,
+        )
+        return qc, meta
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="new-optimizer">Adding a new optimizer</h2>
+
+<pre>
+# src/lumi_hpc_qc/plugins/optimizers/my_optimizer.py
+
+from lumi_hpc_qc.plugins.optimizers.base import OptimizerStrategy
+from lumi_hpc_qc.types import ExperimentConfig, IterationRecord, OptimizeResult
+import numpy as np
+
+class MyOptimizer(OptimizerStrategy):
+    name = "my_optimizer"
+    requires_gradient = False  # True if your optimizer needs gradients
+
+    def minimize(self, cost_fn, x0, grad_fn=None, config=None, callback=None):
+        # Your optimization logic here
+        maxiter = config.optimizer_params.get("maxiter", 100)
+        best_x, best_f = x0.copy(), cost_fn(x0)
+
+        for i in range(maxiter):
+            # ... your optimization step ...
+            if callback:
+                callback(IterationRecord(iteration=i+1, energy=best_f, parameters=best_x))
+
+        return OptimizeResult(x=best_x, fun=best_f, nfev=maxiter, nit=maxiter, success=True)
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="custom-experiment">Creating a custom experiment</h2>
+
+<ol>
+<li>Copy an existing config: <code>cp configs/byo_tfim_8q.yaml configs/my_experiment.yaml</code></li>
+<li>Edit the YAML with your model, ansatz, optimizer choices</li>
+<li>Create a test script:
+<pre>
+cp tests/test_byo_tfim_8q.sh tests/test_my_experiment.sh
+# Edit: change CONFIG_PATH to your new YAML
+# Change --time if needed
+</pre></li>
+<li>Run: <code>source env.sh && sbatch tests/test_my_experiment.sh</code></li>
+</ol>
+
+<!-- ================================================================ -->
+<h2 id="byo-guide">Bring-Your-Own (BYO) guide</h2>
+
+<p>The BYO model lets you run VQE on any Hamiltonian without writing Python code. Just provide a JSON file:</p>
+
+<pre>
+{
+  "description": "My custom 4-qubit Hamiltonian",
+  "pauli_terms": [
+    {"label": "IIZZ", "coeff_real": 0.5, "coeff_imag": 0.0},
+    {"label": "ZZII", "coeff_real": 0.3, "coeff_imag": 0.0},
+    {"label": "XIXI", "coeff_real": -0.2, "coeff_imag": 0.0}
+  ]
+}
+</pre>
+
+<p>Or the simpler list format:</p>
+<pre>
+{
+  "pauli_terms": [["IIZZ", 0.5], ["ZZII", 0.3], ["XIXI", -0.2]]
+}
+</pre>
+
+<p>Reference it in your YAML:</p>
+<pre>
+model: byo
+model_params:
+  hamiltonian_file: examples/my_hamiltonian.json
+ansatz: su2
+ansatz_params:
+  reps: 3
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="lumi-results">LUMI test results</h2>
+
+<p>All results from testing on LUMI standard-g partition, AMD MI250X GPUs, double precision, Singularity container with qiskit 2.3.0, qiskit-aer 0.17.2.</p>
+
+<table>
+<tr><th>Model</th><th>Best E</th><th>Exact E</th><th>Error</th><th>Time</th><th>SLURM Job</th><th>Status</th></tr>
+<tr><td>BYO TFIM 8q (SU2)</td><td>-7.637</td><td>-7.641</td><td>0.045%</td><td>9 min</td><td>17007219</td><td><span class="badge badge-ok">Excellent</span></td></tr>
+<tr><td>QAOA MaxCut 12q (COBYLA)</td><td>-13.01</td><td>-14.00</td><td>7.06%</td><td>15 sec</td><td>17008294</td><td><span class="badge badge-ok">Good</span></td></tr>
+<tr><td>FH 2×3 12q (HVA+adiabatic)</td><td>-1.97</td><td>-5.78</td><td>65.9%</td><td>10 min</td><td>17008291</td><td><span class="badge badge-warn">Local min</span></td></tr>
+<tr><td>Heisenberg 3×4 12q (HVA+adiabatic)</td><td>-1.87</td><td>-26.77</td><td>93.0%</td><td>112 min</td><td>17008292</td><td><span class="badge badge-warn">Local min</span></td></tr>
+<tr><td>H2 UCCSD 4q</td><td>-1.24</td><td>-1.86</td><td>33.0%</td><td>12 sec</td><td>17008293</td><td><span class="badge badge-err">Decomp issue</span></td></tr>
+<tr><td>Checkpoint/resume</td><td>-7.637</td><td>-7.641</td><td>0.052%</td><td>3 min</td><td>17012216</td><td><span class="badge badge-ok">Passed</span></td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="known-issues">Known research-level issues</h2>
+
+<h3>FH / Heisenberg — HVA local minima</h3>
+<p>The HVA ansatz at 3 layers captures only a fraction of the correlation energy on 2D lattices. The adiabatic ramp produces a smooth, monotonically decreasing energy curve, but tracks a local minimum rather than the global one. The literature (Wiersema et al., PRX Quantum 1, 020319, 2020) shows this requires either deeper circuits, different ansatze (ADAPT-VQE), or symmetry-exploiting initializations. These are exactly the kind of improvements that can be plugged in as new ansatz/initializer plugins.</p>
+
+<h3>H2 UCCSD — parameter binding after decomposition</h3>
+<p>The qiskit-nature UCCSD circuit after 10 rounds of <code>.decompose()</code> loses its parameterization — the energy is constant regardless of parameter values. The fix path is to use Qiskit's Estimator primitive (which handles circuit compilation internally) or avoid full decomposition. This would be a new backend evaluation strategy plugin.</p>
+
+<h3>Container binding requirements</h3>
+<p>The LUMI container has a built-in runscript that validates bindings. Direct <code>singularity exec</code> fails — must use the GPU or CPU wrapper scripts that extract bind mount lists from inside the container.</p>
+
+<!-- ================================================================ -->
+<h2 id="references">References</h2>
+
+<ul>
+<li>FiQCI blog: <a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">Simulating Electrons on LUMI + VTT Q50</a></li>
+<li>CSC: <a href="https://docs.csc.fi/apps/qiskit/">Qiskit documentation</a></li>
+<li>CSC: <a href="https://docs.csc.fi/computing/quantum-computing/running-quantum-jobs/">Running quantum jobs</a></li>
+<li>CSC: <a href="https://github.com/CSCfi/Quantum/tree/main/Variational-Algorithms-on-Q50">Quantum repository — VQA on Q50</a></li>
+<li><a href="https://github.com/JooNiv/QCut">QCut — circuit cutting library</a></li>
+<li>Wecker et al., Phys. Rev. A 92, 062318 (2015) — HVA ansatz, adiabatic initialization</li>
+<li>Mitarai et al., Phys. Rev. A 98, 032309 (2018) — parameter-shift rule</li>
+<li>Schuld et al., Phys. Rev. A 99, 032331 (2019) — analytic gradients on quantum hardware</li>
+<li>Wiersema et al., PRX Quantum 1, 020319 (2020) — local minima in HVA</li>
+</ul>
+
+<hr style="margin-top:60px;border:none;border-top:1px solid var(--border)">
+<p style="font-size:12px;color:var(--fg3);margin-top:16px">lumi-hpc-qc v1.0.0b1 &middot; Generated 2026-03-26 &middot; CSC / LUMI / FiQCI</p>
+
+</main>
+
+<script>
+// Highlight active nav link on scroll
+const sections = document.querySelectorAll('h2[id], h1[id]');
+const navLinks = document.querySelectorAll('nav a');
+window.addEventListener('scroll', () => {
+  let current = '';
+  sections.forEach(s => { if (window.scrollY >= s.offsetTop - 80) current = s.id; });
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+});
+</script>
+</body>
+</html>

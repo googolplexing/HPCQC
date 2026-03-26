@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+model: fermi_hubbard
+model_params:
+  lattice_rows: 2
+  lattice_cols: 3
+  hopping_t: 1.0
+  interaction_u: 2.0
+ansatz: hva
+ansatz_params:
+  reps: 3
+optimizer: l_bfgs_b
+optimizer_params:
+  maxiter: 1000
+  gtol: 1.0e-06
+gradient: parameter_shift
+initializer: adiabatic
+initializer_params:
+  seed: 42
+  adiabatic_steps: 20
+  adiabatic_max_iter: 300
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+output_dir: results

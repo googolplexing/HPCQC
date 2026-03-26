@@ -1,0 +1,27 @@
+{
+    "description": "Transverse-Field Ising Model (TFIM) on 8-qubit open chain. H = -J Σ Z_i Z_{i+1} - h Σ X_i. J=1.0 coupling, h=0.5 transverse field (ordered phase). Distinct from built-in Heisenberg (which uses XX+YY+ZZ). Quantum critical point at h/J=1.",
+    "metadata": {
+        "model_type": "transverse_field_ising",
+        "num_sites": 8,
+        "coupling_J": 1.0,
+        "transverse_field_h": 0.5,
+        "boundary": "open"
+    },
+    "pauli_terms": [
+        ["IIIIIIZZ", -1.0],
+        ["IIIIIZZI", -1.0],
+        ["IIIIZZII", -1.0],
+        ["IIIZZIII", -1.0],
+        ["IIZZIIII", -1.0],
+        ["IZZIIIII", -1.0],
+        ["ZZIIIIII", -1.0],
+        ["IIIIIIIX", -0.5],
+        ["IIIIIIXI", -0.5],
+        ["IIIIIXII", -0.5],
+        ["IIIIXIII", -0.5],
+        ["IIIXIIII", -0.5],
+        ["IIXIIIII", -0.5],
+        ["IXIIIIII", -0.5],
+        ["XIIIIIII", -0.5]
+    ]
+}

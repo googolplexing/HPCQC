@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+model: molecular
+model_params:
+  molecule: H2
+  basis: sto-3g
+  distance: 0.735
+  num_electrons: 2
+ansatz: uccsd
+ansatz_params:
+  num_electrons: 2
+  reps: 1
+optimizer: l_bfgs_b
+optimizer_params:
+  maxiter: 500
+  gtol: 1.0e-06
+gradient: finite_difference
+initializer: zero
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+output_dir: results

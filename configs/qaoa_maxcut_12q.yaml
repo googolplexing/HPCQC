@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+model: qaoa_maxcut
+model_params:
+  num_nodes: 12
+  graph_type: random_regular
+  degree: 3
+  seed: 42
+ansatz: qaoa
+ansatz_params:
+  p_layers: 3
+optimizer: cobyla
+optimizer_params:
+  maxiter: 500
+  rhobeg: 0.3
+gradient: none
+initializer: random
+initializer_params:
+  seed: 42
+  low: 0.0
+  high: 3.14159
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+output_dir: results
