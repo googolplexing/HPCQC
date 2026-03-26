@@ -34,3 +34,4 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+slurm_logs/
