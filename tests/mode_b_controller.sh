@@ -170,6 +170,8 @@ while [ ${ATTEMPT} -le ${MAX_RETRIES} ]; do
     SCRIPT=$(generate_child_script ${ATTEMPT} "${RUNNER}" "${EXTRA_ENV}")
     echo "  Script: ${SCRIPT}"
 
+    # Prevent controller memory settings from leaking into child job
+    unset SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_MEM_PER_GPU
     CHILD_ID=$(sbatch "${SCRIPT}" 2>&1 | grep -oP '\d+$')
     if [ -z "${CHILD_ID}" ]; then
         echo "  ERROR: sbatch failed"
