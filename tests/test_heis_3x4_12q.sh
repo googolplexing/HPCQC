@@ -14,8 +14,8 @@
 #SBATCH --error=slurm_logs/heis_3x4_12q.e%j
 
 # Source central environment config (container paths, wrappers, etc.)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../env.sh"
+# (removed SCRIPT_DIR — using SLURM_SUBMIT_DIR)
+source "${SLURM_SUBMIT_DIR}/env.sh"
 
 mkdir -p "${HPCQC_ROOT}/slurm_logs" "${HPCQC_ROOT}/results"
 

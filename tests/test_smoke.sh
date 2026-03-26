@@ -13,8 +13,8 @@
 #SBATCH --output=slurm_logs/smoke_test.o%j
 #SBATCH --error=slurm_logs/smoke_test.e%j
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../env.sh"
+# (removed SCRIPT_DIR — using SLURM_SUBMIT_DIR)
+source "${SLURM_SUBMIT_DIR}/env.sh"
 
 mkdir -p "${HPCQC_ROOT}/slurm_logs"
 

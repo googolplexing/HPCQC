@@ -29,8 +29,8 @@
 set -euo pipefail
 
 # ── Source environment config ──
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../env.sh"
+# (removed SCRIPT_DIR — using SLURM_SUBMIT_DIR)
+source "${SLURM_SUBMIT_DIR}/env.sh"
 
 # ── Configuration (from env vars or defaults) ──
 CONFIG_YAML="${MODEB_CONFIG:-configs/byo_tfim_8q.yaml}"
@@ -42,7 +42,7 @@ CHECKPOINT_DIR="${HPCQC_ROOT}/checkpoints"
 EXPERIMENT_ID="modeb_$(date +%s)_${SLURM_JOB_ID}"
 
 # Directories
-CHILD_SCRIPT_DIR="${HPCQC_ROOT}/slurm/mode_b"
+CHILD_# (removed SCRIPT_DIR — using SLURM_SUBMIT_DIR)
 mkdir -p "${CHILD_SCRIPT_DIR}" "${HPCQC_ROOT}/slurm_logs" "${CHECKPOINT_DIR}"
 
 # ── Banner ──
