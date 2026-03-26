@@ -35,3 +35,6 @@ env/
 .coverage
 htmlcov/
 slurm_logs/
+checkpoints/
+results/
+slurm/
