@@ -41,6 +41,7 @@ CHECKPOINT_DIR="${HPCQC_ROOT}/checkpoints"
 EXPERIMENT_ID="modeb_$(date +%s)_${SLURM_JOB_ID}"
 
 # Directories
+CHILD_SCRIPT_DIR="${HPCQC_ROOT}/slurm/mode_b"
 mkdir -p "${CHILD_SCRIPT_DIR}" "${HPCQC_ROOT}/slurm_logs" "${CHECKPOINT_DIR}"
 
 # ── Banner ──
