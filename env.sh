@@ -43,7 +43,7 @@ export MPICH_OFI_NIC_POLICY="${MPICH_OFI_NIC_POLICY:-GPU}"
 # ── SLURM partition defaults ──
 export HPCQC_GPU_PARTITION="${HPCQC_GPU_PARTITION:-standard-g}"
 export HPCQC_CPU_PARTITION="${HPCQC_CPU_PARTITION:-standard}"
-export HPCQC_SMALL_PARTITION="${HPCQC_SMALL_PARTITION:-small}"
+export HPCQC_SMALL_PARTITION="${HPCQC_SMALL_PARTITION:-standard}"
 
 # ── Derived: project root (directory containing this file) ──
 # Scripts source this file, so HPCQC_ROOT is always set correctly

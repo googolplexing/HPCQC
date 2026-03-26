@@ -17,7 +17,7 @@
 # =============================================================================
 
 #SBATCH --job-name=modeb_controller
-#SBATCH --partition=small
+#SBATCH --partition=standard
 #SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
