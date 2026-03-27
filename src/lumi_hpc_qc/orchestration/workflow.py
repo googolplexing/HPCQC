@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: SSPL-1.0
 """Workflow definitions — the orchestration brain.
 
+Phase 3 additions:
+  - Batched gradient evaluation: eval_energy_batch() submits all shifted
+    circuits in a single sim.run() call. Aer distributes across GPUs.
+  - CircuitSubmissionWorkflow: execute circuits without optimization loop.
+    Supports direct submission to backends including Q50 via FiQCI.
+
 A Workflow ties plugins + backends + data together into a complete
 computational pipeline. Calls plugin interfaces, never concrete implementations.
 """
@@ -215,7 +221,7 @@ class VQEWorkflow(Workflow):
         grad_strategy = ctx["grad_strategy"]
         grad_name = ctx["grad_name"]
 
-        # Build energy evaluation function
+        # ── Energy evaluation: single point ──
         eval_count = [0]
 
         def eval_energy(params):
@@ -232,17 +238,68 @@ class VQEWorkflow(Workflow):
             eval_count[0] += 1
             return float(np.real(r.data()['energy']))
 
+        # ── Energy evaluation: batched (Phase 3) ──
+        # Builds all circuits, submits in one sim.run() call.
+        # Aer distributes across available GPUs automatically.
+        def eval_energy_batch(params_list):
+            """Evaluate energy for multiple parameter arrays in one batch.
+
+            Args:
+                params_list: List of numpy arrays, each a parameter vector.
+
+            Returns:
+                List of floats — energies in the same order as params_list.
+            """
+            circuits = []
+            for params in params_list:
+                param_dict = dict(zip(ansatz.parameters, params))
+                bound = ansatz.assign_parameters(param_dict)
+                bound.save_expectation_value(
+                    hamiltonian, list(range(ham_meta.num_qubits)), label='energy'
+                )
+                circuits.append(bound)
+
+            # Submit all circuits in a single batch call
+            result = backend._sim.run(
+                circuits, shots=0, seed_simulator=42,
+                blocking_enable=backend._use_blocking,
+                blocking_qubits=backend._blocking_qubits,
+            ).result()
+
+            # Extract energies from batch results
+            energies = []
+            for i in range(len(circuits)):
+                e = float(np.real(result.results[i].data.energy))
+                energies.append(e)
+
+            eval_count[0] += len(circuits)
+            return energies
+
+        # ── Select gradient mode: batched or sequential ──
+        use_batched = False
+        if grad_strategy is not None and grad_strategy.supports_batching:
+            # Only use batched mode for Aer backends (have _sim attribute)
+            if hasattr(backend, '_sim') and backend._sim is not None:
+                use_batched = True
+
         # Build gradient function
         grad_fn = None
         if grad_strategy is not None:
-            def grad_fn(params):
-                return grad_strategy.compute(eval_energy, params, backend)
+            if use_batched:
+                def grad_fn(params):
+                    shifted = grad_strategy.build_shifted_params(params)
+                    energies = eval_energy_batch(shifted)
+                    return grad_strategy.assemble_gradient(params, energies)
+            else:
+                def grad_fn(params):
+                    return grad_strategy.compute(eval_energy, params, backend)
 
         # Print optimizer info
+        batch_label = " [BATCHED]" if use_batched else ""
         print(f"\n[Step 6] {'Starting' if start_iteration == 0 else 'Resuming'} VQE optimization")
         print(f"  Optimizer: {config.optimizer}")
         if grad_strategy:
-            print(f"  Gradient: {grad_name} ({grad_strategy.circuits_per_gradient} circuits/gradient)")
+            print(f"  Gradient: {grad_name} ({grad_strategy.circuits_per_gradient} circuits/gradient){batch_label}")
         print(f"  Max iterations: {config.optimizer_params.get('maxiter', 200)}")
         print("-" * 70)
 
@@ -330,6 +387,8 @@ class VQEWorkflow(Workflow):
             print(f"  Best absolute error     : {abs_err:14.8f}")
             print(f"  Best relative error     : {rel_err:13.6f}%")
         print(f"  Circuit evaluations     : {eval_count[0]}")
+        if use_batched:
+            print(f"  Gradient mode           : BATCHED ({grad_strategy.circuits_per_gradient} circuits/batch)")
         print("-" * 70)
         print(f"\n{timing.to_human_readable()}")
 
@@ -361,14 +420,131 @@ class VQAWorkflow(Workflow):
 
 
 class CircuitSubmissionWorkflow(Workflow):
-    """Direct circuit execution — no optimization loop."""
+    """Direct circuit execution — no optimization loop.
+
+    Submits one or more circuits to a backend and collects results.
+    Useful for:
+      - Benchmarking circuits on GPU sim vs QPU
+      - Running pre-optimized circuits with fixed parameters
+      - Collecting measurement statistics for error analysis
+      - Testing Q50 connectivity without VQE overhead
+
+    Config fields used:
+      - backend: which backend to submit to
+      - backend_params.shots: number of measurement shots (default 1024)
+      - model + model_params: builds Hamiltonian for expectation computation
+      - ansatz + ansatz_params: builds the circuit
+      - output_dir: where to save results JSON
+    """
     name = "circuit_submission"
 
     def run(self, config: ExperimentConfig) -> ExperimentRecord:
-        raise NotImplementedError("CircuitSubmissionWorkflow — Phase 3")
+        from lumi_hpc_qc.backends.registry import BackendRegistry
+        from lumi_hpc_qc.data.experiment import ExperimentTracker
+        from lumi_hpc_qc.data.provenance import ProvenanceCollector
+        from lumi_hpc_qc.data.timing import TimingTracker
+        from lumi_hpc_qc.plugins.registry import PluginRegistry
+        from lumi_hpc_qc.types import CircuitJob, OptimizeResult
+
+        timer = TimingTracker()
+        plugins = PluginRegistry()
+        plugins.discover()
+        backends = BackendRegistry()
+        backends.discover()
+
+        provenance = ProvenanceCollector().capture()
+        tracker = ExperimentTracker(config)
+        tracker.start(provenance=provenance)
+
+        print("=" * 70)
+        print(f"  Circuit Submission — {config.model} / {config.ansatz}")
+        print(f"  Experiment: {config.experiment_id}")
+        print("=" * 70)
+
+        # Build Hamiltonian
+        print(f"\n[Step 1] Building Hamiltonian: {config.model}")
+        ham_builder = plugins.get_hamiltonian(config.model)
+        hamiltonian, ham_meta = ham_builder.build(config)
+        config.num_qubits = ham_meta.num_qubits
+        timer.mark("hamiltonian_build")
+
+        # Build ansatz
+        print(f"\n[Step 2] Building ansatz: {config.ansatz}")
+        ansatz_builder = plugins.get_ansatz(config.ansatz)
+        ansatz, ansatz_meta = ansatz_builder.build(ham_meta.num_qubits, config)
+        print(f"  Parameters: {ansatz_meta.num_parameters}")
+        timer.mark("ansatz_build")
+
+        # Initialize backend
+        print(f"\n[Step 3] Initializing backend: {config.backend}")
+        backend = backends.get(config.backend, config)
+        if ansatz_meta.requires_decomposition:
+            ansatz = backend.compile_circuit(ansatz)
+        backend._ensure_sim()
+        timer.mark("backend_init")
+
+        # Initialize parameters (random or from config)
+        np.random.seed(config.initializer_params.get("seed", 42))
+        params = np.random.uniform(-np.pi / 4, np.pi / 4, ansatz_meta.num_parameters)
+        if config.initializer_params.get("fixed_params") is not None:
+            params = np.array(config.initializer_params["fixed_params"])
+        print(f"\n[Step 4] Parameters: ||θ|| = {float(np.linalg.norm(params)):.4f}")
+
+        # Bind parameters and submit
+        param_dict = dict(zip(ansatz.parameters, params))
+        bound = ansatz.assign_parameters(param_dict)
+
+        shots = config.backend_params.get("shots", 1024)
+        print(f"\n[Step 5] Submitting circuit (shots={shots})")
+
+        job = CircuitJob(
+            job_id=config.experiment_id,
+            circuits=[bound],
+            observable=hamiltonian,
+            shots=shots,
+        )
+
+        timer.mark("submission_start")
+        results = backend.run_circuits([job])
+        timer.mark("submission_complete")
+
+        # Report results
+        result = results[0]
+        print(f"\n  Execution time: {result.execution_time_s:.2f}s")
+        print(f"  Backend: {result.backend_name}")
+
+        if result.energies:
+            energy = result.energies[0]
+            print(f"  Energy: {energy:+14.8f}")
+
+            exact = ham_builder.exact_ground_energy(hamiltonian)
+            if exact is not None:
+                err = abs(energy - exact)
+                rel = err / abs(exact) * 100 if abs(exact) > 1e-10 else err * 100
+                print(f"  Exact:  {exact:+14.8f}")
+                print(f"  Error:  {rel:.4f}%")
+
+        if result.counts:
+            top_counts = sorted(result.counts.items(), key=lambda x: -x[1])[:10]
+            print(f"  Top measurements:")
+            for bitstring, count in top_counts:
+                print(f"    {bitstring}: {count} ({count/shots*100:.1f}%)")
+
+        timing = timer.finish()
+        print(f"\n{timing.to_human_readable()}")
+
+        opt_result = OptimizeResult(
+            x=params,
+            fun=result.energies[0] if result.energies else 0.0,
+            nfev=1,
+            nit=1,
+        )
+        record = tracker.finalize(opt_result, timing, exact_energy=None)
+        return record
 
     def resume(self, checkpoint_path: str, config: ExperimentConfig) -> ExperimentRecord:
-        raise NotImplementedError("CircuitSubmissionWorkflow.resume() — Phase 3")
+        print("  CircuitSubmissionWorkflow does not support resume — re-running.")
+        return self.run(config)
 
     def get_required_plugins(self) -> dict[str, str]:
         return {"error_mitigation": "optional"}

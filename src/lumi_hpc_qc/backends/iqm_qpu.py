@@ -2,22 +2,29 @@
 # SPDX-License-Identifier: SSPL-1.0
 """IQM QPU backend — VTT Q50 quantum processor via FiQCI middleware.
 
-Submits circuits to the IQM quantum processor through CSC's HPC-Quantum
-middleware. The Q50 is accessible from any SLURM partition with adequate
-resources — not limited to q_fiqci.
+Submits circuits to the IQM Q50 quantum processor through CSC's
+HPC-Quantum middleware on LUMI. No API token required — access is
+controlled through SLURM's q_fiqci partition and FiQCI modules.
+
+Access pattern (from CSC docs):
+    module use /appl/local/quantum/modulefiles
+    module load fiqci-vtt-qiskit
+    export DEVICES=("Q50")
+    srun --partition q_fiqci -c 1 -n 1 bash -c "source $RUN_SETUP && python script.py"
+
+The Q50_CORTEX_URL environment variable is set automatically by the
+FiQCI module when running inside the q_fiqci partition. No manual
+URL configuration needed.
 
 References:
-  - FiQCI blog: https://fiqci.fi/publications/2025-09-12-Simulating-Electrons
   - CSC docs: https://docs.csc.fi/computing/quantum-computing/running-quantum-jobs/
+  - FiQCI blog: https://fiqci.fi/publications/2025-09-12-Simulating-Electrons
   - CSC Quantum repo: https://github.com/CSCfi/Quantum/tree/main/Variational-Algorithms-on-Q50
-
-Phase 2 stub: implements the Backend interface so it can be selected
-via config. Actual QPU submission requires iqm-client and FiQCI
-credentials, which are only available on LUMI compute nodes.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import numpy as np
@@ -32,49 +39,94 @@ from lumi_hpc_qc.types import (
 
 
 class IqmQpuBackend(Backend):
-    """IQM Q50 quantum processor backend via FiQCI."""
+    """IQM Q50 quantum processor backend via FiQCI.
+
+    When running inside the q_fiqci SLURM partition with the fiqci-vtt-qiskit
+    module loaded, Q50_CORTEX_URL is set automatically. The backend connects
+    to the QPU through this URL using IQMProvider from qiskit-iqm.
+
+    Backend params (YAML):
+        backend: iqm_qpu
+        backend_params:
+            shots: 4096            # measurement shots (default 1024)
+            device: Q50            # Q50 or Q5 (default Q50)
+            calibration_set_id: x  # optional, for reproducibility
+    """
 
     name = "iqm_qpu"
 
     def __init__(self, config: ExperimentConfig | None = None) -> None:
         self._config = config
-        self._sim = None  # not used; kept for interface compat
+        self._sim = None  # IQM backend object (via IQMProvider)
         self._use_blocking = False
         self._blocking_qubits = 0
         self._shots = 1024
+        self._device = "Q50"
+        self._calibration_set_id = None
 
         if config:
             bp = config.backend_params
             self._shots = bp.get("shots", 1024)
-            self._url = bp.get("iqm_url", "")
+            self._device = bp.get("device", "Q50")
             self._calibration_set_id = bp.get("calibration_set_id", None)
 
     def _ensure_sim(self) -> None:
-        """Initialize IQM client connection.
+        """Initialize IQM backend connection via FiQCI environment.
 
-        Requires iqm-client package and FiQCI environment variables.
+        The Q50_CORTEX_URL (or HELMI_CORTEX_URL for Q5) is set by the
+        fiqci-vtt-qiskit module when running in the q_fiqci partition.
+        No manual URL or token configuration needed.
         """
         if self._sim is not None:
             return
 
+        # Determine URL from environment (set by FiQCI module)
+        if self._device == "Q50":
+            url_env = "Q50_CORTEX_URL"
+        else:
+            url_env = "HELMI_CORTEX_URL"
+
+        url = os.getenv(url_env, "")
+
+        if not url:
+            # Not in q_fiqci partition or module not loaded
+            print(f"  WARNING: {url_env} not set. To use {self._device}:")
+            print(f"    module use /appl/local/quantum/modulefiles")
+            print(f"    module load fiqci-vtt-qiskit")
+            print(f'    export DEVICES=("{self._device}")')
+            print(f"    srun --partition q_fiqci ... bash -c \"source $RUN_SETUP && python script.py\"")
+            raise EnvironmentError(
+                f"{url_env} not set. Are you running in the q_fiqci partition "
+                f"with the fiqci-vtt-qiskit module loaded?"
+            )
+
         try:
             from iqm.qiskit_iqm import IQMProvider
-            provider = IQMProvider(self._url)
-            self._sim = provider.get_backend()
-            print(f"  Connected to IQM QPU: {self._sim.name}")
         except ImportError:
             raise ImportError(
-                "IQM QPU backend requires 'iqm-client' and 'qiskit-iqm' packages.\n"
-                "Install: pip install iqm-client qiskit-iqm\n"
-                "These are available in the FiQCI container on LUMI."
+                "IQM QPU backend requires 'qiskit-iqm' package.\n"
+                "This is provided by the fiqci-vtt-qiskit module:\n"
+                "  module use /appl/local/quantum/modulefiles\n"
+                "  module load fiqci-vtt-qiskit"
             )
+
+        provider = IQMProvider(url)
+        self._sim = provider.get_backend()
+        print(f"  Connected to {self._device}: {url[:40]}...")
+        print(f"  Backend: {self._sim.name}")
+
+        # Print qubit count if available
+        try:
+            n_qubits = self._sim.num_qubits
+            print(f"  Qubits: {n_qubits}")
+        except Exception:
+            pass
 
     def run_circuits(self, jobs: list[CircuitJob]) -> list[CircuitResult]:
         """Submit circuits to Q50 and collect measurement results.
 
         Note: QPU returns measurement counts, not expectation values.
-        Energy must be computed from counts via:
-          E = Σ_i coeff_i × <Z_i> where <Z_i> = (n_0 - n_1) / n_total
+        Energy is computed from counts via expectation_from_counts().
         """
         import time
         self._ensure_sim()
@@ -117,14 +169,19 @@ class IqmQpuBackend(Backend):
         return results
 
     def compile_circuit(self, circuit):
-        """Transpile circuit for IQM native gate set."""
+        """Transpile circuit for IQM native gate set (CZ + phased-RX).
+
+        IQM basis gates: CZ (entangling) and prx (phased rotation).
+        The transpiler handles qubit routing for the Q50 topology.
+        """
         self._ensure_sim()
         from qiskit import transpile
         return transpile(circuit, backend=self._sim, optimization_level=2)
 
     def capabilities(self) -> BackendCapabilities:
+        max_q = 50 if self._device == "Q50" else 5
         return BackendCapabilities(
-            max_qubits=50,
+            max_qubits=max_q,
             supports_statevector=False,
             supports_density_matrix=False,
             supports_mps=False,
@@ -137,11 +194,19 @@ class IqmQpuBackend(Backend):
     def validate_config(self, config: ExperimentConfig) -> list[str]:
         errors = []
         nq = config.num_qubits
-        if nq and nq > 50:
-            errors.append(f"IQM Q50 supports max 50 qubits, got {nq}")
-        if not config.backend_params.get("iqm_url"):
-            errors.append("IQM QPU requires 'iqm_url' in backend_params")
+        max_q = 50 if self._device == "Q50" else 5
+        if nq and nq > max_q:
+            errors.append(f"IQM {self._device} supports max {max_q} qubits, got {nq}")
         return errors
+
+    def estimate_walltime(self, config: ExperimentConfig) -> int:
+        """QPU jobs are slow — budget generously."""
+        maxiter = config.optimizer_params.get("maxiter", 100)
+        shots = config.backend_params.get("shots", 1024)
+        # ~2s per circuit execution on Q50, 2n circuits per gradient
+        n_params = (config.num_qubits or 8) * 3
+        sec_per_iter = 2 * 2 * n_params  # 2s × 2n circuits
+        return max(600, sec_per_iter * maxiter * 2)  # 2× safety margin
 
     @staticmethod
     def _expectation_from_counts(counts: dict, observable, total_shots: int) -> float:
