@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: tfim_8q — noisy Aer simulation with Q50 noise model
+# Uses Q50 calibration data to build a realistic noise model.
+# density_matrix method required for noise simulation.
+#
+model: byo
+model_params:
+  hamiltonian_file: examples/byo_transverse_ising_8q.json
+
+ansatz: su2
+ansatz_params:
+  reps: 2
+  entanglement: linear
+
+optimizer: spsa
+optimizer_params:
+  maxiter: 300
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: aer_gpu
+backend_params:
+  method: density_matrix
+  shots: 4096
+  noise_model_file: examples/q50_calibration_20260326.json
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+
+output_dir: results

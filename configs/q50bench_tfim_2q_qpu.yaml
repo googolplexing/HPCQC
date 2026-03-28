@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: tfim_2q — real Q50 quantum computer via FiQCI
+# Submit via: srun --partition q_fiqci with fiqci-vtt-qiskit module loaded.
+# No API token needed — Q50_CORTEX_URL is set by the FiQCI module.
+#
+model: byo
+model_params:
+  hamiltonian_file: examples/byo_tfim_2q_q50.json
+
+ansatz: su2
+ansatz_params:
+  reps: 1
+  entanglement: linear
+
+optimizer: spsa
+optimizer_params:
+  maxiter: 100
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: iqm_qpu
+backend_params:
+  device: Q50
+  shots: 4096
+  calibration_set_id: ce78e408-d231-4ce4-afea-898f06da818b
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 25
+
+output_dir: results

@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: qaoa_8q — noisy Aer simulation with Q50 noise model
+# Uses Q50 calibration data to build a realistic noise model.
+# density_matrix method required for noise simulation.
+#
+model: qaoa_maxcut
+model_params:
+  num_nodes: 8
+  graph_type: random_regular
+  degree: 3
+  seed: 42
+
+ansatz: qaoa
+ansatz_params:
+  reps: 2
+  entanglement: linear
+
+optimizer: spsa
+optimizer_params:
+  maxiter: 200
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: aer_gpu
+backend_params:
+  method: density_matrix
+  shots: 4096
+  noise_model_file: examples/q50_calibration_20260326.json
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+
+output_dir: results

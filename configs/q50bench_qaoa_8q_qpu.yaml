@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: qaoa_8q — real Q50 quantum computer via FiQCI
+# Submit via: srun --partition q_fiqci with fiqci-vtt-qiskit module loaded.
+# No API token needed — Q50_CORTEX_URL is set by the FiQCI module.
+#
+model: qaoa_maxcut
+model_params:
+  num_nodes: 8
+  graph_type: random_regular
+  degree: 3
+  seed: 42
+
+ansatz: qaoa
+ansatz_params:
+  reps: 2
+  entanglement: linear
+
+optimizer: spsa
+optimizer_params:
+  maxiter: 150
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: iqm_qpu
+backend_params:
+  device: Q50
+  shots: 4096
+  calibration_set_id: ce78e408-d231-4ce4-afea-898f06da818b
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 25
+
+output_dir: results

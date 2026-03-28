@@ -1,0 +1,44 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: h2_4q — real Q50 quantum computer via FiQCI
+# Submit via: srun --partition q_fiqci with fiqci-vtt-qiskit module loaded.
+# No API token needed — Q50_CORTEX_URL is set by the FiQCI module.
+#
+model: molecular
+model_params:
+  molecule: H2
+  basis: sto-3g
+  distance: 0.735
+  num_electrons: 2
+  num_spatial_orbitals: 2
+
+ansatz: uccsd
+ansatz_params:
+  reps: 1
+  entanglement: linear
+
+optimizer: spsa
+optimizer_params:
+  maxiter: 100
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: iqm_qpu
+backend_params:
+  device: Q50
+  shots: 4096
+  calibration_set_id: ce78e408-d231-4ce4-afea-898f06da818b
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 25
+
+output_dir: results

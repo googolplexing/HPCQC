@@ -1,0 +1,41 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: qaoa_8q — noiseless Aer GPU simulation
+# Baseline for comparison with noisy and QPU results.
+#
+model: qaoa_maxcut
+model_params:
+  num_nodes: 8
+  graph_type: random_regular
+  degree: 3
+  seed: 42
+
+ansatz: qaoa
+ansatz_params:
+  reps: 2
+  entanglement: linear
+
+optimizer: cobyla
+optimizer_params:
+  maxiter: 300
+  rhobeg: 0.3
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+
+output_dir: results

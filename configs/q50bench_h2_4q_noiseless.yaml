@@ -1,0 +1,42 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Q50 Benchmark: h2_4q — noiseless Aer GPU simulation
+# Baseline for comparison with noisy and QPU results.
+#
+model: molecular
+model_params:
+  molecule: H2
+  basis: sto-3g
+  distance: 0.735
+  num_electrons: 2
+  num_spatial_orbitals: 2
+
+ansatz: uccsd
+ansatz_params:
+  reps: 1
+  entanglement: linear
+
+optimizer: cobyla
+optimizer_params:
+  maxiter: 200
+  rhobeg: 0.3
+
+gradient: none
+
+initializer: random
+initializer_params:
+  seed: 42
+
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+
+output_dir: results

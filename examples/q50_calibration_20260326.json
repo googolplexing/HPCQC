@@ -1,0 +1,36 @@
+{
+  "calibration_set_id": "ce78e408-d231-4ce4-afea-898f06da818b",
+  "timestamp": "2026-03-26T10:00:00+02:00",
+  "device": "Q50",
+  "notes": "Calibration data from VTT Q50. Used for building Aer noise models.",
+  "qubits": {
+    "QB1":  {"t1_us": 38.2, "t2_us": 15.6, "readout_fidelity": 0.961, "single_gate_error": 0.0012},
+    "QB2":  {"t1_us": 41.5, "t2_us": 18.3, "readout_fidelity": 0.972, "single_gate_error": 0.0010},
+    "QB3":  {"t1_us": 35.7, "t2_us": 12.9, "readout_fidelity": 0.955, "single_gate_error": 0.0015},
+    "QB4":  {"t1_us": 44.1, "t2_us": 20.1, "readout_fidelity": 0.978, "single_gate_error": 0.0009},
+    "QB5":  {"t1_us": 33.8, "t2_us": 11.4, "readout_fidelity": 0.948, "single_gate_error": 0.0018},
+    "QB6":  {"t1_us": 46.8, "t2_us": 24.3, "readout_fidelity": 0.981, "single_gate_error": 0.0008},
+    "QB7":  {"t1_us": 42.9, "t2_us": 18.1, "readout_fidelity": 0.975, "single_gate_error": 0.0011},
+    "QB8":  {"t1_us": 39.3, "t2_us": 16.7, "readout_fidelity": 0.968, "single_gate_error": 0.0013},
+    "QB9":  {"t1_us": 37.1, "t2_us": 14.2, "readout_fidelity": 0.958, "single_gate_error": 0.0014},
+    "QB10": {"t1_us": 40.8, "t2_us": 17.5, "readout_fidelity": 0.970, "single_gate_error": 0.0011},
+    "QB11": {"t1_us": 36.4, "t2_us": 13.5, "readout_fidelity": 0.952, "single_gate_error": 0.0016},
+    "QB12": {"t1_us": 28.6, "t2_us":  4.4, "readout_fidelity": 0.938, "single_gate_error": 0.0025},
+    "QB13": {"t1_us": 34.2, "t2_us": 10.4, "readout_fidelity": 0.976, "single_gate_error": 0.0017}
+  },
+  "two_qubit_gates": {
+    "QB6-QB7":   {"cz_fidelity": 0.9973, "cz_error": 0.0027},
+    "QB7-QB13":  {"cz_fidelity": 0.9937, "cz_error": 0.0063},
+    "QB13-QB12": {"cz_fidelity": 0.9919, "cz_error": 0.0081},
+    "QB1-QB2":   {"cz_fidelity": 0.9945, "cz_error": 0.0055},
+    "QB2-QB3":   {"cz_fidelity": 0.9928, "cz_error": 0.0072},
+    "QB3-QB4":   {"cz_fidelity": 0.9951, "cz_error": 0.0049},
+    "QB4-QB5":   {"cz_fidelity": 0.9912, "cz_error": 0.0088},
+    "QB5-QB6":   {"cz_fidelity": 0.9935, "cz_error": 0.0065},
+    "QB8-QB9":   {"cz_fidelity": 0.9940, "cz_error": 0.0060},
+    "QB9-QB10":  {"cz_fidelity": 0.9948, "cz_error": 0.0052},
+    "QB10-QB11": {"cz_fidelity": 0.9922, "cz_error": 0.0078}
+  },
+  "single_gate_time_ns": 40,
+  "cz_gate_time_ns": 100
+}
