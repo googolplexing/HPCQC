@@ -1,0 +1,9 @@
+{
+  "description": "TFIM 2-qubit open chain, J=1.0, g=1.0. Ground energy = -(1 + sqrt(2)) = -2.41421356...",
+  "num_qubits": 2,
+  "pauli_terms": [
+    ["ZZ", -1.0],
+    ["XI", -1.0],
+    ["IX", -1.0]
+  ]
+}
