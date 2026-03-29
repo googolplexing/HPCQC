@@ -8,9 +8,9 @@
 #SBATCH --partition=standard-g
 #SBATCH --time=00:05:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=7
+#SBATCH --cpus-per-task=56
 #SBATCH --output=slurm_logs/greenreq001_t01_packages.o%j
 #SBATCH --error=slurm_logs/greenreq001_t01_packages.e%j
 

@@ -149,7 +149,7 @@ result_dir = os.path.join(project_dir, config.output_dir)
 json_files = []
 for root, dirs, files in os.walk(result_dir):
     for f in files:
-        if f.endswith(".json") and "experiment" in f.lower():
+        if f.endswith("_result.json"):
             json_files.append(os.path.join(root, f))
 
 if json_files:
