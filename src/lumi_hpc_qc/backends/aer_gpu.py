@@ -2,11 +2,18 @@
 # SPDX-License-Identifier: SSPL-1.0
 """Aer GPU backend — statevector and density matrix simulation on AMD MI250X.
 
+Fixes applied:
+  F1: Shot-based evaluation uses basis-rotated measurement circuits
+      (pauli_measurement module) instead of broken Z-only parity.
+  C1: Noisy simulation transpiles circuits to Q50 coupling map,
+      matching real QPU routing overhead.
+
 Contains all tested knowledge from lumi_vqa:
   - decompose_for_aer(): multi-round decomposition to primitive gates
   - Precision: double by default, single configurable
   - Cache blocking for large qubit counts
-  - save_expectation_value for energy evaluation
+  - save_expectation_value for noiseless energy evaluation
+  - Noise model support for Q50 benchmarking (Phase 3)
 """
 
 from __future__ import annotations
@@ -63,18 +70,24 @@ class AerGpuBackend(Backend):
         self._precision = "double"
         self._use_blocking = False
         self._blocking_qubits = 0
+        self._noise_model = None
+        self._noise_model_file = None
+        self._coupling_map = None  # C1: for topology-aware noisy sim
+        self._shots = 0  # 0 = statevector (no shots)
 
         if config:
             self._precision = config.precision
             bp = config.backend_params
             self._method = bp.get("method", "statevector")
+            self._noise_model_file = bp.get("noise_model_file", None)
+            self._shots = bp.get("shots", 0)
 
             # Cache blocking for large qubit counts
             nq = config.num_qubits
-            if self._precision == "double" and nq >= 30:
+            if nq and self._precision == "double" and nq >= 30:
                 self._use_blocking = True
                 self._blocking_qubits = 29
-            elif self._precision == "single" and nq >= 30:
+            elif nq and self._precision == "single" and nq >= 30:
                 self._use_blocking = True
                 self._blocking_qubits = 28
         else:
@@ -87,13 +100,44 @@ class AerGpuBackend(Backend):
 
         from qiskit_aer import AerSimulator
 
-        self._sim = AerSimulator(
+        # Build noise model if calibration file specified
+        if self._noise_model_file:
+            from lumi_hpc_qc.backends.noise_model import build_noise_model
+            import os
+
+            cal_path = self._noise_model_file
+            project_dir = os.environ.get("PROJECT_DIR",
+                          os.environ.get("SINGULARITYENV_PROJECT_DIR", "."))
+            if not os.path.isabs(cal_path):
+                cal_path = os.path.join(project_dir, cal_path)
+
+            num_qubits = self._config.num_qubits if self._config else 8
+            self._noise_model, self._coupling_map = build_noise_model(
+                cal_path, num_qubits
+            )
+            print(f"  Noise model loaded from: {self._noise_model_file}")
+
+        # Determine device
+        device = 'GPU'
+
+        sim_kwargs = dict(
             method=self._method,
-            device='GPU',
+            device=device,
             precision=self._precision,
         )
+        if self._noise_model is not None:
+            sim_kwargs["noise_model"] = self._noise_model
+
+        self._sim = AerSimulator(**sim_kwargs)
 
     def run_circuits(self, jobs: list[CircuitJob]) -> list[CircuitResult]:
+        """Execute circuit jobs on the Aer simulator.
+
+        Handles two modes:
+        - shots=0: exact statevector via save_expectation_value (noiseless)
+        - shots>0: basis-rotated measurement circuits (F1 fix) with
+                   optional coupling map transpilation (C1 fix)
+        """
         import time
         self._ensure_sim()
         results = []
@@ -102,31 +146,88 @@ class AerGpuBackend(Backend):
             t0 = time.time()
             energies = []
 
-            for i, circuit in enumerate(job.circuits):
-                # Bind parameters if provided
-                if job.parameters and i < len(job.parameters):
-                    param_dict = job.parameters[i]
-                    bound = circuit.assign_parameters(param_dict)
-                else:
-                    bound = circuit
+            # Determine shots: job-level overrides instance default
+            shots = job.shots if job.shots > 0 else self._shots
 
-                # Add expectation value measurement if observable provided
-                if job.observable is not None:
+            if shots == 0 and job.observable is not None:
+                # ── Noiseless statevector mode ──
+                # Use save_expectation_value for exact Tr(ρH)
+                for i, circuit in enumerate(job.circuits):
+                    if job.parameters and i < len(job.parameters):
+                        bound = circuit.assign_parameters(job.parameters[i])
+                    else:
+                        bound = circuit
+
                     bound.save_expectation_value(
                         job.observable,
                         list(range(circuit.num_qubits)),
                         label='energy',
                     )
-
-                r = self._sim.run(
-                    bound, shots=job.shots, seed_simulator=42,
-                    blocking_enable=self._use_blocking,
-                    blocking_qubits=self._blocking_qubits,
-                ).result()
-
-                if job.shots == 0 and job.observable is not None:
+                    r = self._sim.run(
+                        bound, shots=0, seed_simulator=42,
+                        blocking_enable=self._use_blocking,
+                        blocking_qubits=self._blocking_qubits,
+                    ).result()
                     energy = float(np.real(r.data()['energy']))
                     energies.append(energy)
+
+            elif shots > 0 and job.observable is not None:
+                # ── Shot-based mode (noisy simulation) ──
+                # F1 FIX: use basis-rotated measurement circuits
+                from lumi_hpc_qc.backends.pauli_measurement import (
+                    build_measurement_circuits,
+                    expectation_from_grouped_counts,
+                )
+                from qiskit import transpile
+
+                for i, circuit in enumerate(job.circuits):
+                    if job.parameters and i < len(job.parameters):
+                        bound = circuit.assign_parameters(job.parameters[i])
+                    else:
+                        bound = circuit
+
+                    # Build basis-rotated circuits for each Pauli group
+                    meas_circuits, meas_groups, identity_e = (
+                        build_measurement_circuits(bound, job.observable, shots)
+                    )
+
+                    # C1 FIX: transpile to coupling map if noise model active
+                    if self._coupling_map is not None:
+                        meas_circuits = transpile(
+                            meas_circuits,
+                            coupling_map=self._coupling_map,
+                            optimization_level=2,
+                        )
+
+                    # Run all measurement circuits
+                    # C6 FIX: unique seed per circuit for realistic shot noise
+                    counts_list = []
+                    for ci, mc in enumerate(meas_circuits):
+                        seed = 42 + hash((i, ci)) % (2**31)
+                        r = self._sim.run(
+                            mc, shots=shots, seed_simulator=seed,
+                            blocking_enable=self._use_blocking,
+                            blocking_qubits=self._blocking_qubits,
+                        ).result()
+                        counts_list.append(r.get_counts())
+
+                    energy = expectation_from_grouped_counts(
+                        counts_list, meas_groups, identity_e, shots
+                    )
+                    energies.append(energy)
+
+            else:
+                # No observable — just run circuits (measurement already added)
+                for i, circuit in enumerate(job.circuits):
+                    if job.parameters and i < len(job.parameters):
+                        bound = circuit.assign_parameters(job.parameters[i])
+                    else:
+                        bound = circuit
+                    self._sim.run(
+                        bound, shots=shots or 1024,
+                        blocking_enable=self._use_blocking,
+                        blocking_qubits=self._blocking_qubits,
+                    ).result()
 
             elapsed = time.time() - t0
             results.append(CircuitResult(
@@ -161,22 +262,29 @@ class AerGpuBackend(Backend):
     def validate_config(self, config: ExperimentConfig) -> list[str]:
         errors = []
         nq = config.num_qubits
-        if nq > 44:
+        if nq and nq > 44:
             errors.append(f"Aer GPU supports max 44 qubits, got {nq}")
-        if config.precision == "double" and nq > 36:
+        if nq and config.precision == "double" and nq > 36:
             errors.append(
                 f"Double precision limited to 36 qubits on LUMI (got {nq}). "
                 f"Set precision: single for {nq}q."
+            )
+        bp = config.backend_params
+        if bp.get("noise_model_file") and bp.get("method") == "statevector":
+            errors.append(
+                "Noise model requires method: density_matrix (not statevector). "
+                "Statevector simulation is noiseless by definition."
             )
         return errors
 
     def estimate_walltime(self, config: ExperimentConfig) -> int:
         nq = config.num_qubits or 12
         maxiter = config.optimizer_params.get("maxiter", 200)
-        # Empirical from LUMI testing
         sec_per_eval = {12: 0.007, 18: 0.05, 24: 0.5, 30: 5, 36: 30, 40: 120, 44: 600}
         spe = sec_per_eval.get(nq, 0.007 * (2 ** (nq - 12)))
+        if self._noise_model is not None:
+            spe *= 4
         n_params_est = nq * 3
         circuits_per_step = 2 * n_params_est + 1
-        total = spe * circuits_per_step * maxiter * 2  # 2x safety
+        total = spe * circuits_per_step * maxiter * 2
         return max(300, min(int(total), 48 * 3600))

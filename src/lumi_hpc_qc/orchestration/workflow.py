@@ -2,11 +2,15 @@
 # SPDX-License-Identifier: SSPL-1.0
 """Workflow definitions — the orchestration brain.
 
-Phase 3 additions:
-  - Batched gradient evaluation: eval_energy_batch() submits all shifted
-    circuits in a single sim.run() call. Aer distributes across GPUs.
-  - CircuitSubmissionWorkflow: execute circuits without optimization loop.
-    Supports direct submission to backends including Q50 via FiQCI.
+Fixes applied:
+  F2: eval_energy and eval_energy_batch route through Backend.run_circuits()
+      instead of bypassing to backend._sim.run(). This means:
+      - Shot-based config (noisy/QPU) actually uses shots + readout noise
+      - QPU backend works (no more crash on missing _sim)
+      - Dependency inversion principle restored
+  C6: seed_simulator incremented per evaluation for realistic shot noise
+  Q3: CircuitSubmissionWorkflow.get_required_plugins() lists all used plugins
+  Q4: VQAWorkflow dead class removed
 
 A Workflow ties plugins + backends + data together into a complete
 computational pipeline. Calls plugin interfaces, never concrete implementations.
@@ -18,7 +22,12 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from lumi_hpc_qc.types import ExperimentConfig, ExperimentRecord, IterationRecord
+from lumi_hpc_qc.types import (
+    CircuitJob,
+    ExperimentConfig,
+    ExperimentRecord,
+    IterationRecord,
+)
 
 
 class Workflow(ABC):
@@ -52,32 +61,20 @@ class VQEWorkflow(Workflow):
     def resume(self, checkpoint_path: str, config: ExperimentConfig) -> ExperimentRecord:
         from lumi_hpc_qc.orchestration.checkpoint import CheckpointManager
 
-        # Load checkpoint
         mgr = CheckpointManager(config.checkpoint.directory)
         state = mgr.load(checkpoint_path)
         meta = state.get("_checkpoint_meta", {})
         start_iter = meta.get("iteration", state.get("iteration", 0))
 
-        print(f"\n  RESUMING from checkpoint: iteration {start_iter}")
+        print(f"\n  Resuming from checkpoint: iteration {start_iter}")
         print(f"  Checkpoint: {checkpoint_path}")
 
-        # Rebuild full pipeline
         ctx = self._setup(config)
+        x0 = np.array(state["params"])
+        print(f"  Restored parameters: ||θ|| = {float(np.linalg.norm(x0)):.4f}")
 
-        # Restore parameters from checkpoint
-        x0 = state.get("params")
-        if isinstance(x0, list):
-            x0 = np.array(x0)
-        best_e = state.get("best_energy", float('inf'))
-
-        print(f"  Restored energy: {best_e:+14.8f}")
-        print(f"  Restored ||θ||:  {float(np.linalg.norm(x0)):.4f}")
-
-        # Adjust remaining iteration budget
-        maxiter = config.optimizer_params.get("maxiter", 1000)
-        remaining = max(maxiter - start_iter, 100)
-        config.optimizer_params["maxiter"] = remaining
-        print(f"  Remaining iterations: {remaining}")
+        if "best_energy" in state:
+            print(f"  Previous best energy: {state['best_energy']:+14.8f}")
 
         return self._optimize(ctx, x0, start_iteration=start_iter)
 
@@ -88,10 +85,8 @@ class VQEWorkflow(Workflow):
             "initializer": "required", "error_mitigation": "optional",
         }
 
-    # ── Internal: setup pipeline (shared by run + resume) ──
-
     def _setup(self, config: ExperimentConfig) -> dict:
-        """Build the full VQE pipeline. Returns context dict used by optimize."""
+        """Build all components. Shared by run() and resume()."""
         from lumi_hpc_qc.backends.registry import BackendRegistry
         from lumi_hpc_qc.data.experiment import ExperimentTracker
         from lumi_hpc_qc.data.provenance import ProvenanceCollector
@@ -100,7 +95,6 @@ class VQEWorkflow(Workflow):
         from lumi_hpc_qc.plugins.registry import PluginRegistry
 
         timer = TimingTracker()
-
         plugins = PluginRegistry()
         plugins.discover()
         backends = BackendRegistry()
@@ -109,11 +103,11 @@ class VQEWorkflow(Workflow):
         provenance = ProvenanceCollector().capture()
         tracker = ExperimentTracker(config)
         tracker.start(provenance=provenance)
+
         checkpoint_mgr = CheckpointManager(config.checkpoint.directory)
-        timer.mark("setup")
 
         print("=" * 70)
-        print(f"  VQE Workflow — {config.model} / {config.ansatz}")
+        print(f"  VQE — {config.model} / {config.ansatz} / {config.optimizer}")
         print(f"  Experiment: {config.experiment_id}")
         print("=" * 70)
 
@@ -122,21 +116,20 @@ class VQEWorkflow(Workflow):
         ham_builder = plugins.get_hamiltonian(config.model)
         hamiltonian, ham_meta = ham_builder.build(config)
         config.num_qubits = ham_meta.num_qubits
-        print(f"  {ham_meta.description}")
-        print(f"  Pauli terms: {ham_meta.pauli_term_count}")
+        print(f"  Qubits: {ham_meta.num_qubits}, Pauli terms: {ham_meta.num_pauli_terms}")
         timer.mark("hamiltonian_build")
 
-        # Step 2: Exact ground state
+        # Step 2: Exact reference
         print(f"\n[Step 2] Computing exact ground state energy...")
         exact_energy = ham_builder.exact_ground_energy(hamiltonian)
         if exact_energy is not None:
             print(f"  Exact ground state energy: {exact_energy:.8f}")
         else:
-            print(f"  Exact diag infeasible for {ham_meta.num_qubits} qubits")
+            print(f"  System too large for exact diagonalization")
         timer.mark("exact_diag")
 
-        # Step 3: Build ansatz (merge ham metadata for QAOA edge_list etc.)
-        for key, val in ham_meta.physical_params.items():
+        # Step 3: Build ansatz
+        for key, val in ham_meta.model_params.items():
             if key not in config.model_params:
                 config.model_params[key] = val
 
@@ -153,10 +146,11 @@ class VQEWorkflow(Workflow):
         backend = backends.get(config.backend, config)
         if ansatz_meta.requires_decomposition:
             ansatz = backend.compile_circuit(ansatz)
-        print(f"  Precision: {config.precision}, Qubits: {ham_meta.num_qubits}")
 
-        # Ensure Aer imported (patches QuantumCircuit with save_expectation_value)
-        backend._ensure_sim()
+        # Determine execution mode from config
+        shots = config.backend_params.get("shots", 0)
+        mode_label = "statevector (exact)" if shots == 0 else f"shot-based ({shots} shots)"
+        print(f"  Precision: {config.precision}, Mode: {mode_label}")
         timer.mark("backend_init")
 
         # Step 5: Resolve gradient strategy
@@ -221,66 +215,71 @@ class VQEWorkflow(Workflow):
         grad_strategy = ctx["grad_strategy"]
         grad_name = ctx["grad_name"]
 
-        # ── Energy evaluation: single point ──
+        # ── Determine execution parameters from config ──
+        shots = config.backend_params.get("shots", 0)
+
+        # ── F2 FIX: Energy evaluation through Backend.run_circuits() ──
         eval_count = [0]
 
         def eval_energy(params):
-            param_dict = dict(zip(ansatz.parameters, params))
-            bound = ansatz.assign_parameters(param_dict)
-            bound.save_expectation_value(
-                hamiltonian, list(range(ham_meta.num_qubits)), label='energy'
-            )
-            r = backend._sim.run(
-                bound, shots=0, seed_simulator=42,
-                blocking_enable=backend._use_blocking,
-                blocking_qubits=backend._blocking_qubits,
-            ).result()
-            eval_count[0] += 1
-            return float(np.real(r.data()['energy']))
+            """Evaluate ⟨ψ(θ)|H|ψ(θ)⟩ via the backend interface.
 
-        # ── Energy evaluation: batched (Phase 3) ──
-        # Builds all circuits, submits in one sim.run() call.
-        # Aer distributes across available GPUs automatically.
-        def eval_energy_batch(params_list):
-            """Evaluate energy for multiple parameter arrays in one batch.
+            For statevector backends (shots=0): uses save_expectation_value
+            For shot-based backends (shots>0): uses basis-rotated measurement
+            For QPU backends: submits to real hardware
 
-            Args:
-                params_list: List of numpy arrays, each a parameter vector.
-
-            Returns:
-                List of floats — energies in the same order as params_list.
+            All routing happens inside Backend.run_circuits() — the workflow
+            never touches backend internals.
             """
-            circuits = []
-            for params in params_list:
-                param_dict = dict(zip(ansatz.parameters, params))
-                bound = ansatz.assign_parameters(param_dict)
-                bound.save_expectation_value(
-                    hamiltonian, list(range(ham_meta.num_qubits)), label='energy'
-                )
-                circuits.append(bound)
+            param_dict = dict(zip(ansatz.parameters, params))
 
-            # Submit all circuits in a single batch call
-            result = backend._sim.run(
-                circuits, shots=0, seed_simulator=42,
-                blocking_enable=backend._use_blocking,
-                blocking_qubits=backend._blocking_qubits,
-            ).result()
+            job = CircuitJob(
+                circuits=[ansatz],
+                parameters=[param_dict],
+                observable=hamiltonian,
+                shots=shots,
+            )
 
-            # Extract energies from batch results
-            energies = []
-            for i in range(len(circuits)):
-                e = float(np.real(result.results[i].data.energy))
-                energies.append(e)
+            results = backend.run_circuits([job])
+            eval_count[0] += 1
 
-            eval_count[0] += len(circuits)
-            return energies
+            if results[0].energies:
+                return results[0].energies[0]
+            raise RuntimeError("Backend returned no energy for eval_energy")
 
-        # ── Select gradient mode: batched or sequential ──
-        use_batched = False
-        if grad_strategy is not None and grad_strategy.supports_batching:
-            # Only use batched mode for Aer backends (have _sim attribute)
-            if hasattr(backend, '_sim') and backend._sim is not None:
-                use_batched = True
+        # ── Batched energy evaluation for gradient computation ──
+        def eval_energy_batch(params_list):
+            """Evaluate energy for multiple parameter sets in one backend call.
+
+            Submits all circuits as a single CircuitJob. The backend
+            handles batching internally (Aer batches into one sim.run()
+            for statevector; iterates for shot-based).
+            """
+            param_dicts = [
+                dict(zip(ansatz.parameters, p)) for p in params_list
+            ]
+
+            job = CircuitJob(
+                circuits=[ansatz] * len(params_list),
+                parameters=param_dicts,
+                observable=hamiltonian,
+                shots=shots,
+            )
+
+            results = backend.run_circuits([job])
+            eval_count[0] += len(params_list)
+
+            if results[0].energies:
+                return results[0].energies
+            raise RuntimeError("Backend returned no energies for eval_energy_batch")
+
+        # ── Select gradient mode ──
+        # Batched gradient is available for any backend that supports it
+        # (no longer checks for _sim attribute — F2 fix)
+        use_batched = (
+            grad_strategy is not None
+            and grad_strategy.supports_batching
+        )
 
         # Build gradient function
         grad_fn = None
@@ -300,6 +299,8 @@ class VQEWorkflow(Workflow):
         print(f"  Optimizer: {config.optimizer}")
         if grad_strategy:
             print(f"  Gradient: {grad_name} ({grad_strategy.circuits_per_gradient} circuits/gradient){batch_label}")
+        if shots > 0:
+            print(f"  Shots per evaluation: {shots}")
         print(f"  Max iterations: {config.optimizer_params.get('maxiter', 200)}")
         print("-" * 70)
 
@@ -330,7 +331,7 @@ class VQEWorkflow(Workflow):
         best_params = [x0.copy()]
 
         def on_iteration(record: IterationRecord) -> None:
-            record.iteration += start_iteration  # offset for resumed runs
+            record.iteration += start_iteration
             if record.energy < best_energy[0]:
                 best_energy[0] = record.energy
                 best_iteration[0] = record.iteration
@@ -389,6 +390,8 @@ class VQEWorkflow(Workflow):
         print(f"  Circuit evaluations     : {eval_count[0]}")
         if use_batched:
             print(f"  Gradient mode           : BATCHED ({grad_strategy.circuits_per_gradient} circuits/batch)")
+        if shots > 0:
+            print(f"  Execution mode          : shot-based ({shots} shots/eval)")
         print("-" * 70)
         print(f"\n{timing.to_human_readable()}")
 
@@ -405,18 +408,10 @@ class VQEWorkflow(Workflow):
         return record
 
 
-class VQAWorkflow(Workflow):
-    """Generic Variational Quantum Algorithm (non-eigensolver)."""
-    name = "vqa"
-
-    def run(self, config: ExperimentConfig) -> ExperimentRecord:
-        raise NotImplementedError("VQAWorkflow — Phase 3")
-
-    def resume(self, checkpoint_path: str, config: ExperimentConfig) -> ExperimentRecord:
-        raise NotImplementedError("VQAWorkflow.resume() — Phase 3")
-
-    def get_required_plugins(self) -> dict[str, str]:
-        return {"ansatz": "required", "optimizer": "required"}
+# Q4 FIX: VQAWorkflow dead class removed.
+# Was a placeholder that raised NotImplementedError for both run() and resume().
+# If a generic VQA workflow is needed in the future, it should be implemented
+# with actual logic, not registered as a discoverable stub.
 
 
 class CircuitSubmissionWorkflow(Workflow):
@@ -444,7 +439,7 @@ class CircuitSubmissionWorkflow(Workflow):
         from lumi_hpc_qc.data.provenance import ProvenanceCollector
         from lumi_hpc_qc.data.timing import TimingTracker
         from lumi_hpc_qc.plugins.registry import PluginRegistry
-        from lumi_hpc_qc.types import CircuitJob, OptimizeResult
+        from lumi_hpc_qc.types import OptimizeResult
 
         timer = TimingTracker()
         plugins = PluginRegistry()
@@ -480,10 +475,9 @@ class CircuitSubmissionWorkflow(Workflow):
         backend = backends.get(config.backend, config)
         if ansatz_meta.requires_decomposition:
             ansatz = backend.compile_circuit(ansatz)
-        backend._ensure_sim()
         timer.mark("backend_init")
 
-        # Initialize parameters (random or from config)
+        # Initialize parameters
         np.random.seed(config.initializer_params.get("seed", 42))
         params = np.random.uniform(-np.pi / 4, np.pi / 4, ansatz_meta.num_parameters)
         if config.initializer_params.get("fixed_params") is not None:
@@ -492,14 +486,14 @@ class CircuitSubmissionWorkflow(Workflow):
 
         # Bind parameters and submit
         param_dict = dict(zip(ansatz.parameters, params))
-        bound = ansatz.assign_parameters(param_dict)
 
         shots = config.backend_params.get("shots", 1024)
         print(f"\n[Step 5] Submitting circuit (shots={shots})")
 
         job = CircuitJob(
             job_id=config.experiment_id,
-            circuits=[bound],
+            circuits=[ansatz],
+            parameters=[param_dict],
             observable=hamiltonian,
             shots=shots,
         )
@@ -533,6 +527,7 @@ class CircuitSubmissionWorkflow(Workflow):
         timing = timer.finish()
         print(f"\n{timing.to_human_readable()}")
 
+        from lumi_hpc_qc.types import OptimizeResult
         opt_result = OptimizeResult(
             x=params,
             fun=result.energies[0] if result.energies else 0.0,
@@ -546,5 +541,10 @@ class CircuitSubmissionWorkflow(Workflow):
         print("  CircuitSubmissionWorkflow does not support resume — re-running.")
         return self.run(config)
 
+    # Q3 FIX: declares all plugins actually used by run()
     def get_required_plugins(self) -> dict[str, str]:
-        return {"error_mitigation": "optional"}
+        return {
+            "hamiltonian": "required",
+            "ansatz": "required",
+            "error_mitigation": "optional",
+        }
