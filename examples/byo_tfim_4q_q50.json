@@ -1,0 +1,13 @@
+{
+  "description": "TFIM 4-qubit open chain, J=1.0, g=1.0",
+  "num_qubits": 4,
+  "pauli_terms": [
+    ["ZZII", -1.0],
+    ["IZZI", -1.0],
+    ["IIZZ", -1.0],
+    ["XIII", -1.0],
+    ["IXII", -1.0],
+    ["IIXI", -1.0],
+    ["IIIX", -1.0]
+  ]
+}
