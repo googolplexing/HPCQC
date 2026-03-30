@@ -46,7 +46,7 @@ class ByoHamiltonian(HamiltonianBuilder):
             desc = data.get("description", desc)
 
         meta = HamiltonianMetadata(
-            num_qubits=ham.num_qubits, pauli_term_count=len(ham),
+            num_qubits=ham.num_qubits, num_pauli_terms=len(ham),
             qubit_mapping="user_defined", description=desc,
             physical_params={"source": ham_file or "inline"},
         )

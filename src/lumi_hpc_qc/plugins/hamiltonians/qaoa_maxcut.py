@@ -44,7 +44,7 @@ class QaoaMaxcutHamiltonian(HamiltonianBuilder):
 
         ham = SparsePauliOp.from_list(pauli_list).simplify()
         meta = HamiltonianMetadata(
-            num_qubits=n, pauli_term_count=len(ham), qubit_mapping="direct",
+            num_qubits=n, num_pauli_terms=len(ham), qubit_mapping="direct",
             description=f"QAOA MaxCut {graph_type} graph, {n} nodes, {len(edges)} edges",
             physical_params={"num_nodes": n, "num_edges": len(edges),
                              "edge_list": edges, "graph_type": graph_type},

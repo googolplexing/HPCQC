@@ -44,7 +44,7 @@ class MolecularHamiltonian(HamiltonianBuilder):
                 raise
 
         meta = HamiltonianMetadata(
-            num_qubits=nq, pauli_term_count=len(ham), qubit_mapping=mapper_type,
+            num_qubits=nq, num_pauli_terms=len(ham), qubit_mapping=mapper_type,
             description=f"Molecular VQE: {molecule}, {basis} basis, {nq} qubits",
             physical_params={"molecule": molecule, "basis": basis, "distance": distance},
         )

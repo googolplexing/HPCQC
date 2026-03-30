@@ -26,7 +26,7 @@ class HeisenbergHamiltonian(HamiltonianBuilder):
         )
         nq = ham.num_qubits
         meta = HamiltonianMetadata(
-            num_qubits=nq, pauli_term_count=len(ham), qubit_mapping="direct",
+            num_qubits=nq, num_pauli_terms=len(ham), qubit_mapping="direct",
             description=f"Heisenberg on {p.get('lattice_rows',3)}x{p.get('lattice_cols',4)}, {nq} qubits",
             physical_params={k: p.get(k) for k in ["jx","jy","jz","h_field"]},
         )

@@ -333,7 +333,7 @@ class AnsatzMetadata:
 class HamiltonianMetadata:
     """Metadata about a built Hamiltonian."""
     num_qubits: int = 0
-    pauli_term_count: int = 0
+    num_pauli_terms: int = 0
     qubit_mapping: str = ""             # "jordan_wigner", "parity", etc.
     description: str = ""               # human-readable summary
     physical_params: dict[str, Any] = field(default_factory=dict)

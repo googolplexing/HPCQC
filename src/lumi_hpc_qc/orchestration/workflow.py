@@ -129,7 +129,7 @@ class VQEWorkflow(Workflow):
         timer.mark("exact_diag")
 
         # Step 3: Build ansatz
-        for key, val in ham_meta.model_params.items():
+        for key, val in ham_meta.physical_params.items():
             if key not in config.model_params:
                 config.model_params[key] = val
 

@@ -28,7 +28,7 @@ class FermiHubbardHamiltonian(HamiltonianBuilder):
         ham, raw_meta = self._build_fh(rows, cols, t, u, bc)
         meta = HamiltonianMetadata(
             num_qubits=raw_meta["num_qubits"],
-            pauli_term_count=raw_meta["num_pauli_terms"],
+            num_pauli_terms=raw_meta["num_pauli_terms"],
             qubit_mapping="jordan_wigner",
             description=raw_meta["description"],
             physical_params={"lattice_rows": rows, "lattice_cols": cols,
