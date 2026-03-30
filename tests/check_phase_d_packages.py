@@ -2,29 +2,18 @@
 # SPDX-License-Identifier: SSPL-1.0
 """Quick check that all Phase D export dependencies are present in the container."""
 import sys
+import importlib.metadata
 
 missing = []
 
-try:
-    import jsonschema
-    print(f"jsonschema: {jsonschema.__version__}")
-except ImportError:
-    print("jsonschema: MISSING")
-    missing.append("jsonschema")
-
-try:
-    import pyarrow
-    print(f"pyarrow:    {pyarrow.__version__}")
-except ImportError:
-    print("pyarrow:    MISSING")
-    missing.append("pyarrow")
-
-try:
-    import h5py
-    print(f"h5py:       {h5py.__version__}")
-except ImportError:
-    print("h5py:       MISSING")
-    missing.append("h5py")
+for package in ("jsonschema", "pyarrow", "h5py"):
+    try:
+        __import__(package)
+        version = importlib.metadata.version(package)
+        print(f"{package:<12} {version}")
+    except (ImportError, importlib.metadata.PackageNotFoundError):
+        print(f"{package:<12} MISSING")
+        missing.append(package)
 
 if missing:
     print(f"\nMISSING packages: {', '.join(missing)}")
