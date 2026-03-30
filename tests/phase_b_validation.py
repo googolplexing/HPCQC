@@ -17,7 +17,7 @@ project_dir = os.environ.get("PROJECT_DIR",
               os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.join(project_dir, "src"))
 
-CALIBRATION_FILE = os.path.join(project_dir, "examples", "q50_calibration_20260326.json")
+CALIBRATION_FILE = os.path.join(project_dir, "examples", "q50_calibration_20260330.json")
 
 passed = 0
 failed = 0
@@ -158,77 +158,77 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
-print("\n=== V5: Small circuit on Q50 topology — no SWAPs needed ===")
+print("\n=== V5: 2q circuit on Q50 topology — no SWAPs needed ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
     from lumi_hpc_qc.backends.noise_model import extract_coupling_map
     from qiskit import QuantumCircuit, transpile
 
-    # Use 4 qubits — the coupling map has connected edges for these
-    cmap = extract_coupling_map(CALIBRATION_FILE, 4)
-    if cmap is not None and len(cmap.get_edges()) > 0:
-        # Build a 2-qubit circuit (subset of 4-qubit coupling map)
-        qc = QuantumCircuit(4)
-        qc.cx(0, 1)  # Use qubits within the connected part
+    # 2 qubits on full Q50 — top 2 by fidelity should be directly connected
+    cmap_2q = extract_coupling_map(CALIBRATION_FILE, 2)
+    if cmap_2q is not None and len(cmap_2q.get_edges()) > 0:
+        qc = QuantumCircuit(2)
+        qc.cx(0, 1)
         qc.h(0)
-        pre_depth = qc.depth()
 
-        transpiled = transpile(qc, coupling_map=cmap, optimization_level=2, seed_transpiler=42)
-        post_depth = transpiled.depth()
-        post_ops = transpiled.count_ops()
-        swap_count = post_ops.get('swap', 0)
+        transpiled = transpile(qc, coupling_map=cmap_2q, optimization_level=2, seed_transpiler=42)
+        swap_count = transpiled.count_ops().get('swap', 0)
 
-        check("Circuit transpiles successfully", True)
-        check("Minimal or no SWAPs for small circuit", swap_count <= 1,
+        check("2q circuit transpiles on Q50 topology", True)
+        check("No SWAPs for directly-connected pair", swap_count == 0,
               f"SWAPs={swap_count}")
     else:
-        # Coupling map exists but may lack edges for 2 qubits
-        # This is a calibration data limitation, not a code bug
-        check("Coupling map has edges", cmap is not None and len(cmap.get_edges()) > 0,
-              f"edges: {len(cmap.get_edges()) if cmap else 0} — "
-              "calibration data may be too sparse for this test")
+        # Top-2 qubits may not be directly connected — use 4 qubits instead
+        cmap_4q = extract_coupling_map(CALIBRATION_FILE, 4)
+        if cmap_4q and len(cmap_4q.get_edges()) > 0:
+            qc = QuantumCircuit(4)
+            qc.cx(0, 1)
+            qc.h(0)
+            transpiled = transpile(qc, coupling_map=cmap_4q, optimization_level=2, seed_transpiler=42)
+            check("Small circuit transpiles on Q50 4q topology", True)
+        else:
+            check("Q50 coupling map has edges", False)
 except Exception as e:
     check("V5 execution", False, f"Exception: {e}")
     traceback.print_exc()
 
 
 # ══════════════════════════════════════════════════════════════════════
-print("\n=== V6: Larger circuit needs SWAPs on constrained topology ===")
+print("\n=== V6: 8q circuit on Q50 topology — SWAPs needed ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
     from qiskit.circuit.library import EfficientSU2
 
-    # Use 4 qubits with linear entanglement — SU2 creates CX(0,1), CX(1,2), CX(2,3)
-    # On a coupling map with only some edges, routing adds SWAPs
-    su2_4q = EfficientSU2(num_qubits=4, reps=2, entanglement="full")
-    su2_dec = su2_4q.decompose().decompose().decompose()
-    pre_depth = su2_dec.depth()
-    pre_cx = sum(v for k, v in su2_dec.count_ops().items() if k in ('cx', 'cz'))
+    # SU2 with "full" entanglement on 8 qubits — all-to-all CX gates
+    # On Q50's heavy-hex topology, non-adjacent pairs need SWAPs
+    su2_8q = EfficientSU2(num_qubits=8, reps=2, entanglement="full")
+    su2_dec = su2_8q.decompose().decompose().decompose()
 
-    cmap_4q = extract_coupling_map(CALIBRATION_FILE, 4)
-    if cmap_4q is not None and len(cmap_4q.get_edges()) > 0:
-        # Full connectivity (no coupling map)
-        full_transpiled = transpile(su2_dec, optimization_level=2, seed_transpiler=42)
-        full_depth = full_transpiled.depth()
+    # Full connectivity (no routing)
+    full_transpiled = transpile(su2_dec, optimization_level=2, seed_transpiler=42)
+    full_depth = full_transpiled.depth()
+    full_gates = full_transpiled.size()
 
-        # Constrained topology
-        topo_transpiled = transpile(su2_dec, coupling_map=cmap_4q,
+    # Q50 topology (routing needed)
+    cmap_8q = extract_coupling_map(CALIBRATION_FILE, 8)
+    if cmap_8q and len(cmap_8q.get_edges()) >= 6:
+        topo_transpiled = transpile(su2_dec, coupling_map=cmap_8q,
                                     optimization_level=2, seed_transpiler=42)
         topo_depth = topo_transpiled.depth()
         topo_gates = topo_transpiled.size()
 
-        check("Topology-constrained depth >= full connectivity depth",
+        check("Q50 topology increases depth vs full connectivity",
               topo_depth >= full_depth,
-              f"full={full_depth}, topo={topo_depth}")
-        check("Topology-constrained has more gates (routing overhead)",
-              topo_gates >= su2_dec.size(),
-              f"original={su2_dec.size()}, topo={topo_gates}")
-        print(f"    Full connectivity depth: {full_depth}")
-        print(f"    Q50 topology depth: {topo_depth}")
-        print(f"    Routing overhead: {topo_depth - full_depth} additional layers")
+              f"full={full_depth}, Q50={topo_depth}")
+        check("Q50 topology adds gates (routing overhead)",
+              topo_gates > full_gates,
+              f"full={full_gates}, Q50={topo_gates}")
+        print(f"    Full connectivity: depth={full_depth}, gates={full_gates}")
+        print(f"    Q50 topology:      depth={topo_depth}, gates={topo_gates}")
+        print(f"    Routing overhead:  +{topo_depth - full_depth} depth, +{topo_gates - full_gates} gates")
     else:
-        check("4q coupling map has edges", False,
-              "Calibration data too sparse — V6 needs connected topology")
+        check("8q Q50 coupling map sufficient", False,
+              f"edges: {len(cmap_8q.get_edges()) if cmap_8q else 0}")
 except Exception as e:
     check("V6 execution", False, f"Exception: {e}")
     traceback.print_exc()

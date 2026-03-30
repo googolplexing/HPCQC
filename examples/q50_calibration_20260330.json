@@ -1,0 +1,658 @@
+{
+  "calibration_set_id": "b9890ab3-0383-44d4-a0de-34ec3f920d1e",
+  "timestamp": "2026-03-29T18:16:26.190342Z",
+  "device": "VTT Q50 (Aalto Helmi)",
+  "notes": "Full Q50 calibration from IQM/FiQCI, converted from native format",
+  "qubits": {
+    "QB1": {
+      "t1_us": 32.97,
+      "t2_us": 17.36,
+      "readout_fidelity": 0.98625,
+      "single_gate_error": 0.001766
+    },
+    "QB10": {
+      "t1_us": 33.08,
+      "t2_us": 2.62,
+      "readout_fidelity": 0.96275,
+      "single_gate_error": 0.000935
+    },
+    "QB11": {
+      "t1_us": 28.77,
+      "t2_us": 5.1,
+      "readout_fidelity": 0.9765,
+      "single_gate_error": 0.000771
+    },
+    "QB12": {
+      "t1_us": 33.88,
+      "t2_us": 4.51,
+      "readout_fidelity": 0.93775,
+      "single_gate_error": 0.00071
+    },
+    "QB13": {
+      "t1_us": 26.64,
+      "t2_us": 10.77,
+      "readout_fidelity": 0.98075,
+      "single_gate_error": 0.002328
+    },
+    "QB14": {
+      "t1_us": 38.74,
+      "t2_us": 7.35,
+      "readout_fidelity": 0.95825,
+      "single_gate_error": 0.000545
+    },
+    "QB15": {
+      "t1_us": 28.68,
+      "t2_us": 28.01,
+      "readout_fidelity": 0.96925,
+      "single_gate_error": 0.001001
+    },
+    "QB16": {
+      "t1_us": 24.16,
+      "t2_us": 15.4,
+      "readout_fidelity": 0.976,
+      "single_gate_error": 0.001507
+    },
+    "QB17": {
+      "t1_us": 47.38,
+      "t2_us": 16.77,
+      "readout_fidelity": 0.9625,
+      "single_gate_error": 0.002153
+    },
+    "QB18": {
+      "t1_us": 44.08,
+      "t2_us": 5.67,
+      "readout_fidelity": 0.945,
+      "single_gate_error": 0.000934
+    },
+    "QB19": {
+      "t1_us": 35.42,
+      "t2_us": 13.75,
+      "readout_fidelity": 0.95225,
+      "single_gate_error": 0.000747
+    },
+    "QB2": {
+      "t1_us": 28.23,
+      "t2_us": 6.15,
+      "readout_fidelity": 0.98025,
+      "single_gate_error": 0.000618
+    },
+    "QB20": {
+      "t1_us": 14.74,
+      "t2_us": 10.69,
+      "readout_fidelity": 0.972,
+      "single_gate_error": 0.002224
+    },
+    "QB21": {
+      "t1_us": 21.13,
+      "t2_us": 12.93,
+      "readout_fidelity": 0.9415,
+      "single_gate_error": 0.001188
+    },
+    "QB22": {
+      "t1_us": 17.52,
+      "t2_us": 8.58,
+      "readout_fidelity": 0.967,
+      "single_gate_error": 0.001345
+    },
+    "QB23": {
+      "t1_us": 32.57,
+      "t2_us": 5.65,
+      "readout_fidelity": 0.96525,
+      "single_gate_error": 0.000745
+    },
+    "QB24": {
+      "t1_us": 18.78,
+      "t2_us": 12.62,
+      "readout_fidelity": 0.9465,
+      "single_gate_error": 0.000966
+    },
+    "QB25": {
+      "t1_us": 35.56,
+      "t2_us": 26.12,
+      "readout_fidelity": 0.9715,
+      "single_gate_error": 0.001381
+    },
+    "QB26": {
+      "t1_us": 30.72,
+      "t2_us": 10.54,
+      "readout_fidelity": 0.98125,
+      "single_gate_error": 0.000928
+    },
+    "QB27": {
+      "t1_us": 23.05,
+      "t2_us": 11.33,
+      "readout_fidelity": 0.962,
+      "single_gate_error": 0.000942
+    },
+    "QB28": {
+      "t1_us": 30.2,
+      "t2_us": 15.69,
+      "readout_fidelity": 0.9495,
+      "single_gate_error": 0.000815
+    },
+    "QB29": {
+      "t1_us": 17.23,
+      "t2_us": 7.5,
+      "readout_fidelity": 0.97725,
+      "single_gate_error": 0.001039
+    },
+    "QB3": {
+      "t1_us": 47.12,
+      "t2_us": 15.18,
+      "readout_fidelity": 0.94025,
+      "single_gate_error": 0.000636
+    },
+    "QB30": {
+      "t1_us": 26.75,
+      "t2_us": 4.66,
+      "readout_fidelity": 0.96075,
+      "single_gate_error": 0.002178
+    },
+    "QB31": {
+      "t1_us": 15.27,
+      "t2_us": 8.15,
+      "readout_fidelity": 0.9795,
+      "single_gate_error": 0.001899
+    },
+    "QB33": {
+      "t1_us": 37.35,
+      "t2_us": 12.16,
+      "readout_fidelity": 0.92475,
+      "single_gate_error": 0.001714
+    },
+    "QB34": {
+      "t1_us": 28.69,
+      "t2_us": 6.36,
+      "readout_fidelity": 0.9635,
+      "single_gate_error": 0.000821
+    },
+    "QB35": {
+      "t1_us": 25.34,
+      "t2_us": 3.42,
+      "readout_fidelity": 0.935,
+      "single_gate_error": 0.000912
+    },
+    "QB36": {
+      "t1_us": 20.98,
+      "t2_us": 7.4,
+      "readout_fidelity": 0.975,
+      "single_gate_error": 0.001838
+    },
+    "QB37": {
+      "t1_us": 19.88,
+      "t2_us": 4.48,
+      "readout_fidelity": 0.969,
+      "single_gate_error": 0.004661
+    },
+    "QB38": {
+      "t1_us": 8.97,
+      "t2_us": 7.28,
+      "readout_fidelity": 0.94375,
+      "single_gate_error": 0.001624
+    },
+    "QB39": {
+      "t1_us": 26.33,
+      "t2_us": 7.64,
+      "readout_fidelity": 0.96175,
+      "single_gate_error": 0.000913
+    },
+    "QB4": {
+      "t1_us": 46.52,
+      "t2_us": 8.91,
+      "readout_fidelity": 0.9145,
+      "single_gate_error": 0.002829
+    },
+    "QB40": {
+      "t1_us": 43.48,
+      "t2_us": 12.51,
+      "readout_fidelity": 0.96475,
+      "single_gate_error": 0.000475
+    },
+    "QB41": {
+      "t1_us": 46.04,
+      "t2_us": 15.05,
+      "readout_fidelity": 0.974,
+      "single_gate_error": 0.001292
+    },
+    "QB42": {
+      "t1_us": 26.08,
+      "t2_us": 13.89,
+      "readout_fidelity": 0.97775,
+      "single_gate_error": 0.001326
+    },
+    "QB43": {
+      "t1_us": 30.77,
+      "t2_us": 9.49,
+      "readout_fidelity": 0.96875,
+      "single_gate_error": 0.000805
+    },
+    "QB44": {
+      "t1_us": 22.7,
+      "t2_us": 8.75,
+      "readout_fidelity": 0.809,
+      "single_gate_error": 0.004281
+    },
+    "QB45": {
+      "t1_us": 14.65,
+      "t2_us": 5.71,
+      "readout_fidelity": 0.96425,
+      "single_gate_error": 0.004525
+    },
+    "QB46": {
+      "t1_us": 39.4,
+      "t2_us": 4.57,
+      "readout_fidelity": 0.97575,
+      "single_gate_error": 0.001002
+    },
+    "QB47": {
+      "t1_us": 27.81,
+      "t2_us": 3.67,
+      "readout_fidelity": 0.95325,
+      "single_gate_error": 0.001149
+    },
+    "QB48": {
+      "t1_us": 27.88,
+      "t2_us": 11.62,
+      "readout_fidelity": 0.98475,
+      "single_gate_error": 0.000898
+    },
+    "QB49": {
+      "t1_us": 18.98,
+      "t2_us": 5.44,
+      "readout_fidelity": 0.968,
+      "single_gate_error": 0.000998
+    },
+    "QB5": {
+      "t1_us": 38.59,
+      "t2_us": 6.09,
+      "readout_fidelity": 0.96875,
+      "single_gate_error": 0.000885
+    },
+    "QB50": {
+      "t1_us": 33.65,
+      "t2_us": 3.22,
+      "readout_fidelity": 0.97025,
+      "single_gate_error": 0.000929
+    },
+    "QB51": {
+      "t1_us": 22.98,
+      "t2_us": 6.03,
+      "readout_fidelity": 0.972,
+      "single_gate_error": 0.001014
+    },
+    "QB52": {
+      "t1_us": 31.2,
+      "t2_us": 3.54,
+      "readout_fidelity": 0.968,
+      "single_gate_error": 0.001251
+    },
+    "QB53": {
+      "t1_us": 45.43,
+      "t2_us": 7.02,
+      "readout_fidelity": 0.94975,
+      "single_gate_error": 0.001096
+    },
+    "QB54": {
+      "t1_us": 23.55,
+      "t2_us": 0.36,
+      "readout_fidelity": 0.96675,
+      "single_gate_error": 0.014376
+    },
+    "QB6": {
+      "t1_us": 29.06,
+      "t2_us": 22.39,
+      "readout_fidelity": 0.97975,
+      "single_gate_error": 0.000601
+    },
+    "QB7": {
+      "t1_us": 46.63,
+      "t2_us": 19.23,
+      "readout_fidelity": 0.96375,
+      "single_gate_error": 0.00178
+    },
+    "QB8": {
+      "t1_us": 47.51,
+      "t2_us": 16.13,
+      "readout_fidelity": 0.97675,
+      "single_gate_error": 0.000834
+    },
+    "QB9": {
+      "t1_us": 9.4,
+      "t2_us": 4.4,
+      "readout_fidelity": 0.95575,
+      "single_gate_error": 0.003219
+    }
+  },
+  "two_qubit_gates": {
+    "QB11-QB10": {
+      "cz_fidelity": 0.964246,
+      "cz_error": 0.035754
+    },
+    "QB11-QB12": {
+      "cz_fidelity": 0.976289,
+      "cz_error": 0.023711
+    },
+    "QB11-QB19": {
+      "cz_fidelity": 0.977757,
+      "cz_error": 0.022243
+    },
+    "QB11-QB5": {
+      "cz_fidelity": 0.991988,
+      "cz_error": 0.008012
+    },
+    "QB13-QB12": {
+      "cz_fidelity": 0.995398,
+      "cz_error": 0.004602
+    },
+    "QB13-QB14": {
+      "cz_fidelity": 0.985761,
+      "cz_error": 0.014239
+    },
+    "QB13-QB21": {
+      "cz_fidelity": 0.991135,
+      "cz_error": 0.008865
+    },
+    "QB13-QB7": {
+      "cz_fidelity": 0.991787,
+      "cz_error": 0.008213
+    },
+    "QB16-QB15": {
+      "cz_fidelity": 0.982869,
+      "cz_error": 0.017131
+    },
+    "QB16-QB17": {
+      "cz_fidelity": 0.994722,
+      "cz_error": 0.005278
+    },
+    "QB16-QB24": {
+      "cz_fidelity": 0.993376,
+      "cz_error": 0.006624
+    },
+    "QB16-QB8": {
+      "cz_fidelity": 0.984788,
+      "cz_error": 0.015212
+    },
+    "QB18-QB17": {
+      "cz_fidelity": 0.994344,
+      "cz_error": 0.005656
+    },
+    "QB18-QB19": {
+      "cz_fidelity": 0.990567,
+      "cz_error": 0.009433
+    },
+    "QB18-QB26": {
+      "cz_fidelity": 0.989882,
+      "cz_error": 0.010118
+    },
+    "QB1-QB2": {
+      "cz_fidelity": 0.99046,
+      "cz_error": 0.00954
+    },
+    "QB1-QB5": {
+      "cz_fidelity": 0.9906,
+      "cz_error": 0.0094
+    },
+    "QB20-QB21": {
+      "cz_fidelity": 0.732046,
+      "cz_error": 0.267954
+    },
+    "QB22-QB14": {
+      "cz_fidelity": 0.996008,
+      "cz_error": 0.003992
+    },
+    "QB22-QB21": {
+      "cz_fidelity": 0.991468,
+      "cz_error": 0.008532
+    },
+    "QB22-QB30": {
+      "cz_fidelity": 0.991495,
+      "cz_error": 0.008505
+    },
+    "QB23-QB15": {
+      "cz_fidelity": 0.980431,
+      "cz_error": 0.019569
+    },
+    "QB23-QB24": {
+      "cz_fidelity": 0.991447,
+      "cz_error": 0.008553
+    },
+    "QB25-QB17": {
+      "cz_fidelity": 0.993171,
+      "cz_error": 0.006829
+    },
+    "QB25-QB24": {
+      "cz_fidelity": 0.992755,
+      "cz_error": 0.007245
+    },
+    "QB25-QB26": {
+      "cz_fidelity": 0.993144,
+      "cz_error": 0.006856
+    },
+    "QB25-QB33": {
+      "cz_fidelity": 0.965184,
+      "cz_error": 0.034816
+    },
+    "QB27-QB19": {
+      "cz_fidelity": 0.991014,
+      "cz_error": 0.008986
+    },
+    "QB27-QB26": {
+      "cz_fidelity": 0.991885,
+      "cz_error": 0.008115
+    },
+    "QB27-QB28": {
+      "cz_fidelity": 0.994983,
+      "cz_error": 0.005017
+    },
+    "QB27-QB35": {
+      "cz_fidelity": 0.992001,
+      "cz_error": 0.007999
+    },
+    "QB29-QB21": {
+      "cz_fidelity": 0.989919,
+      "cz_error": 0.010081
+    },
+    "QB29-QB28": {
+      "cz_fidelity": 0.98827,
+      "cz_error": 0.01173
+    },
+    "QB29-QB30": {
+      "cz_fidelity": 0.986106,
+      "cz_error": 0.013894
+    },
+    "QB29-QB37": {
+      "cz_fidelity": 0.985072,
+      "cz_error": 0.014928
+    },
+    "QB31-QB30": {
+      "cz_fidelity": 0.980617,
+      "cz_error": 0.019383
+    },
+    "QB31-QB39": {
+      "cz_fidelity": 0.985269,
+      "cz_error": 0.014731
+    },
+    "QB34-QB26": {
+      "cz_fidelity": 0.980652,
+      "cz_error": 0.019348
+    },
+    "QB34-QB33": {
+      "cz_fidelity": 0.98674,
+      "cz_error": 0.01326
+    },
+    "QB34-QB35": {
+      "cz_fidelity": 0.994154,
+      "cz_error": 0.005846
+    },
+    "QB34-QB42": {
+      "cz_fidelity": 0.924972,
+      "cz_error": 0.075028
+    },
+    "QB36-QB28": {
+      "cz_fidelity": 0.992012,
+      "cz_error": 0.007988
+    },
+    "QB36-QB35": {
+      "cz_fidelity": 0.985391,
+      "cz_error": 0.014609
+    },
+    "QB36-QB37": {
+      "cz_fidelity": 0.987848,
+      "cz_error": 0.012152
+    },
+    "QB36-QB44": {
+      "cz_fidelity": 0.991096,
+      "cz_error": 0.008904
+    },
+    "QB38-QB30": {
+      "cz_fidelity": 0.984273,
+      "cz_error": 0.015727
+    },
+    "QB38-QB37": {
+      "cz_fidelity": 0.982638,
+      "cz_error": 0.017362
+    },
+    "QB38-QB39": {
+      "cz_fidelity": 0.996984,
+      "cz_error": 0.003016
+    },
+    "QB38-QB46": {
+      "cz_fidelity": 0.979143,
+      "cz_error": 0.020857
+    },
+    "QB41-QB33": {
+      "cz_fidelity": 0.987624,
+      "cz_error": 0.012376
+    },
+    "QB41-QB40": {
+      "cz_fidelity": 0.994624,
+      "cz_error": 0.005376
+    },
+    "QB41-QB42": {
+      "cz_fidelity": 0.99093,
+      "cz_error": 0.00907
+    },
+    "QB41-QB47": {
+      "cz_fidelity": 0.989509,
+      "cz_error": 0.010491
+    },
+    "QB43-QB35": {
+      "cz_fidelity": 0.995047,
+      "cz_error": 0.004953
+    },
+    "QB43-QB42": {
+      "cz_fidelity": 0.985967,
+      "cz_error": 0.014033
+    },
+    "QB43-QB44": {
+      "cz_fidelity": 0.990224,
+      "cz_error": 0.009776
+    },
+    "QB43-QB49": {
+      "cz_fidelity": 0.985077,
+      "cz_error": 0.014923
+    },
+    "QB45-QB37": {
+      "cz_fidelity": 0.986145,
+      "cz_error": 0.013855
+    },
+    "QB45-QB46": {
+      "cz_fidelity": 0.98906,
+      "cz_error": 0.01094
+    },
+    "QB45-QB51": {
+      "cz_fidelity": 0.991521,
+      "cz_error": 0.008479
+    },
+    "QB48-QB42": {
+      "cz_fidelity": 0.964797,
+      "cz_error": 0.035203
+    },
+    "QB48-QB47": {
+      "cz_fidelity": 0.979707,
+      "cz_error": 0.020293
+    },
+    "QB48-QB49": {
+      "cz_fidelity": 0.983572,
+      "cz_error": 0.016428
+    },
+    "QB48-QB52": {
+      "cz_fidelity": 0.986429,
+      "cz_error": 0.013571
+    },
+    "QB4-QB10": {
+      "cz_fidelity": 0.987847,
+      "cz_error": 0.012153
+    },
+    "QB4-QB3": {
+      "cz_fidelity": 0.992195,
+      "cz_error": 0.007805
+    },
+    "QB4-QB5": {
+      "cz_fidelity": 0.991892,
+      "cz_error": 0.008108
+    },
+    "QB50-QB44": {
+      "cz_fidelity": 0.992263,
+      "cz_error": 0.007737
+    },
+    "QB50-QB49": {
+      "cz_fidelity": 0.991742,
+      "cz_error": 0.008258
+    },
+    "QB50-QB51": {
+      "cz_fidelity": 0.99181,
+      "cz_error": 0.00819
+    },
+    "QB50-QB54": {
+      "cz_fidelity": 0.940515,
+      "cz_error": 0.059485
+    },
+    "QB53-QB49": {
+      "cz_fidelity": 0.972299,
+      "cz_error": 0.027701
+    },
+    "QB53-QB52": {
+      "cz_fidelity": 0.991263,
+      "cz_error": 0.008737
+    },
+    "QB53-QB54": {
+      "cz_fidelity": 0.940575,
+      "cz_error": 0.059425
+    },
+    "QB6-QB12": {
+      "cz_fidelity": 0.995438,
+      "cz_error": 0.004562
+    },
+    "QB6-QB2": {
+      "cz_fidelity": 0.994498,
+      "cz_error": 0.005502
+    },
+    "QB6-QB5": {
+      "cz_fidelity": 0.994093,
+      "cz_error": 0.005907
+    },
+    "QB6-QB7": {
+      "cz_fidelity": 0.994914,
+      "cz_error": 0.005086
+    },
+    "QB9-QB10": {
+      "cz_fidelity": 0.979297,
+      "cz_error": 0.020703
+    },
+    "QB9-QB17": {
+      "cz_fidelity": 0.986053,
+      "cz_error": 0.013947
+    },
+    "QB9-QB3": {
+      "cz_fidelity": 0.986074,
+      "cz_error": 0.013926
+    },
+    "QB9-QB8": {
+      "cz_fidelity": 0.990259,
+      "cz_error": 0.009741
+    }
+  },
+  "single_gate_time_ns": 20,
+  "cz_gate_time_ns": 100
+}
