@@ -73,9 +73,9 @@ class TestTFIMHamiltonian(unittest.TestCase):
         E_ground = eigvals[0]
 
         # For 2-qubit TFIM with J=1, g=1 (open chain):
-        # Ground state energy = -(1 + sqrt(2)) ≈ -2.41421
-        # This can be verified analytically.
-        E_exact_ref = -(1 + np.sqrt(2))
+        # H = -Z0Z1 - X0 - X1, eigenvalues: {-√5, -1, 1, √5}
+        # Ground state energy = -√5 ≈ -2.23607
+        E_exact_ref = -np.sqrt(5)
 
         self.assertAlmostEqual(E_ground, E_exact_ref, places=8,
             msg=f"TFIM 2q ground energy: got {E_ground}, expected {E_exact_ref}")

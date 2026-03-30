@@ -46,7 +46,7 @@ class TestCheckpointManager:
 
         loaded = mgr.load(path)
         assert loaded["best_energy"] == -5.123
-        assert loaded["_iteration"] == 42
+        assert loaded["iteration"] == 42
         assert loaded["_experiment_id"] == "test123"
         # numpy array round-tripped through JSON
         assert loaded["current_params"]["__ndarray__"] is True

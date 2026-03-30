@@ -26,8 +26,12 @@ class TestExperimentId:
         assert len(parts) == 2
         # First part is 12-char hex
         assert len(parts[0]) == 12
-        # Second part is "interactive" (no SLURM in test env)
-        assert parts[1] == "interactive"
+        # Second part is SLURM job ID (inside SLURM) or "interactive" (outside)
+        import os
+        if "SLURM_JOB_ID" in os.environ:
+            assert parts[1] == os.environ["SLURM_JOB_ID"]
+        else:
+            assert parts[1] == "interactive"
 
     def test_unique(self):
         ids = {_generate_experiment_id() for _ in range(100)}
