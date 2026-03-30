@@ -47,10 +47,10 @@ class TestCheckpointManager:
         loaded = mgr.load(path)
         assert loaded["best_energy"] == -5.123
         assert loaded["iteration"] == 42
-        assert loaded["experiment_id"] == "test123"
-        # numpy array round-tripped through JSON
-        assert loaded["current_params"]["__ndarray__"] is True
-        assert loaded["current_params"]["data"] == [1.0, 2.0, 3.0]
+        assert loaded["_checkpoint_meta"]["experiment_id"] == "test123"
+        # numpy array round-tripped through JSON and restored by _restore_arrays
+        assert isinstance(loaded["current_params"], np.ndarray)
+        np.testing.assert_array_equal(loaded["current_params"], np.array([1.0, 2.0, 3.0]))
 
     def test_exists_finds_latest(self, tmp_path):
         mgr = CheckpointManager(str(tmp_path))
