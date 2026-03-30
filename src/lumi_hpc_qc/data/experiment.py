@@ -45,6 +45,9 @@ class ExperimentTracker:
         self._provenance: ProvenanceData | None = None
         self._output_dir = Path(config.output_dir) / config.model
         self._started = False
+        # Phase B: circuit metrics and noise config
+        self._circuit_metrics = None
+        self._noise_config = None
 
     @property
     def experiment_id(self) -> str:
@@ -134,6 +137,8 @@ class ExperimentTracker:
             iterations=self._iterations,
             convergence=convergence,
             timing=timing,
+            circuit_metrics=self._circuit_metrics,
+            noise_config=self._noise_config,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
 

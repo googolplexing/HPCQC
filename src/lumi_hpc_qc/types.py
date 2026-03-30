@@ -266,6 +266,31 @@ class ProvenanceData:
 
 
 # ---------------------------------------------------------------------------
+# Circuit metrics (Phase B)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CircuitMetrics:
+    """Pre- and post-transpilation circuit metrics.
+
+    Captures the impact of topology-aware routing (SWAP insertion)
+    on circuit depth and gate count. The difference between pre and post
+    metrics quantifies the routing overhead for a given coupling map.
+    """
+    pre_transpilation_depth: int = 0
+    pre_transpilation_gate_count: int = 0
+    pre_transpilation_cx_count: int = 0
+    post_transpilation_depth: int = 0
+    post_transpilation_gate_count: int = 0
+    post_transpilation_cx_count: int = 0
+    swap_count: int = 0  # post CX - pre CX (approximation)
+    coupling_map_source: str = ""
+    coupling_map_edges: int = 0
+    transpiler_optimization_level: int = 2
+    num_parameters: int = 0
+
+
+# ---------------------------------------------------------------------------
 # Full experiment record (final output)
 # ---------------------------------------------------------------------------
 
@@ -282,6 +307,8 @@ class ExperimentRecord:
     iterations: list[IterationRecord] = field(default_factory=list)
     convergence: ConvergenceSummary | None = None
     timing: TimingBreakdown | None = None
+    circuit_metrics: CircuitMetrics | None = None  # Phase B
+    noise_config: dict[str, Any] | None = None     # Phase B
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )

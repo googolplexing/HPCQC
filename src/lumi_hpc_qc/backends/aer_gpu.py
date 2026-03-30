@@ -72,8 +72,13 @@ class AerGpuBackend(Backend):
         self._blocking_qubits = 0
         self._noise_model = None
         self._noise_model_file = None
-        self._coupling_map = None  # C1: for topology-aware noisy sim
-        self._shots = 0  # 0 = statevector (no shots)
+        self._coupling_map = None
+        self._shots = 0
+
+        # Phase B: decoupled coupling map and noise channels
+        self._coupling_map_source = "full"
+        self._coupling_map_file = None
+        self._noise_channels = None  # None = all active (backward compatible)
 
         if config:
             self._precision = config.precision
@@ -81,6 +86,10 @@ class AerGpuBackend(Backend):
             self._method = bp.get("method", "statevector")
             self._noise_model_file = bp.get("noise_model_file", None)
             self._shots = bp.get("shots", 0)
+            self._coupling_map_source = bp.get("coupling_map_source", "full")
+            self._coupling_map_file = bp.get("coupling_map_file",
+                                              bp.get("noise_model_file", None))
+            self._noise_channels = bp.get("noise_channels", None)
 
             # Cache blocking for large qubit counts
             nq = config.num_qubits
@@ -99,22 +108,37 @@ class AerGpuBackend(Backend):
             return
 
         from qiskit_aer import AerSimulator
+        import os
 
-        # Build noise model if calibration file specified
-        if self._noise_model_file:
-            from lumi_hpc_qc.backends.noise_model import build_noise_model
-            import os
+        num_qubits = self._config.num_qubits if self._config else 8
 
-            cal_path = self._noise_model_file
+        # Resolve calibration file path
+        cal_path = self._coupling_map_file or self._noise_model_file
+        if cal_path and not os.path.isabs(cal_path):
             project_dir = os.environ.get("PROJECT_DIR",
                           os.environ.get("SINGULARITYENV_PROJECT_DIR", "."))
-            if not os.path.isabs(cal_path):
-                cal_path = os.path.join(project_dir, cal_path)
+            cal_path = os.path.join(project_dir, cal_path)
 
-            num_qubits = self._config.num_qubits if self._config else 8
-            self._noise_model, self._coupling_map = build_noise_model(
-                cal_path, num_qubits
+        # ── Load coupling map independently of noise model ──
+        if self._coupling_map_source == "calibration" and cal_path:
+            from lumi_hpc_qc.backends.noise_model import extract_coupling_map
+            self._coupling_map = extract_coupling_map(cal_path, num_qubits)
+
+        # ── Build noise model if requested ──
+        if self._noise_model_file:
+            from lumi_hpc_qc.backends.noise_model import build_noise_model
+
+            nm_path = self._noise_model_file
+            if not os.path.isabs(nm_path):
+                project_dir = os.environ.get("PROJECT_DIR",
+                              os.environ.get("SINGULARITYENV_PROJECT_DIR", "."))
+                nm_path = os.path.join(project_dir, nm_path)
+
+            self._noise_model, nm_coupling_map = build_noise_model(
+                nm_path, num_qubits, noise_channels=self._noise_channels
             )
+            if self._coupling_map is None:
+                self._coupling_map = nm_coupling_map
             print(f"  Noise model loaded from: {self._noise_model_file}")
 
         # Determine device
@@ -270,11 +294,16 @@ class AerGpuBackend(Backend):
                 f"Set precision: single for {nq}q."
             )
         bp = config.backend_params
+        # Noise model with active channels requires density_matrix.
+        # But coupling_map + statevector is valid (topology-noiseless mode).
         if bp.get("noise_model_file") and bp.get("method") == "statevector":
-            errors.append(
-                "Noise model requires method: density_matrix (not statevector). "
-                "Statevector simulation is noiseless by definition."
-            )
+            nc = bp.get("noise_channels")
+            if nc is None or any(nc.values()):
+                errors.append(
+                    "Noise model with active channels requires method: density_matrix. "
+                    "For topology-only, use coupling_map_source: calibration "
+                    "without noise_model_file."
+                )
         return errors
 
     def estimate_walltime(self, config: ExperimentConfig) -> int:

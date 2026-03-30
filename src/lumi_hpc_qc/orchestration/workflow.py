@@ -147,6 +147,65 @@ class VQEWorkflow(Workflow):
         if ansatz_meta.requires_decomposition:
             ansatz = backend.compile_circuit(ansatz)
 
+        # Step 4a: Topology transpilation (Phase B)
+        # Transpile ONCE in setup — not per eval_energy call.
+        # seed_transpiler=42 ensures deterministic SWAP placement.
+        circuit_metrics = None
+        if hasattr(backend, '_coupling_map') and backend._coupling_map is not None:
+            from qiskit import transpile
+            from lumi_hpc_qc.types import CircuitMetrics
+
+            # Record pre-transpilation metrics
+            pre_depth = ansatz.depth()
+            pre_gates = ansatz.size()
+            pre_cx = ansatz.count_ops().get('cx', 0) + ansatz.count_ops().get('cz', 0)
+
+            backend._ensure_sim()  # ensure coupling map is loaded
+
+            ansatz = transpile(
+                ansatz,
+                coupling_map=backend._coupling_map,
+                optimization_level=2,
+                seed_transpiler=42,
+            )
+
+            # Record post-transpilation metrics
+            post_depth = ansatz.depth()
+            post_gates = ansatz.size()
+            post_cx = ansatz.count_ops().get('cx', 0) + ansatz.count_ops().get('cz', 0)
+            swap_count = max(0, post_cx - pre_cx)
+
+            cm_source = config.backend_params.get("coupling_map_source", "full")
+            cm_edges = len(backend._coupling_map.get_edges()) if backend._coupling_map else 0
+
+            circuit_metrics = CircuitMetrics(
+                pre_transpilation_depth=pre_depth,
+                pre_transpilation_gate_count=pre_gates,
+                pre_transpilation_cx_count=pre_cx,
+                post_transpilation_depth=post_depth,
+                post_transpilation_gate_count=post_gates,
+                post_transpilation_cx_count=post_cx,
+                swap_count=swap_count,
+                coupling_map_source=cm_source,
+                coupling_map_edges=cm_edges // 2,
+                transpiler_optimization_level=2,
+                num_parameters=ansatz_meta.num_parameters,
+            )
+            print(f"  Transpiled to coupling map: depth {pre_depth}→{post_depth}, "
+                  f"gates {pre_gates}→{post_gates}, SWAPs: ~{swap_count}")
+
+        # Step 4b: Noise config metadata (Phase B)
+        noise_config = None
+        bp = config.backend_params
+        cal_file = bp.get("noise_model_file") or bp.get("coupling_map_file")
+        if cal_file:
+            from lumi_hpc_qc.backends.noise_model import get_noise_config_metadata
+            noise_config = get_noise_config_metadata(
+                cal_file, ham_meta.num_qubits,
+                bp.get("noise_channels"),
+                bp.get("coupling_map_source", "full"),
+            )
+
         # Determine execution mode from config
         shots = config.backend_params.get("shots", 0)
         mode_label = "statevector (exact)" if shots == 0 else f"shot-based ({shots} shots)"
@@ -174,6 +233,8 @@ class VQEWorkflow(Workflow):
             "ansatz": ansatz, "ansatz_meta": ansatz_meta,
             "backend": backend, "grad_strategy": grad_strategy,
             "grad_name": grad_name,
+            "circuit_metrics": circuit_metrics,
+            "noise_config": noise_config,
         }
 
     def _initialize_params(self, ctx: dict) -> np.ndarray:
@@ -214,6 +275,10 @@ class VQEWorkflow(Workflow):
         backend = ctx["backend"]
         grad_strategy = ctx["grad_strategy"]
         grad_name = ctx["grad_name"]
+
+        # Phase B: wire circuit metrics and noise config into tracker
+        tracker._circuit_metrics = ctx.get("circuit_metrics")
+        tracker._noise_config = ctx.get("noise_config")
 
         # ── Determine execution parameters from config ──
         shots = config.backend_params.get("shots", 0)
