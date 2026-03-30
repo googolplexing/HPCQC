@@ -28,6 +28,64 @@ def _generate_experiment_id() -> str:
     return f"{uid}_{slurm_job_id}"
 
 
+def compute_spectral_gap(hamiltonian: Any, num_qubits: int) -> float | None:
+    """Compute the spectral gap E₁ − E₀ of a SparsePauliOp Hamiltonian.
+
+    Uses scipy.sparse.linalg.eigsh for efficiency at benchmark scale (2–16q).
+    Falls back to dense numpy eigvalsh if the sparse solver fails.
+    Returns None for systems with >16 qubits (diagonalisation too expensive).
+
+    Args:
+        hamiltonian: Qiskit SparsePauliOp.
+        num_qubits:  Number of qubits (used to gate the >16q cutoff).
+
+    Returns:
+        Spectral gap as a float, or None if deferred / unavailable.
+    """
+    if num_qubits > 16:
+        return None
+    try:
+        from scipy.sparse.linalg import eigsh
+        matrix = hamiltonian.to_matrix(sparse=True)
+        vals = eigsh(matrix, k=2, which="SA", return_eigenvectors=False)
+        vals_sorted = sorted(float(v) for v in vals)
+        return vals_sorted[1] - vals_sorted[0]
+    except Exception:
+        try:
+            import numpy as np
+            matrix_dense = hamiltonian.to_matrix()
+            vals = np.linalg.eigvalsh(matrix_dense)
+            return float(vals[1] - vals[0])
+        except Exception:
+            return None
+
+
+def compute_hamiltonian_locality(hamiltonian: Any) -> int:
+    """Return the max Pauli weight (locality) of any term in the Hamiltonian.
+
+    Pauli weight = number of non-identity single-qubit operators in a term.
+    1 = single-qubit only, 2 = two-body, etc.
+
+    Args:
+        hamiltonian: Qiskit SparsePauliOp.
+
+    Returns:
+        Max Pauli weight as int, or 0 if undetermined.
+    """
+    try:
+        max_weight = 0
+        for pauli in hamiltonian.paulis:
+            # Count non-identity positions: X, Y, Z are non-identity; I is identity
+            weight = sum(
+                1 for p in str(pauli) if p in ("X", "Y", "Z")
+            )
+            if weight > max_weight:
+                max_weight = weight
+        return max_weight
+    except Exception:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Configuration types
 # ---------------------------------------------------------------------------
@@ -312,6 +370,17 @@ class ExperimentRecord:
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    # Phase D additions — RED-SPEC-001 Phase D
+    schema_version: str = "2.0.0"
+    # Error mitigation applied in this run. None = pre-Phase-D record.
+    error_mitigation_applied: dict[str, Any] | None = None
+    # Per-placement results from multiplexed QPU execution (Phase C/D).
+    per_placement_results: list[dict[str, Any]] | None = None
+    # Convergence tier from noiseless seed sweep.
+    # Tier 1 < 0.01%, Tier 2 0.01–1.0%, Tier 3 > 1.0%. None = not a sweep run.
+    noiseless_tier: int | None = None
+    # Quality gate report — populated by data.quality.QualityGate before write.
+    quality_report: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +419,11 @@ class AnsatzMetadata:
     requires_decomposition: bool = False
     circuit_depth: int = 0
     gate_counts: dict[str, int] = field(default_factory=dict)
+    # Phase D additions — RED-SPEC-001 §5.3.2, BLUE-RESP-001 §5.3.2
+    # Set in workflow._setup() before transpile() from ansatz.depth() and
+    # ansatz.count_ops(). None until populated — safe default for old records.
+    pre_transpilation_depth: int | None = None
+    pre_transpilation_cx_count: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +438,12 @@ class HamiltonianMetadata:
     qubit_mapping: str = ""             # "jordan_wigner", "parity", etc.
     description: str = ""               # human-readable summary
     physical_params: dict[str, Any] = field(default_factory=dict)
+    # Phase D additions — RED-SPEC-001 §5.3.1
+    # Max Pauli weight of any single term (1 = single-qubit, 2 = two-body, etc.)
+    hamiltonian_locality: int = 0
+    # E₁ − E₀ from scipy.sparse.linalg.eigsh(H, k=2, which='SA').
+    # None for systems with >16 qubits where diagonalisation is deferred.
+    spectral_gap: float | None = None
 
 
 # ---------------------------------------------------------------------------

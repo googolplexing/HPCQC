@@ -126,6 +126,15 @@ class VQEWorkflow(Workflow):
             print(f"  Exact ground state energy: {exact_energy:.8f}")
         else:
             print(f"  System too large for exact diagonalization")
+
+        # Phase D: enrich HamiltonianMetadata with locality and spectral_gap
+        # Done here (not in plugins) so all 5 plugins benefit without modification.
+        from lumi_hpc_qc.types import compute_spectral_gap, compute_hamiltonian_locality
+        ham_meta.hamiltonian_locality = compute_hamiltonian_locality(hamiltonian)
+        ham_meta.spectral_gap = compute_spectral_gap(hamiltonian, ham_meta.num_qubits)
+        if ham_meta.spectral_gap is not None:
+            print(f"  Spectral gap: {ham_meta.spectral_gap:.6f}")
+
         timer.mark("exact_diag")
 
         # Step 3: Build ansatz
@@ -159,6 +168,10 @@ class VQEWorkflow(Workflow):
             pre_depth = ansatz.depth()
             pre_gates = ansatz.size()
             pre_cx = ansatz.count_ops().get('cx', 0) + ansatz.count_ops().get('cz', 0)
+
+            # Phase D: store on ansatz_meta before transpile overwrites the circuit
+            ansatz_meta.pre_transpilation_depth = pre_depth
+            ansatz_meta.pre_transpilation_cx_count = pre_cx
 
             backend._ensure_sim()  # ensure coupling map is loaded
 
