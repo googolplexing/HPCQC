@@ -162,19 +162,23 @@ class TestPauliMeasurementCorrectness(unittest.TestCase):
 class TestDecompositionEquivalence(unittest.TestCase):
     """Verify that decompose_for_aer preserves the circuit unitary."""
 
-    def _check_equivalence(self, ansatz_name, num_qubits, config_params):
+    def _check_equivalence(self, ansatz_name, num_qubits, config_params,
+                           model="byo", model_params=None):
         """Helper: build ansatz, decompose, compare unitaries."""
         from qiskit.quantum_info import Operator
         from lumi_hpc_qc.backends.aer_gpu import decompose_for_aer
         from lumi_hpc_qc.plugins.registry import PluginRegistry
         from lumi_hpc_qc.types import ExperimentConfig
 
+        if model_params is None:
+            model_params = {"hamiltonian_file": "examples/byo_tfim_2q_q50.json"}
+
         plugins = PluginRegistry()
         plugins.discover()
 
         config = ExperimentConfig(
-            model="byo",
-            model_params={"hamiltonian_file": "examples/byo_tfim_2q_q50.json"},
+            model=model,
+            model_params=model_params,
             ansatz=ansatz_name, ansatz_params=config_params,
             optimizer="cobyla", optimizer_params={"maxiter": 1},
             gradient="none", initializer="random",
@@ -211,9 +215,10 @@ class TestDecompositionEquivalence(unittest.TestCase):
         self._check_equivalence("su2", 2, {"reps": 2, "entanglement": "linear"})
 
     def test_hva_decomposition(self):
-        # HVA is designed for lattice structures — use 4 qubits (2x2 Heisenberg)
-        # to match its intended minimum size, avoiding the 2-qubit edge case
-        self._check_equivalence("hva", 4, {"reps": 2, "entanglement": "linear"})
+        # HVA requires lattice-aware model_params — use 4-qubit chain (1×4 Heisenberg)
+        self._check_equivalence("hva", 4, {"reps": 2, "entanglement": "linear"},
+                                model="heisenberg",
+                                model_params={"lattice_rows": 1, "lattice_cols": 4})
 
     def test_qaoa_decomposition(self):
         self._check_equivalence("qaoa", 3, {"reps": 1, "entanglement": "linear"})

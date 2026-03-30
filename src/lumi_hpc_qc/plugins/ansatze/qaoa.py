@@ -21,6 +21,15 @@ class QaoaAnsatz(AnsatzBuilder):
         p_layers = p.get("p_layers", p.get("reps", 2))
         edge_list = config.model_params.get("edge_list", [])
 
+        # Validate: all edge vertices must be within circuit bounds
+        if edge_list:
+            max_vertex = max(max(i, j) for i, j in edge_list)
+            if max_vertex >= num_qubits:
+                raise ValueError(
+                    f"QAOA edge_list references qubit {max_vertex}, "
+                    f"but circuit has only {num_qubits} qubits."
+                )
+
         total_params = 2 * p_layers
         params = ParameterVector('θ', total_params)
         qc = QuantumCircuit(num_qubits)

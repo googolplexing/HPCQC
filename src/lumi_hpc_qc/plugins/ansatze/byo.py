@@ -26,6 +26,14 @@ class ByoAnsatz(AnsatzBuilder):
         except Exception:
             qc = QuantumCircuit.from_qasm_file(qasm_file)
 
+        # Validate: QASM circuit must match Hamiltonian qubit count
+        if qc.num_qubits != num_qubits:
+            raise ValueError(
+                f"BYO ansatz QASM file has {qc.num_qubits} qubits, "
+                f"but Hamiltonian requires {num_qubits}. "
+                f"These must match for VQE to produce valid results."
+            )
+
         n = qc.num_parameters
         meta = AnsatzMetadata(
             num_parameters=n,

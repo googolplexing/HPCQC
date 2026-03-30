@@ -20,6 +20,17 @@ class UccsdAnsatz(AnsatzBuilder):
         num_electrons = p.get("num_electrons", config.model_params.get("num_electrons", 2))
         reps = p.get("reps", 1)
 
+        # Validate: need at least as many qubits as electrons for JW mapping
+        if num_electrons > num_qubits:
+            raise ValueError(
+                f"UCCSD requires num_qubits >= num_electrons, "
+                f"got {num_qubits} qubits for {num_electrons} electrons."
+            )
+        if num_electrons < 1:
+            raise ValueError(
+                f"UCCSD requires at least 1 electron, got {num_electrons}."
+            )
+
         try:
             qc, total_params, pnames = self._build_nature(num_qubits, num_electrons, reps)
         except (ImportError, Exception):

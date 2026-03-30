@@ -25,6 +25,16 @@ class HvaAnsatz(AnsatzBuilder):
         cols = mp.get("lattice_cols", 3)
         num_sites = rows * cols
 
+        # Validate: circuit must have enough qubits for the lattice
+        # Fermi-Hubbard uses 2× sites (up + down spin), Heisenberg uses 1× sites
+        required_qubits = num_sites * 2 if model_type == "fermi_hubbard" else num_sites
+        if num_qubits < required_qubits:
+            raise ValueError(
+                f"HVA ansatz requires {required_qubits} qubits for "
+                f"{rows}×{cols} lattice ({model_type}), but num_qubits={num_qubits}. "
+                f"Set model_params.lattice_rows/lattice_cols to match your qubit count."
+            )
+
         # Build lattice edges
         edges = []
         for r in range(rows):
