@@ -53,13 +53,54 @@ def _load_calibration(calibration_path: str) -> dict:
 
 
 def _select_qubits(cal: dict, num_qubits: int) -> list[tuple[str, dict]]:
+    """Select best connected subgraph of qubits by readout fidelity.
+
+    Starts from the highest-fidelity qubit and greedily adds the
+    highest-fidelity neighbor until num_qubits are selected. This
+    ensures the selected qubits form a connected subgraph — required
+    for both coupling map extraction and noise model building.
+    """
     qubits_data = cal.get("qubits", {})
-    sorted_qubits = sorted(
-        qubits_data.items(),
-        key=lambda x: x[1]["readout_fidelity"],
-        reverse=True,
-    )
-    return sorted_qubits[:num_qubits]
+    gates_data = cal.get("two_qubit_gates", {})
+
+    if num_qubits >= len(qubits_data):
+        return sorted(qubits_data.items(),
+                       key=lambda x: x[1]["readout_fidelity"], reverse=True)
+
+    # Build adjacency from gate pairs
+    adj: dict[str, set[str]] = {q: set() for q in qubits_data}
+    for gate_pair in gates_data:
+        parts = gate_pair.split("-")
+        if len(parts) != 2:
+            continue
+        q1, q2 = parts
+        if q1 in adj and q2 in adj:
+            adj[q1].add(q2)
+            adj[q2].add(q1)
+
+    # Greedy: start from highest-fidelity connected qubit, expand by best neighbor
+    sorted_by_fid = sorted(qubits_data.items(),
+                            key=lambda x: x[1]["readout_fidelity"], reverse=True)
+
+    for start_name, start_data in sorted_by_fid:
+        if not adj[start_name]:
+            continue
+        selected = {start_name: start_data}
+        frontier = set(adj[start_name])
+
+        while len(selected) < num_qubits and frontier:
+            best = max(frontier, key=lambda q: qubits_data[q]["readout_fidelity"])
+            selected[best] = qubits_data[best]
+            frontier.discard(best)
+            for nb in adj[best]:
+                if nb not in selected:
+                    frontier.add(nb)
+
+        if len(selected) >= num_qubits:
+            return list(selected.items())[:num_qubits]
+
+    # Fallback: return top-N by fidelity (may be disconnected)
+    return sorted_by_fid[:num_qubits]
 
 
 def _resolve_channels(noise_channels: dict | None) -> dict:
