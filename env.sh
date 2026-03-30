@@ -16,6 +16,8 @@ export HPCQC_ACCOUNT="${HPCQC_ACCOUNT:-project_462001289}"
 # SLURM uses SBATCH_ACCOUNT as the default --account for all sbatch calls
 export SBATCH_ACCOUNT="${HPCQC_ACCOUNT}"
 
+export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
+
 # ── Container paths ──
 # GPU container (qiskit-aer with ROCm/hipBLAS for MI250X)
 export HPCQC_GPU_CONTAINER="${HPCQC_GPU_CONTAINER:-/flash/project_462001289/mucciard/CSC_QT_simulations_container_builder/ccpe-extensions-cray-qiskit-aer-patch/output/07-patchelf-fix.sif}"
