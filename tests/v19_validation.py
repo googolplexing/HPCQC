@@ -64,10 +64,8 @@ def run_vqe_with_config(output_dir: str, capture: bool) -> dict:
     config = ExperimentConfig(
         model="byo",
         model_params={
-            "hamiltonian_type": "tfim",
-            "num_qubits": 2,
-            "J": 1.0,
-            "h": 1.0,
+            # TFIM 2q: H = -J·ZZ - h·(XI + IX), J=1, h=1
+            "pauli_list": [("ZZ", -1.0), ("XI", -1.0), ("IX", -1.0)],
         },
         ansatz="su2",
         ansatz_params={"reps": 1},
