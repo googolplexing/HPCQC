@@ -48,6 +48,11 @@ class ExperimentTracker:
         # Phase B: circuit metrics and noise config
         self._circuit_metrics = None
         self._noise_config = None
+        # Phase D: error mitigation record, placement results, sweep tier, quality report
+        self._error_mitigation_applied: dict | None = None
+        self._per_placement_results: list | None = None
+        self._noiseless_tier: int | None = None
+        self._quality_report: dict | None = None
 
     @property
     def experiment_id(self) -> str:
@@ -140,7 +145,24 @@ class ExperimentTracker:
             circuit_metrics=self._circuit_metrics,
             noise_config=self._noise_config,
             created_at=datetime.now(timezone.utc).isoformat(),
+            # Phase D fields
+            schema_version="2.0.0",
+            error_mitigation_applied=self._error_mitigation_applied,
+            per_placement_results=self._per_placement_results,
+            noiseless_tier=self._noiseless_tier,
         )
+
+        # Phase D: run quality gate before writing
+        try:
+            from lumi_hpc_qc.data.quality import QualityGate
+            gate = QualityGate()
+            record.quality_report = gate.run(record)
+        except Exception as e:
+            record.quality_report = {
+                "passed": False,
+                "checks": {},
+                "warnings": [f"Quality gate error: {e}"],
+            }
 
         # Write final result
         self._write_final(record)
