@@ -3,6 +3,50 @@
 
 # Changelog
 
+## 1.0.0rc1 (2026-03-31)
+
+### Release Candidate 1 — Feature-Complete for Q50 Benchmark Campaign
+
+**V19: Measurement stats capture end-to-end (RED-RESP-V19-v1.0)**
+- `capture_measurement_stats` and `measurement_stats_interval` config fields in `types.py`
+- Config loader reads from both top-level YAML and `data:` section
+- `aer_gpu.py`: captures per-Pauli-group raw counts (labels, basis_rotations, counts,
+  group_expectation, shots) after `expectation_from_grouped_counts()` returns
+- `workflow.py`: passes capture flag via `CircuitJob.metadata`, writes JSONL sidecar
+  via `ExperimentTracker.write_measurement_stats()`
+- `experiment.py`: sidecar JSONL lifecycle — path setup in `start()`, interval-aware
+  append-only writing (crash-safe), sidecar reference in final result JSON
+- `export.py`: flat string array `measurement_stats` dataset in HDF5 (each element is
+  one JSONL line — self-describing JSON, no subgroup hierarchy). Attributes:
+  `grouping_algorithm`, `interval`, `num_entries`
+- New `data/tools/` subpackage: `strip_basis_rotations` (lossless removal, ~30% size
+  reduction) and `reconstruct_basis_rotations` (rebuild from Pauli groups + QWC algorithm)
+
+**HDF5 human-readable group naming (RED-RESP-V19 Modifications 2+3)**
+- All HDF5 experiment groups now use `{model}-{qubits:02d}q-{mode}-{id_short}-seed{seed:04d}`
+- Dashes between fields, underscores within fields
+- Sort order: model → qubit count → noise mode → experiment → seed
+- Experiment UUID stored as group attribute for programmatic lookup
+- Applies to all `export_hdf5()` output, not just V19 experiments
+- Backward compatible: old UUID-based group names still readable
+
+**Validation criteria closure**
+- V1–V8 (Phase B): 37/37 PASSED — SLURM job 17094955
+- VC1–VC9 (Phase C): 48/48 PASSED — SLURM job 17095335
+- V15–V18 (Phase D): 51/51 PASSED — SLURM job 17117032
+- V19 (measurement stats): 24/24 PASSED — SLURM job 17131462
+- V20 (QPY integrity): PASSED — SLURM job 17118264
+- Cross-implementation (§7.5): PASSED — SLURM job 17127770
+- Phase D regression post-V19: 51/51 PASSED — SLURM job 17131652
+- Phase D validation post-V19: 35/35 PASSED — SLURM job 17131653
+
+**Deferred to pre-QPU (non-blocking for RC1)**
+- Parameter binding verification after transpilation
+- Thermal relaxation PadDelay for idle qubits
+- Crosstalk calibration (OQ9) for multiplexed QPU execution
+
+---
+
 ## 1.0.0b7 (2026-03-31)
 
 ### Phase D — Multi-Format Export, Schema v2, Quality Gates (RED-SPEC-001)
