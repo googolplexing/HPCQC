@@ -11,7 +11,7 @@ ansatz_params:
   entanglement: linear
 optimizer: spsa
 optimizer_params:
-  maxiter: 200
+  maxiter: 1000
 gradient: none
 initializer: random
 initializer_params:
