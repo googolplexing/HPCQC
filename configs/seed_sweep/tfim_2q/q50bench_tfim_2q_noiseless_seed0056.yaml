@@ -1,0 +1,28 @@
+# Auto-generated seed sweep: seed=56 (15/20)
+# Base config: /flash/project_462001289/mucciard/HPCQC/HPCQC/configs/q50bench_tfim_2q_noiseless.yaml
+#
+model: byo
+model_params:
+  hamiltonian_file: examples/byo_tfim_2q_q50.json
+ansatz: su2
+ansatz_params:
+  reps: 2
+  entanglement: linear
+optimizer: l_bfgs_b
+optimizer_params:
+  maxiter: 200
+  gtol: 1.0e-06
+gradient: parameter_shift
+initializer: random
+initializer_params:
+  seed: 56
+backend: aer_gpu
+backend_params:
+  method: statevector
+precision: double
+mode: interactive
+checkpoint:
+  enabled: true
+  directory: checkpoints
+  interval: 50
+output_dir: results/seed_sweep/q50bench_tfim_2q_noiseless/seed_0056

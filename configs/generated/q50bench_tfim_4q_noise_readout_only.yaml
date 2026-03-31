@@ -20,7 +20,7 @@ backend: aer_gpu
 backend_params:
   method: density_matrix
   shots: 4096
-  noise_model_file: examples/q50_calibration_20260326.json
+  noise_model_file: examples/q50_calibration_20260330.json
   noise_channels:
     readout_error: true
 precision: double
