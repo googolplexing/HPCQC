@@ -235,17 +235,16 @@ class AerGpuBackend(Backend):
                             optimization_level=2,
                         )
 
-                    # Run all measurement circuits
-                    # C6 FIX: unique seed per circuit for realistic shot noise
-                    counts_list = []
-                    for ci, mc in enumerate(meas_circuits):
-                        seed = 42 + hash((i, ci)) % (2**31)
-                        r = self._sim.run(
-                            mc, shots=shots, seed_simulator=seed,
-                            blocking_enable=self._use_blocking,
-                            blocking_qubits=self._blocking_qubits,
-                        ).result()
-                        counts_list.append(r.get_counts())
+                    # Run all measurement circuits in a single sim.run() call.
+                    # Aer parallelizes internally across available CPUs/GPUs.
+                    # seed_simulator is offset per circuit by Aer (seed + index),
+                    # ensuring unique-but-deterministic shot noise per circuit.
+                    r = self._sim.run(
+                        meas_circuits, shots=shots, seed_simulator=42,
+                        blocking_enable=self._use_blocking,
+                        blocking_qubits=self._blocking_qubits,
+                    ).result()
+                    counts_list = [r.get_counts(ci) for ci in range(len(meas_circuits))]
 
                     energy = expectation_from_grouped_counts(
                         counts_list, meas_groups, identity_e, shots
