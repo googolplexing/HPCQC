@@ -22,7 +22,7 @@ gradient: parameter_shift
 
 initializer: random
 initializer_params:
-  seed: 42
+  seed: 51
 
 backend: aer_gpu
 backend_params:
