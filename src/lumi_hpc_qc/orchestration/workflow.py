@@ -298,6 +298,8 @@ class VQEWorkflow(Workflow):
 
         # ── F2 FIX: Energy evaluation through Backend.run_circuits() ──
         eval_count = [0]
+        # V19: determine if measurement stats capture is active
+        capture_meas = config.capture_measurement_stats and shots > 0
 
         def eval_energy(params):
             """Evaluate ⟨ψ(θ)|H|ψ(θ)⟩ via the backend interface.
@@ -311,15 +313,28 @@ class VQEWorkflow(Workflow):
             """
             param_dict = dict(zip(ansatz.parameters, params))
 
+            job_meta = {}
+            if capture_meas:
+                job_meta["capture_measurement_stats"] = True
+
             job = CircuitJob(
                 circuits=[ansatz],
                 parameters=[param_dict],
                 observable=hamiltonian,
                 shots=shots,
+                metadata=job_meta,
             )
 
             results = backend.run_circuits([job])
             eval_count[0] += 1
+
+            # V19: write measurement stats to sidecar if returned
+            if capture_meas and results[0].metadata.get("measurement_stats"):
+                for eval_stats in results[0].metadata["measurement_stats"]:
+                    current_iter = len(tracker._iterations)
+                    tracker.write_measurement_stats(
+                        eval_count[0], current_iter, eval_stats
+                    )
 
             if results[0].energies:
                 return results[0].energies[0]

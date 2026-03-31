@@ -56,6 +56,15 @@ def _build_config(raw: dict[str, Any]) -> ExperimentConfig:
     # Extract nested configs
     slurm_raw = raw.pop("slurm", {})
     checkpoint_raw = raw.pop("checkpoint", {})
+    data_raw = raw.pop("data", {})  # V19: optional data: section
+
+    def _get_data_field(raw_dict, key, default):
+        """Check top-level first, then data: section."""
+        if key in raw_dict:
+            return raw_dict[key]
+        if isinstance(data_raw, dict) and key in data_raw:
+            return data_raw[key]
+        return default
 
     slurm = SlurmConfig(
         partition=slurm_raw.get("partition", "standard-g"),
@@ -92,6 +101,12 @@ def _build_config(raw: dict[str, Any]) -> ExperimentConfig:
         mode=raw.get("mode", "interactive"),
         slurm=slurm,
         checkpoint=checkpoint,
+        # V19: measurement stats capture (RED-SPEC-001 §5.3.3)
+        # Supports both top-level and data: section YAML placement
+        capture_measurement_stats=_get_data_field(
+            raw, "capture_measurement_stats", False),
+        measurement_stats_interval=_get_data_field(
+            raw, "measurement_stats_interval", 10),
         output_dir=raw.get("output_dir", "results"),
     )
 

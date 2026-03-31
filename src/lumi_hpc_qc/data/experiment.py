@@ -53,6 +53,9 @@ class ExperimentTracker:
         self._per_placement_results: list | None = None
         self._noiseless_tier: int | None = None
         self._quality_report: dict | None = None
+        # V19: measurement stats sidecar
+        self._measurement_stats_path: Path | None = None
+        self._measurement_stats_count: int = 0
 
     @property
     def experiment_id(self) -> str:
@@ -72,6 +75,12 @@ class ExperimentTracker:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._provenance = provenance
         self._started = True
+
+        # V19: initialize measurement stats sidecar if capture enabled
+        if self._config.capture_measurement_stats:
+            self._measurement_stats_path = (
+                self._output_dir / f"{self._experiment_id}_measurement_stats.jsonl"
+            )
 
         # Write initial config snapshot (survives crashes)
         config_path = self._output_dir / f"{self._experiment_id}_config.json"
@@ -96,6 +105,45 @@ class ExperimentTracker:
         # Write incremental progress (overwrite each time)
         if len(self._iterations) % 10 == 0:
             self._write_progress()
+
+    @property
+    def measurement_stats_path(self) -> Path | None:
+        """Path to the measurement stats sidecar JSONL, or None if disabled."""
+        return self._measurement_stats_path
+
+    @property
+    def measurement_stats_interval(self) -> int:
+        """Capture every Nth evaluation."""
+        return self._config.measurement_stats_interval
+
+    def write_measurement_stats(
+        self, eval_count: int, iteration: int, stats: list[dict]
+    ) -> None:
+        """Append measurement stats for one energy evaluation to the JSONL sidecar.
+
+        Each dict in stats represents one Pauli group's raw counts.
+        This is crash-safe: JSONL is append-only, at most one line lost.
+
+        Args:
+            eval_count: Sequential evaluation number (for interval tracking).
+            iteration:  Current optimizer iteration.
+            stats:      List of per-group dicts from the backend.
+        """
+        if self._measurement_stats_path is None:
+            return
+        # Check interval
+        if eval_count % self._config.measurement_stats_interval != 0:
+            return
+
+        with open(self._measurement_stats_path, "a") as f:
+            for group_stat in stats:
+                record = {
+                    "evaluation": eval_count,
+                    "iteration": iteration,
+                    **group_stat,
+                }
+                f.write(json.dumps(record, default=str) + "\n")
+                self._measurement_stats_count += 1
 
     def finalize(
         self,
@@ -185,8 +233,13 @@ class ExperimentTracker:
     def _write_final(self, record: ExperimentRecord) -> None:
         """Write complete experiment record as JSON."""
         path = self._output_dir / f"{self._experiment_id}_result.json"
+        data = self._serialize_record(record)
+        # V19: reference measurement stats sidecar if it exists
+        if self._measurement_stats_path and self._measurement_stats_count > 0:
+            data["measurement_stats_sidecar"] = str(self._measurement_stats_path.name)
+            data["measurement_stats_entries"] = self._measurement_stats_count
         with open(path, "w") as f:
-            json.dump(self._serialize_record(record), f, indent=2)
+            json.dump(data, f, indent=2)
 
     def _serialize_config(self) -> dict[str, Any]:
         """Convert ExperimentConfig to JSON-safe dict."""

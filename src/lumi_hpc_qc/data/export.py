@@ -433,27 +433,101 @@ def export_npz(
 # HDF5 export — hierarchical numerical data
 # ---------------------------------------------------------------------------
 
+def _derive_hdf5_group_name(data: dict, json_path: str) -> str:
+    """Build human-readable HDF5 group name per RED-RESP-V19 §1 Mod 2.
+
+    Format: {model}-{qubits:02d}q-{mode}-{id_short}-seed{seed:04d}
+    Dashes between fields, underscores within fields.
+    """
+    config = data.get("config") or {}
+    model = config.get("model", "unknown")
+    num_qubits = config.get("num_qubits", 0)
+    exp_id = data.get("experiment_id", "unknown")
+
+    # Extract first 8 hex chars from experiment_id (format: {hex12}_{slurm_or_interactive})
+    id_short = exp_id.split("_")[0][:8] if "_" in exp_id else exp_id[:8]
+
+    # Derive seed from initializer_params
+    init_params = config.get("initializer_params") or {}
+    seed = init_params.get("seed", 0)
+
+    # Derive mode from backend_params
+    bp = config.get("backend_params") or {}
+    noise_file = bp.get("noise_model_file")
+    noise_channels = bp.get("noise_channels")
+    cm_source = bp.get("coupling_map_source", "full")
+    shots = bp.get("shots", 0)
+
+    if not noise_file and shots == 0:
+        mode = "noiseless"
+    elif not noise_file and cm_source == "calibration":
+        mode = "topology_noiseless"
+    elif noise_file and noise_channels:
+        # Check if all channels are active
+        active = [k for k, v in noise_channels.items() if v]
+        if len(active) == 0:
+            mode = "controlled_noiseless"
+        elif len(active) == 1:
+            mode = f"noise_{active[0]}"
+        else:
+            mode = "noise_full"
+    elif noise_file:
+        mode = "noise_full"
+    else:
+        mode = "noiseless"
+
+    return f"{model}-{num_qubits:02d}q-{mode}-{id_short}-seed{seed:04d}"
+
+
+def _find_measurement_stats_sidecar(json_path: str, data: dict) -> str | None:
+    """Locate the measurement stats JSONL sidecar for an experiment."""
+    # Check if the result JSON references a sidecar
+    sidecar_name = data.get("measurement_stats_sidecar")
+    if sidecar_name:
+        sidecar_path = os.path.join(os.path.dirname(json_path), sidecar_name)
+        if os.path.exists(sidecar_path):
+            return sidecar_path
+
+    # Fallback: look for {experiment_id}_measurement_stats.jsonl
+    exp_id = data.get("experiment_id", "")
+    if exp_id:
+        sidecar_path = os.path.join(
+            os.path.dirname(json_path),
+            f"{exp_id}_measurement_stats.jsonl"
+        )
+        if os.path.exists(sidecar_path):
+            return sidecar_path
+
+    return None
+
+
 def export_hdf5(
     input_paths: list[str] | str,
     output_path: str,
 ) -> int:
     """Export experiments to a single HDF5 file.
 
-    Hierarchy:
-      /experiments/{experiment_id}/
+    Hierarchy (RED-RESP-V19 Modifications 2+3):
+      /experiments/{model}-{qubits:02d}q-{mode}-{id_short}-seed{seed:04d}/
         energy_trajectory     dataset float64 (N,)
         param_trajectory      dataset float64 (N, P)
         gradient_norms        dataset float64 (N,)
         metadata/             group of scalar attributes
           model, ansatz, best_energy, noiseless_tier, ...
+          experiment_id = full UUID (for programmatic lookup)
+        measurement_stats     dataset string (M,)   [if sidecar exists]
+          attrs: grouping_algorithm = "qwc"
+          attrs: interval = 10
+          attrs: num_entries = M
 
     Multiple experiments from a sweep are all stored in one file,
     making cross-experiment analysis straightforward:
 
-        import h5py
+        import h5py, json
         with h5py.File("experiments.h5", "r") as f:
-            for exp_id in f["experiments"]:
-                energy = f[f"experiments/{exp_id}/energy_trajectory"][:]
+            for name in f["experiments"]:
+                energy = f[f"experiments/{name}/energy_trajectory"][:]
+                stats = [json.loads(s) for s in f[f"experiments/{name}/measurement_stats"][:]]
 
     Args:
         input_paths: Path(s) to experiment result JSON files.
@@ -481,14 +555,21 @@ def export_hdf5(
                 print(f"  WARNING: skipping {path}: {e}")
                 continue
 
-            exp_id = data.get("experiment_id", "unknown")
             iterations = data.get("iterations", [])
             if not iterations:
                 continue
 
-            # Sanitise experiment_id for HDF5 path (no slashes)
-            safe_id = exp_id.replace("/", "_")
-            grp = exps_group.create_group(safe_id)
+            # Human-readable group name (RED-RESP-V19 Mod 2+3)
+            group_name = _derive_hdf5_group_name(data, path)
+
+            # Handle collision (append suffix if name exists)
+            final_name = group_name
+            suffix = 2
+            while final_name in exps_group:
+                final_name = f"{group_name}-{suffix}"
+                suffix += 1
+
+            grp = exps_group.create_group(final_name)
 
             # Trajectory datasets
             energies = np.array([it.get("energy", float("nan"))
@@ -522,7 +603,7 @@ def export_hdf5(
                 grp.create_dataset("param_trajectory", data=param_arr,
                                    compression="gzip", compression_opts=4)
 
-            # Metadata as HDF5 attributes — scalar fields only
+            # Metadata as HDF5 attributes — scalar fields + identity attrs
             exp_fields = _experiment_fields(data)
             meta_grp = grp.create_group("metadata")
             for k, v in exp_fields.items():
@@ -532,6 +613,32 @@ def export_hdf5(
                     meta_grp.attrs[k] = v
                 else:
                     meta_grp.attrs[k] = str(v)
+
+            # Top-level group attributes for quick programmatic access
+            config = data.get("config") or {}
+            init_params = config.get("initializer_params") or {}
+            grp.attrs["experiment_id"] = data.get("experiment_id", "")
+            grp.attrs["model"] = config.get("model", "")
+            grp.attrs["num_qubits"] = config.get("num_qubits", 0)
+            grp.attrs["seed"] = init_params.get("seed", 0)
+
+            # V19: embed measurement stats sidecar as flat string array
+            sidecar_path = _find_measurement_stats_sidecar(path, data)
+            if sidecar_path:
+                with open(sidecar_path) as sf:
+                    lines = [line.strip() for line in sf if line.strip()]
+                if lines:
+                    # h5py special string type for variable-length strings
+                    dt = h5py.string_dtype(encoding="utf-8")
+                    ds = grp.create_dataset(
+                        "measurement_stats", data=lines, dtype=dt,
+                        compression="gzip", compression_opts=4,
+                    )
+                    ds.attrs["grouping_algorithm"] = "qwc"
+                    ds.attrs["interval"] = (
+                        config.get("measurement_stats_interval", 10)
+                    )
+                    ds.attrs["num_entries"] = len(lines)
 
             written += 1
 

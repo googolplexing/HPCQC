@@ -161,6 +161,10 @@ class ExperimentConfig:
     # Checkpointing
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
 
+    # Measurement stats capture (V19 — RED-SPEC-001 §5.3.3)
+    capture_measurement_stats: bool = False
+    measurement_stats_interval: int = 10  # capture every Nth evaluation
+
     # Output
     output_dir: str = "results"
 

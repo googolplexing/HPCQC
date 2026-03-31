@@ -252,6 +252,34 @@ class AerGpuBackend(Backend):
                     )
                     energies.append(energy)
 
+                    # V19: capture per-Pauli-group measurement stats if requested
+                    if job.metadata.get("capture_measurement_stats"):
+                        eval_stats = []
+                        for gi, (counts, group) in enumerate(
+                            zip(counts_list, meas_groups)
+                        ):
+                            # Build basis_rotations from group["basis"]
+                            basis_rotations = {}
+                            for qpos, pauli_char in group.get("basis", {}).items():
+                                basis_rotations[str(qpos)] = pauli_char
+                            # Convert counts keys to strings for JSON
+                            counts_clean = {str(k): int(v) for k, v in counts.items()}
+                            # Compute per-group expectation
+                            group_exp = expectation_from_grouped_counts(
+                                [counts], [group], 0.0, shots
+                            )
+                            eval_stats.append({
+                                "pauli_group": group.get("labels", []),
+                                "basis_rotations": basis_rotations,
+                                "counts": counts_clean,
+                                "group_expectation": group_exp,
+                                "shots": shots,
+                            })
+                        # Store in result metadata for workflow to write
+                        if not hasattr(self, "_pending_measurement_stats"):
+                            self._pending_measurement_stats = []
+                        self._pending_measurement_stats.append(eval_stats)
+
             else:
                 # No observable — just run circuits (measurement already added)
                 for i, circuit in enumerate(job.circuits):
@@ -266,11 +294,17 @@ class AerGpuBackend(Backend):
                     ).result()
 
             elapsed = time.time() - t0
+            result_meta = {}
+            # V19: attach measurement stats if captured
+            if hasattr(self, "_pending_measurement_stats") and self._pending_measurement_stats:
+                result_meta["measurement_stats"] = self._pending_measurement_stats
+                self._pending_measurement_stats = []
             results.append(CircuitResult(
                 job_id=job.job_id,
                 energies=energies if energies else None,
                 execution_time_s=elapsed,
                 backend_name=self.name,
+                metadata=result_meta,
             ))
 
         return results
