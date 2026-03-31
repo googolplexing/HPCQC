@@ -60,15 +60,28 @@ def export_qpy(result_json_path: str, output_path: str | None = None) -> str:
 
     # ── Rebuild ansatz circuit ────────────────────────────────────────
     from lumi_hpc_qc.plugins.registry import PluginRegistry
+    from lumi_hpc_qc.types import ExperimentConfig
     registry = PluginRegistry()
     registry.discover()
 
     num_qubits  = config["num_qubits"]
     ansatz_name = config["ansatz"]
-    ansatz_params = config.get("ansatz_params", {})
+
+    # Ansatz builder expects ExperimentConfig dataclass, not raw dict
+    exp_config = ExperimentConfig(
+        model=config.get("model", ""),
+        ansatz=ansatz_name,
+        ansatz_params=config.get("ansatz_params", {}),
+        optimizer=config.get("optimizer", ""),
+        gradient=config.get("gradient", "none"),
+        initializer=config.get("initializer", "random"),
+        backend=config.get("backend", "aer_gpu"),
+        precision=config.get("precision", "double"),
+        num_qubits=num_qubits,
+    )
 
     ansatz_builder = registry.get_ansatz(ansatz_name)
-    ansatz = ansatz_builder.build(num_qubits, ansatz_params)
+    ansatz = ansatz_builder.build(num_qubits, exp_config)
 
     print(f"Ansatz: {ansatz_name}, {num_qubits} qubits, "
           f"{ansatz.num_parameters} parameters")
