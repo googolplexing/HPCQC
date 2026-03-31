@@ -216,10 +216,22 @@ class AerGpuBackend(Backend):
                     )
 
                     # C1 FIX: transpile to coupling map if noise model active
+                    # Qiskit 2.3.0 bug workaround: when a noise model is loaded
+                    # into AerSimulator, the transpiler tries to introspect the
+                    # simulator's _FakeTarget and hits a renamed attribute
+                    # (_coupling_map → _coupling_graph). Passing basis_gates
+                    # explicitly bypasses the _FakeTarget lookup entirely.
                     if self._coupling_map is not None:
+                        basis_gates = (
+                            self._noise_model.basis_gates
+                            if self._noise_model is not None
+                            else ['cx', 'cz', 'id', 'rz', 'sx', 'x',
+                                  'reset', 'measure']
+                        )
                         meas_circuits = transpile(
                             meas_circuits,
                             coupling_map=self._coupling_map,
+                            basis_gates=basis_gates,
                             optimization_level=2,
                         )
 
