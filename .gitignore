@@ -51,3 +51,4 @@ HPCQC-*.zip
 # Export output (large, machine-specific)
 exports/
 dataset/
+sweep_scripts.zip
