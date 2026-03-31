@@ -61,6 +61,7 @@ def export_qpy(result_json_path: str, output_path: str | None = None) -> str:
     # ── Rebuild ansatz circuit ────────────────────────────────────────
     from lumi_hpc_qc.plugins.registry import PluginRegistry
     registry = PluginRegistry()
+    registry.discover()
 
     num_qubits  = config["num_qubits"]
     ansatz_name = config["ansatz"]
