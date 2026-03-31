@@ -38,3 +38,16 @@ slurm_logs/
 checkpoints/
 results/
 slurm/
+
+# Generated configs (regenerable from base configs + generate_seed_sweep.py)
+configs/seed_sweep/
+ 
+# Delivery archives (not source code)
+*.tar.gz
+phase_*.zip
+integration_tests_*.zip
+HPCQC-*.zip
+ 
+# Export output (large, machine-specific)
+exports/
+dataset/
