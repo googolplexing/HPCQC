@@ -112,10 +112,8 @@ print("\n=== E2.1: Sequential Baseline (4 runs) ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
     t0 = time.time()
-    sequential_results = []
-    for i in range(4):
-        result = run_single_vqe((i, 42 + i, 4))
-        sequential_results.append(result)
+    with mp.Pool(1) as pool:
+        sequential_results = pool.map(run_single_vqe, [(i, 42 + i, 4) for i in range(4)])
     t_seq = time.time() - t0
 
     seq_ok = all(r[4] is None for r in sequential_results)
