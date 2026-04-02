@@ -190,16 +190,15 @@ try:
           f"got {writer.write_count}")
 
     with h5py.File(h5_path, "r") as h5:
-        group_count = 0
+        group_count = [0]
         def count_leaf(name, obj):
-            nonlocal group_count
             if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
-                group_count += 1
+                group_count[0] += 1
         h5.visititems(count_leaf)
 
         check(f"HDF5 has {len(entries)} leaf groups",
-              group_count == len(entries),
-              f"got {group_count}")
+              group_count[0] == len(entries),
+              f"got {group_count[0]}")
 
         # Check hierarchy structure
         check("devices/vtt_q50 group exists",
@@ -251,14 +250,13 @@ try:
 
     # Verify HDF5 only has 5 entries before recovery
     with h5py.File(h5_path, "r") as h5:
-        pre_count = 0
+        pre_count = [0]
         def count_pre(name, obj):
-            nonlocal pre_count
             if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
-                pre_count += 1
+                pre_count[0] += 1
         h5.visititems(count_pre)
     check("Pre-recovery: HDF5 has 5 entries",
-          pre_count == 5, f"got {pre_count}")
+          pre_count[0] == 5, f"got {pre_count[0]}")
 
     # Run recovery
     recovery_writer = SweepHDF5Writer(h5_path, wal_path=wal_path)
@@ -268,14 +266,13 @@ try:
 
     # Verify HDF5 now has all 8
     with h5py.File(h5_path, "r") as h5:
-        post_count = 0
+        post_count = [0]
         def count_post(name, obj):
-            nonlocal post_count
             if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
-                post_count += 1
+                post_count[0] += 1
         h5.visititems(count_post)
     check("Post-recovery: HDF5 has 8 entries",
-          post_count == 8, f"got {post_count}")
+          post_count[0] == 8, f"got {post_count[0]}")
 
 except Exception as e:
     check("E3.3 block", False, f"Exception: {e}")

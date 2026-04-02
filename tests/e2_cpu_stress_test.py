@@ -54,7 +54,7 @@ def run_single_vqe(args):
     """
     worker_id, seed, num_qubits = args
     try:
-        from qiskit.circuit.library import EfficientSU2
+        from qiskit.circuit.library import efficient_su2
         from qiskit.quantum_info import SparsePauliOp
         from qiskit_aer import AerSimulator
         import numpy as np
@@ -73,8 +73,9 @@ def run_single_vqe(args):
             terms.append(("".join(x), -1.0))
         hamiltonian = SparsePauliOp.from_list(terms)
 
-        # Build ansatz
-        ansatz = EfficientSU2(n, reps=1, entanglement="linear")
+        # Build ansatz — use function form (Qiskit 2.1+) and decompose
+        ansatz = efficient_su2(n, reps=1, entanglement="linear")
+        ansatz = ansatz.decompose()
         num_params = ansatz.num_parameters
 
         # Independent simulator instance
