@@ -258,8 +258,10 @@ try:
     # Create synthetic calibration (T1 degraded 30%)
     synth = SyntheticAdapter()
     synth_cal = synth.perturb(real_cal, {
-        "t1_factor": 0.7,
-        "description": "T1 degraded 30% for deduplication test",
+        "scale_t1": 0.5,
+        "scale_readout": 0.8,
+        "scale_gate_error": 3.0,
+        "description": "T1 halved, readout degraded 20%, gate error tripled",
     })
 
     # Get synthetic calibration as raw dict for noise model builder
@@ -267,10 +269,10 @@ try:
     synth_cal_data = _cal_to_dict(cal_data, synth_cal)
 
     # Run multi-calibration battery
-    print("    Running 2-calibration battery (real + synthetic T1 degraded 30%)...")
+    print("    Running 2-calibration battery (real + synthetic: T1×0.5, readout×0.8, gate_error×3)...")
     calibrations = [
         ("q50_real", cal_data),
-        ("q50_synth_t1_70pct", synth_cal_data),
+        ("q50_synth_degraded", synth_cal_data),
     ]
 
     multi_results = run_multi_calibration_battery(
