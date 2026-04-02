@@ -28,6 +28,15 @@ project_dir = os.environ.get("PROJECT_DIR",
               os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, os.path.join(project_dir, "src"))
 
+# Import qiskit at module level so forked children inherit them.
+# Without this, each of 128 child processes imports qiskit independently
+# from Lustre, causing 10-30s I/O contention per child.
+_import_t0 = time.time()
+from qiskit.circuit.library import efficient_su2
+from qiskit.quantum_info import SparsePauliOp
+from qiskit_aer import AerSimulator
+print(f"Qiskit import time: {time.time() - _import_t0:.2f}s (parent only — children inherit via fork)")
+
 passed = 0
 failed = 0
 errors = []
@@ -55,11 +64,6 @@ def run_single_vqe(args):
     """
     worker_id, seed, num_qubits = args
     try:
-        from qiskit.circuit.library import efficient_su2
-        from qiskit.quantum_info import SparsePauliOp
-        from qiskit_aer import AerSimulator
-        import numpy as np
-
         # Build a simple TFIM Hamiltonian
         n = num_qubits
         terms = []
@@ -118,8 +122,11 @@ try:
     check("Sequential: 4 runs complete without error", seq_ok,
           "; ".join(r[4] for r in sequential_results if r[4]))
     check("Sequential: all return valid energies",
-          all(r[2] is not None and np.isfinite(r[2]) for r in sequential_results))
+          all(r[2] is not None and np.isfinite(r[2]) for r in sequential_results),
+          f"energies: {[(r[1], r[2], type(r[2]).__name__) for r in sequential_results]}")
     print(f"    ({t_seq:.2f}s for 4 sequential runs)")
+    for r in sequential_results:
+        print(f"      seed={r[1]}: energy={r[2]}, error={r[4]}")
 
     # Store reference energies for reproducibility check
     ref_energies = {r[1]: r[2] for r in sequential_results}
