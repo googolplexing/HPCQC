@@ -338,10 +338,10 @@ try:
     check("GHZ-3: completes without error",
           result_ghz.error is None,
           f"error={result_ghz.error}")
-    # GHZ state |000⟩+|111⟩: ⟨ZZZ⟩ = 1.0
+    # GHZ state |000⟩+|111⟩: ⟨ZZZ⟩ = 0 (odd-qubit parity cancellation)
     if result_ghz.energy is not None:
-        check("GHZ-3: ⟨ZZZ⟩ = 1.0",
-              abs(result_ghz.energy - 1.0) < 1e-6,
+        check("GHZ-3: ⟨ZZZ⟩ = 0 (odd-qubit parity)",
+              abs(result_ghz.energy) < 1e-6,
               f"got {result_ghz.energy:.6f}")
 
     # Same circuit with different observable: ⟨ZZI⟩ = 1.0 for GHZ
