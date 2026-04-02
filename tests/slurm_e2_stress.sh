@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e2_cpu_stress
 #SBATCH --partition=standard
-#SBATCH --time=00:45:00
+#SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=128
@@ -43,6 +43,12 @@ echo ""
 
 export SINGULARITYENV_PROJECT_DIR=${HPCQC_ROOT}
 export SINGULARITYENV_PYTHONPATH=${HPCQC_ROOT}/src
+
+# Suppress ROCm/HSA GPU initialization on CPU-only nodes.
+# Without this, each forked process triggers a failed HSA init,
+# causing GTL_DEBUG errors and wasting startup time.
+export SINGULARITYENV_ROCR_VISIBLE_DEVICES=""
+export SINGULARITYENV_HSA_TOOLS_LIB=""
 
 # Use CPU wrapper (no GPU affinity needed)
 srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} \

@@ -21,6 +21,7 @@ import os
 import time
 import traceback
 import multiprocessing as mp
+import numpy as np
 
 project_dir = os.environ.get("PROJECT_DIR",
               os.environ.get("SINGULARITYENV_PROJECT_DIR",
@@ -117,7 +118,7 @@ try:
     check("Sequential: 4 runs complete without error", seq_ok,
           "; ".join(r[4] for r in sequential_results if r[4]))
     check("Sequential: all return valid energies",
-          all(r[2] is not None and isinstance(r[2], (int, float)) for r in sequential_results))
+          all(r[2] is not None and np.isfinite(r[2]) for r in sequential_results))
     print(f"    ({t_seq:.2f}s for 4 sequential runs)")
 
     # Store reference energies for reproducibility check
@@ -146,7 +147,7 @@ try:
           par_ok,
           "; ".join(f"w{r[0]}:{r[4]}" for r in parallel_results_16 if r[4]))
     check("Parallel 16: all return valid energies",
-          all(r[2] is not None and isinstance(r[2], (int, float)) for r in parallel_results_16))
+          all(r[2] is not None and np.isfinite(r[2]) for r in parallel_results_16))
     print(f"    ({t_par_16:.2f}s for {n_workers} parallel runs)")
 
     # Reproducibility: same seeds should give same results
@@ -181,7 +182,7 @@ try:
           par_ok,
           f"{failed_count} workers failed")
     check("Parallel 64: all return valid energies",
-          all(r[2] is not None and isinstance(r[2], (int, float)) for r in parallel_results_64))
+          all(r[2] is not None and np.isfinite(r[2]) for r in parallel_results_64))
     print(f"    ({t_par_64:.2f}s for {n_workers} parallel runs)")
 
     # Check for result corruption: no two different seeds should give
@@ -215,7 +216,7 @@ try:
           par_ok,
           f"{failed_count} workers failed")
 
-    success_count = sum(1 for r in parallel_results_128 if r[2] is not None and isinstance(r[2], (int, float)))
+    success_count = sum(1 for r in parallel_results_128 if r[2] is not None and np.isfinite(r[2]))
     check(f"Parallel 128: {success_count}/{n_workers} return valid energies",
           success_count == n_workers,
           f"only {success_count} valid")
