@@ -83,8 +83,8 @@ def run_single_vqe(args):
         ansatz = ansatz.decompose()
         num_params = ansatz.num_parameters
 
-        # Independent simulator instance
-        sim = AerSimulator(method="density_matrix")
+        # Independent simulator instance — force CPU to avoid ROCm/HSA lock
+        sim = AerSimulator(method="density_matrix", device="CPU")
 
         # Random parameters with deterministic seed
         rng = np.random.default_rng(seed)
