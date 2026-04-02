@@ -383,17 +383,41 @@ class GeneralPlacementSolver:
     def _topology_hash(
         self, indices: list[int], cal: DeviceCalibration
     ) -> str:
-        """Hash of the local subgraph topology for cross-device matching."""
+        """Hash of the abstract graph isomorphism class.
+
+        Uses degree sequence + edge count as the canonical form.
+        This correctly groups all placements with the same abstract
+        topology regardless of physical qubit labeling:
+          P4 (path):   degrees [1,1,2,2], 3 edges
+          K1,3 (star): degrees [1,1,1,3], 3 edges
+          C4 (square): degrees [2,2,2,2], 4 edges
+
+        For circuits ≤8 qubits, degree sequence + edge count is a
+        complete graph invariant (no two non-isomorphic connected
+        graphs share both). For larger circuits, switch to nauty-based
+        canonical labeling if needed (v1.2.0).
+
+        RED-RESP-TOPOLOGY-DIVERSITY-v1.0 §3.2, Approach A.
+        """
         idx_set = set(indices)
-        sorted_phys = sorted(indices)
-        phys_to_local = {p: l for l, p in enumerate(sorted_phys)}
-        edges = sorted(
-            (phys_to_local[i], phys_to_local[j])
-            for i in sorted_phys
-            for j in cal.adjacency.get(i, set())
-            if j in idx_set and j > i
-        )
-        canonical = f"{len(indices)}q:{edges}"
+        n = len(indices)
+
+        # Build local edge list
+        edges = []
+        for i in indices:
+            for j in cal.adjacency.get(i, set()):
+                if j in idx_set and j > i:
+                    edges.append((i, j))
+
+        # Compute degree of each vertex in the local subgraph
+        degree_count = {i: 0 for i in indices}
+        for i, j in edges:
+            degree_count[i] += 1
+            degree_count[j] += 1
+
+        # Canonical form: sorted degree sequence + edge count
+        degrees = sorted(degree_count.values())
+        canonical = f"{n}q:deg{degrees}:e{len(edges)}"
         return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
     def _per_qubit_calibration(

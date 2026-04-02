@@ -374,44 +374,52 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
-print("\n=== E1.6: Topology Equivalence Hashing ===")
+print("\n=== E1.6: Topology Equivalence Hashing (hash fix VE21) ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
-    # Topology hashing: placements with identical local connectivity
-    # should share a hash. VF2 with induced=False finds placements where
-    # the 4 qubits satisfy the required 3 circuit edges but may have
-    # additional coupling edges between them. The topology hash correctly
-    # captures ALL edges in the subgraph, so placements with different
-    # edge counts get different hashes.
-    edge_count_groups = {}
-    for p in placements_4q:
-        edge_count_groups.setdefault(p.internal_edges, []).append(p)
-    print(f"    (edge count distribution: "
-          f"{', '.join(f'{k} edges: {len(v)} placements' for k, v in sorted(edge_count_groups.items()))})")
+    # After the hash fix (RED-RESP-TOPOLOGY-DIVERSITY-v1.0 §3.2 Approach A),
+    # topology_hash uses degree sequence + edge count as canonical form.
+    # Among 4q chain placements:
+    #   - 352 with 3 edges are P4 (path): degrees [1,1,2,2] → 1 hash
+    #   - 27 with 4 edges are C4 (square): degrees [2,2,2,2] → 1 hash
+    # Total: exactly 2 distinct hashes among chain placements.
 
-    # Within each edge-count group, check hash consistency
-    # (same edge count doesn't guarantee same topology, but same topology
-    # guarantees same hash)
-    all_hashes = set(p.topology_hash for p in placements_4q)
-    check("Multiple topology classes found (VF2 finds varied subgraphs)",
-          len(all_hashes) >= 1,
-          f"got {len(all_hashes)}")
-    check("Topology hash is deterministic (same placement = same hash)",
+    chain_hashes = set(p.topology_hash for p in placements_4q)
+    print(f"    Chain placement hashes: {len(chain_hashes)} distinct classes")
+
+    # Group by hash to show the breakdown
+    hash_groups = {}
+    for p in placements_4q:
+        hash_groups.setdefault(p.topology_hash, []).append(p)
+    for h, group in sorted(hash_groups.items(), key=lambda x: -len(x[1])):
+        edges = group[0].internal_edges
+        print(f"      hash {h}: {len(group)} placements, {edges} internal edges")
+
+    check("VE21 (partial): chain placements have exactly 2 topology classes (path + square)",
+          len(chain_hashes) == 2,
+          f"got {len(chain_hashes)} — expected path P4 and square C4")
+
+    check("Topology hash is deterministic (12-char hex)",
           all(len(p.topology_hash) == 12 for p in placements_4q),
           "some hashes have wrong length")
 
-    # 4q placements with >3 edges (branched) should have different hash
-    # from those with exactly 3 edges (linear chain)
-    linear_hashes = set(p.topology_hash for p in placements_4q
-                        if p.internal_edges == 3)
-    branch_placements = [p for p in placements_4q if p.internal_edges > 3]
-    if branch_placements:
-        branch_hashes = set(p.topology_hash for p in branch_placements)
-        check("Branched 4q topologies have different hash from linear",
-              not (branch_hashes & linear_hashes),
-              "hash collision between linear and branched")
-    else:
-        print("    (no branched 4q topologies found — all linear on Q50)")
+    # Path placements (3 edges) should all share one hash
+    path_hashes = set(p.topology_hash for p in placements_4q if p.internal_edges == 3)
+    check("All 3-edge placements share one hash (P4 path)",
+          len(path_hashes) == 1,
+          f"got {len(path_hashes)} hashes for 3-edge placements")
+
+    # Square placements (4 edges) should all share one hash
+    square_hashes = set(p.topology_hash for p in placements_4q if p.internal_edges == 4)
+    check("All 4-edge placements share one hash (C4 square)",
+          len(square_hashes) == 1,
+          f"got {len(square_hashes)} hashes for 4-edge placements")
+
+    # Path and square hashes must differ
+    if path_hashes and square_hashes:
+        check("Path hash ≠ square hash",
+              path_hashes != square_hashes,
+              "hash collision between P4 and C4")
 
     # Summary
     summary = solver.summary(placements_4q)
@@ -419,7 +427,6 @@ try:
           summary["total_placements"] == len(placements_4q))
     check("Summary has unique_topologies",
           "unique_topologies" in summary)
-    print(f"    (unique topologies for 4q: {summary.get('unique_topologies', '?')})")
 
 except Exception as e:
     check("E1.6 block", False, f"Exception: {e}")
@@ -574,7 +581,30 @@ try:
     print(f"    Both chain and star (rich connectivity):       {len(chain_star_overlap)}")
     print(f"    Chain ∪ Star = DFS total:                      {len(vf2_union)} = {len(dfs_subgraphs)}")
 
-    # STEP 8: 2q cross-validation (should be exact — every edge trivially embeds)
+    # STEP 8: VE21 — exactly 3 distinct topology classes for 4q on Q50
+    # Collect hashes from all three VF2 runs
+    all_4q_hashes = set()
+    all_4q_hashes.update(p.topology_hash for p in placements_4q)       # chain
+    all_4q_hashes.update(p.topology_hash for p in star_placements)     # star
+    all_4q_hashes.update(p.topology_hash for p in square_placements)   # square
+
+    check("VE21: exactly 3 distinct topology classes for 4q on Q50",
+          len(all_4q_hashes) == 3,
+          f"got {len(all_4q_hashes)} — expected path P4, star K1,3, square C4")
+
+    # Verify the three classes are: path (from chain-only), star, square (subset of chain)
+    star_hash = set(p.topology_hash for p in star_placements)
+    check("VE21: star placements all share one hash",
+          len(star_hash) == 1,
+          f"got {len(star_hash)}")
+
+    print(f"    Topology hashes: {sorted(all_4q_hashes)}")
+    for h in sorted(all_4q_hashes):
+        chain_count = sum(1 for p in placements_4q if p.topology_hash == h)
+        star_count = sum(1 for p in star_placements if p.topology_hash == h)
+        print(f"      {h}: {chain_count} chain + {star_count} star placements")
+
+    # STEP 9: 2q cross-validation (should be exact — every edge trivially embeds)
     dfs_2q = set()
     for start_node in range(cal.num_qubits):
         for neighbor in adjacency.get(start_node, set()):
