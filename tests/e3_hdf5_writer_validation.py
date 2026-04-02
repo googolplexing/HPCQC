@@ -321,7 +321,7 @@ try:
 
         # Create soft link for calibration B's noiseless (same result)
         source = (
-            "devices/vtt_q50/seeds/seed_0042/"
+            "/devices/vtt_q50/seeds/seed_0042/"
             "placements/vtt_q50-QB6_QB7_QB13_QB12/"
             "calibrations/cal_A/noiseless"
         )

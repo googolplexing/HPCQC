@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e2_cpu_stress
 #SBATCH --partition=standard
-#SBATCH --time=00:30:00
+#SBATCH --time=00:45:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=128

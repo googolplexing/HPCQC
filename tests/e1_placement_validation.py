@@ -400,12 +400,15 @@ try:
           all(len(p.topology_hash) == 12 for p in placements_4q),
           "some hashes have wrong length")
 
-    # 4q placements with >3 edges (if any) should have different hash
+    # 4q placements with >3 edges (branched) should have different hash
+    # from those with exactly 3 edges (linear chain)
+    linear_hashes = set(p.topology_hash for p in placements_4q
+                        if p.internal_edges == 3)
     branch_placements = [p for p in placements_4q if p.internal_edges > 3]
     if branch_placements:
         branch_hashes = set(p.topology_hash for p in branch_placements)
         check("Branched 4q topologies have different hash from linear",
-              not (branch_hashes & hashes_4q),
+              not (branch_hashes & linear_hashes),
               "hash collision between linear and branched")
     else:
         print("    (no branched 4q topologies found — all linear on Q50)")

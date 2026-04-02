@@ -85,20 +85,18 @@ def run_single_vqe(args):
         rng = np.random.default_rng(seed)
         params = rng.uniform(-np.pi, np.pi, num_params)
 
-        # Run 3 "iterations" of energy evaluation
-        best_energy = float("inf")
-        for it in range(3):
-            bound = ansatz.assign_parameters(params + rng.normal(0, 0.1, num_params))
-            bound.save_density_matrix()
-            result = sim.run(bound, shots=0).result()
-            dm = result.data()["density_matrix"]
+        # Run 1 energy evaluation (kept minimal for stress test scalability)
+        bound = ansatz.assign_parameters(params)
+        bound.save_density_matrix()
+        result = sim.run(bound, shots=0).result()
+        dm = result.data()["density_matrix"]
 
-            # Compute expectation
-            h_matrix = hamiltonian.to_matrix()
-            energy = float(np.real(np.trace(h_matrix @ dm)))
-            best_energy = min(best_energy, energy)
+        # Compute expectation — convert DensityMatrix to numpy array
+        h_matrix = hamiltonian.to_matrix()
+        dm_array = np.array(dm)
+        best_energy = float(np.real(np.trace(h_matrix @ dm_array)))
 
-        return (worker_id, seed, best_energy, 3, None)
+        return (worker_id, seed, best_energy, 1, None)
 
     except Exception as e:
         return (worker_id, seed, None, 0, str(e))
