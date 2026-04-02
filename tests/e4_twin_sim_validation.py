@@ -412,6 +412,37 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
+print("\n=== E4.8: Synthetic Adapter — Unknown Key Rejection ===")
+# ══════════════════════════════════════════════════════════════════════
+try:
+    # The exact typo that caused VE9 to fail initially
+    rejected = False
+    try:
+        synth.perturb(real_cal, {"t1_factor": 0.7})
+    except ValueError as e:
+        if "unrecognized" in str(e).lower() or "Unrecognized" in str(e):
+            rejected = True
+    check("Unknown key 't1_factor' raises ValueError", rejected)
+
+    # Another common typo
+    rejected2 = False
+    try:
+        synth.perturb(real_cal, {"readout_factor": 0.9})
+    except ValueError:
+        rejected2 = True
+    check("Unknown key 'readout_factor' raises ValueError", rejected2)
+
+    # Valid keys should still work
+    valid_result = synth.perturb(real_cal, {"scale_t1": 0.7, "description": "test"})
+    check("Valid keys 'scale_t1' + 'description' accepted",
+          valid_result is not None and valid_result.is_synthetic)
+
+except Exception as e:
+    check("E4.8 block", False, f"Exception: {e}")
+    traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 60)
