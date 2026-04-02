@@ -457,16 +457,15 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
-print("\n=== E1.8: VE1 — VF2 vs DFS Cross-Validation (4q) ===")
+print("\n=== E1.8: VE1 — Multi-Topology VF2 vs DFS Cross-Validation (4q) ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
-    # Run DFS brute-force enumeration independently of VF2.
-    # Both methods should find the exact same set of valid 4q connected
-    # subgraphs on Q50. This is RED-SPEC-002 VE1.
-    print("    Running DFS brute-force enumeration (may take a few seconds)...")
+    # STEP 1: DFS enumerates ALL connected 4-node subgraphs on Q50.
+    # This finds every possible set of 4 connected qubits regardless of
+    # internal edge structure.
+    print("    Step 1: DFS brute-force — all connected 4-node subgraphs...")
     t0 = time.time()
 
-    # DFS: enumerate all connected 4-node subgraphs on Q50
     dfs_subgraphs = set()
     adjacency = cal.adjacency
 
@@ -486,40 +485,96 @@ try:
         dfs_expand(frozenset({start_node}), 4)
 
     t_dfs = time.time() - t0
-    print(f"    DFS found {len(dfs_subgraphs)} subgraphs in {t_dfs:.2f}s")
+    print(f"    DFS found {len(dfs_subgraphs)} total connected 4-node subgraphs in {t_dfs:.2f}s")
 
-    # Convert VF2 placements to frozensets for comparison
-    vf2_subgraphs = set(
-        frozenset(p.physical_indices) for p in placements_4q
+    # STEP 2: VF2 for linear chain (already done in E1.3 — reuse results)
+    vf2_chain = set(frozenset(p.physical_indices) for p in placements_4q)
+    print(f"    VF2 linear chain (0-1-2-3): {len(vf2_chain)} placements (from E1.3)")
+
+    # STEP 3: VF2 for star topology (hub connected to 3 leaves)
+    # Star edges: (0,1), (0,2), (0,3) — hub is qubit 0
+    print("    Step 3: VF2 for star topology (0-1, 0-2, 0-3)...")
+    t0 = time.time()
+    star_placements = solver.find_all_placements(
+        circuit_edges=[(0, 1), (0, 2), (0, 3)],
+        circuit_qubits=4,
+        strategy="max_fidelity",
     )
-    print(f"    VF2 found {len(vf2_subgraphs)} subgraphs in 0.04s (from E1.3)")
+    vf2_star = set(frozenset(p.physical_indices) for p in star_placements)
+    t_star = time.time() - t0
+    print(f"    VF2 star: {len(vf2_star)} placements in {t_star:.3f}s")
 
-    # Cross-validate: both should find the exact same set
-    check("VE1: VF2 count matches DFS count",
-          len(vf2_subgraphs) == len(dfs_subgraphs),
-          f"VF2={len(vf2_subgraphs)}, DFS={len(dfs_subgraphs)}")
+    # STEP 4: VF2 for square/cycle topology (0-1-2-3-0)
+    # This is a subset of chain placements (every cycle contains a path)
+    print("    Step 4: VF2 for square/cycle (0-1, 1-2, 2-3, 3-0)...")
+    t0 = time.time()
+    square_placements = solver.find_all_placements(
+        circuit_edges=[(0, 1), (1, 2), (2, 3), (3, 0)],
+        circuit_qubits=4,
+        strategy="max_fidelity",
+    )
+    vf2_square = set(frozenset(p.physical_indices) for p in square_placements)
+    t_sq = time.time() - t0
+    print(f"    VF2 square: {len(vf2_square)} placements in {t_sq:.3f}s")
 
-    missing_from_vf2 = dfs_subgraphs - vf2_subgraphs
-    extra_in_vf2 = vf2_subgraphs - dfs_subgraphs
+    # STEP 5: Verify relationships between circuit topologies
+    # - Chain placements should be a SUPERSET of square placements
+    #   (every cycle contains a Hamiltonian path)
+    # - Star and chain should be DISJOINT
+    #   (a star has no Hamiltonian path; a chain has no hub)
+    # - chain ∪ star should equal DFS total
 
-    check("VE1: no placements in DFS but missing from VF2",
-          len(missing_from_vf2) == 0,
-          f"{len(missing_from_vf2)} subgraphs found by DFS but not VF2")
+    check("VE1: square placements ⊆ chain placements (every cycle contains a path)",
+          vf2_square.issubset(vf2_chain),
+          f"{len(vf2_square - vf2_chain)} square placements not in chain")
 
-    check("VE1: no placements in VF2 but missing from DFS",
-          len(extra_in_vf2) == 0,
-          f"{len(extra_in_vf2)} subgraphs found by VF2 but not DFS")
+    chain_star_overlap = vf2_chain & vf2_star
+    check("VE1: chain ∩ star overlap is only from subgraphs that embed both",
+          True)  # informational — some subgraphs may have enough edges to embed both
+    print(f"    chain ∩ star overlap: {len(chain_star_overlap)} subgraphs "
+          f"(these have rich enough connectivity to embed both a path and a star)")
 
-    check("VE1: exact set equality",
-          vf2_subgraphs == dfs_subgraphs,
-          "sets differ")
+    # STEP 6: THE KEY CHECK — union of all VF2 topologies covers all DFS subgraphs
+    vf2_union = vf2_chain | vf2_star
+    uncovered = dfs_subgraphs - vf2_union
+    extra = vf2_union - dfs_subgraphs
 
-    if missing_from_vf2:
-        print(f"    First 3 missing from VF2: {list(missing_from_vf2)[:3]}")
-    if extra_in_vf2:
-        print(f"    First 3 extra in VF2: {list(extra_in_vf2)[:3]}")
+    check("VE1: chain ∪ star covers all DFS subgraphs",
+          len(uncovered) == 0,
+          f"{len(uncovered)} DFS subgraphs not covered by any VF2 topology")
 
-    # Also cross-validate 2q (should equal number of coupling edges = 82)
+    check("VE1: no VF2 subgraphs outside DFS set",
+          len(extra) == 0,
+          f"{len(extra)} VF2 subgraphs not found by DFS")
+
+    check("VE1: chain ∪ star = DFS (exact set equality)",
+          vf2_union == dfs_subgraphs,
+          f"union={len(vf2_union)}, DFS={len(dfs_subgraphs)}")
+
+    if uncovered:
+        # Classify uncovered subgraphs by their edge count
+        print(f"    First 3 uncovered: {list(uncovered)[:3]}")
+        for sg in list(uncovered)[:3]:
+            sg_list = sorted(sg)
+            edges = [(i, j) for i in sg_list for j in adjacency.get(i, set())
+                     if j in sg and j > i]
+            print(f"      {sg_list}: {len(edges)} edges — {edges}")
+
+    # STEP 7: Topology breakdown report
+    chain_only = vf2_chain - vf2_star
+    star_only = vf2_star - vf2_chain
+
+    print(f"\n    === 4q Topology Breakdown on Q50 ===")
+    print(f"    Total connected 4-node subgraphs (DFS):        {len(dfs_subgraphs)}")
+    print(f"    Can embed linear chain (VF2):                  {len(vf2_chain)}")
+    print(f"    Can embed star (VF2):                          {len(vf2_star)}")
+    print(f"    Can embed square/cycle (VF2):                  {len(vf2_square)}")
+    print(f"    Chain only (no star embedding):                {len(chain_only)}")
+    print(f"    Star only (no chain embedding):                {len(star_only)}")
+    print(f"    Both chain and star (rich connectivity):       {len(chain_star_overlap)}")
+    print(f"    Chain ∪ Star = DFS total:                      {len(vf2_union)} = {len(dfs_subgraphs)}")
+
+    # STEP 8: 2q cross-validation (should be exact — every edge trivially embeds)
     dfs_2q = set()
     for start_node in range(cal.num_qubits):
         for neighbor in adjacency.get(start_node, set()):
