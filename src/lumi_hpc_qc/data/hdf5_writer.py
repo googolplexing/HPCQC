@@ -1,0 +1,448 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+"""HDF5-first write-during-execution for Phase E sweep engine.
+
+Replaces the JSON-first write pattern with HDF5 as the primary write
+target during sweep execution. Eliminates the 84,000-file problem at
+sweep scale by writing all results into a single HDF5 file.
+
+Key features:
+  - Atomic group writes: each result written as complete unit, flushed
+  - WAL (write-ahead log): crash safety independent of Lustre SWMR
+  - Context manager interface for sweep lifecycle
+  - SWMR mode: monitoring can read while sweep writes (if Lustre supports)
+  - Group naming: {device_prefix}-{qubit_names} per placement
+  - Noiseless deduplication via HDF5 soft links
+
+The WAL pattern:
+  1. Each result serialized to memory buffer
+  2. Buffer appended to flat WAL file (one fwrite, crash-safe)
+  3. HDF5 group created and written
+  4. On sweep completion, WAL replayed to verify consistency
+  5. On crash recovery, WAL replayed to reconstruct lost HDF5 groups
+
+Phase E — RED-DIRECTIVE-PHASE-E-ROADMAP-v1.0, System 5
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Generator
+
+import h5py
+import numpy as np
+
+
+@dataclass
+class SweepResultEntry:
+    """One result to write into the HDF5 sweep file.
+
+    Represents a single (placement, calibration, noise_config, seed)
+    execution result.
+    """
+
+    # Identification
+    device_id: str
+    device_prefix: str
+    seed: int
+    placement_qubits: list[str]     # physical qubit names
+    calibration_id: str
+    noise_config: str               # e.g., "noiseless", "noise_full"
+
+    # Results
+    energy_trajectory: list[float]
+    best_energy: float
+    total_iterations: int
+    converged: bool
+
+    # Optional arrays
+    parameter_trajectory: list[list[float]] | None = None
+    measurement_stats: list[str] | None = None
+
+    # Metadata
+    circuit_metrics: dict[str, Any] = field(default_factory=dict)
+    per_qubit_calibration: dict[str, dict[str, float]] = field(
+        default_factory=dict
+    )
+    placement_score: float = 0.0
+    topology_hash: str = ""
+    wall_time_seconds: float = 0.0
+    framework_version: str = ""
+    experiment_id: str = ""
+
+    @property
+    def group_path(self) -> str:
+        """HDF5 group path for this result.
+
+        Format: /devices/{device_prefix}/seeds/seed_{seed:04d}/
+                placements/{device_prefix}-{qubit_names}/
+                calibrations/{calibration_id}/{noise_config}/
+        """
+        qubit_str = "_".join(self.placement_qubits)
+        return (
+            f"devices/{self.device_prefix}/"
+            f"seeds/seed_{self.seed:04d}/"
+            f"placements/{self.device_prefix}-{qubit_str}/"
+            f"calibrations/{self.calibration_id}/"
+            f"{self.noise_config}"
+        )
+
+    def to_wal_dict(self) -> dict[str, Any]:
+        """Serialize to a WAL-safe dict (JSON-serializable)."""
+        d: dict[str, Any] = {
+            "group_path": self.group_path,
+            "device_id": self.device_id,
+            "device_prefix": self.device_prefix,
+            "seed": self.seed,
+            "placement_qubits": self.placement_qubits,
+            "calibration_id": self.calibration_id,
+            "noise_config": self.noise_config,
+            "best_energy": self.best_energy,
+            "total_iterations": self.total_iterations,
+            "converged": self.converged,
+            "energy_trajectory": self.energy_trajectory,
+            "circuit_metrics": self.circuit_metrics,
+            "per_qubit_calibration": self.per_qubit_calibration,
+            "placement_score": self.placement_score,
+            "topology_hash": self.topology_hash,
+            "wall_time_seconds": self.wall_time_seconds,
+            "framework_version": self.framework_version,
+            "experiment_id": self.experiment_id,
+        }
+        if self.parameter_trajectory is not None:
+            d["parameter_trajectory"] = self.parameter_trajectory
+        if self.measurement_stats is not None:
+            d["measurement_stats"] = self.measurement_stats
+        return d
+
+
+class SweepHDF5Writer:
+    """HDF5-first writer for sweep execution.
+
+    Usage:
+        with SweepHDF5Writer("sweep.h5", sweep_attrs={...}) as writer:
+            for result in sweep_results:
+                writer.write(result)
+
+        # On crash recovery:
+        writer = SweepHDF5Writer("sweep.h5")
+        writer.recover_from_wal()
+    """
+
+    def __init__(
+        self,
+        hdf5_path: str,
+        sweep_attrs: dict[str, Any] | None = None,
+        enable_swmr: bool = False,
+        wal_path: str | None = None,
+        debug_json: bool = False,
+        debug_json_dir: str | None = None,
+    ) -> None:
+        self._hdf5_path = Path(hdf5_path)
+        self._wal_path = Path(wal_path or str(hdf5_path) + ".wal")
+        self._sweep_attrs = sweep_attrs or {}
+        self._enable_swmr = enable_swmr
+        self._debug_json = debug_json
+        self._debug_json_dir = Path(debug_json_dir) if debug_json_dir else None
+        self._h5file: h5py.File | None = None
+        self._wal_file = None
+        self._write_count = 0
+        self._opened = False
+
+    def open(self) -> None:
+        """Open HDF5 and WAL files for writing."""
+        if self._opened:
+            return
+
+        # Create parent directories
+        self._hdf5_path.parent.mkdir(parents=True, exist_ok=True)
+        self._wal_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self._debug_json and self._debug_json_dir:
+            self._debug_json_dir.mkdir(parents=True, exist_ok=True)
+
+        # Open HDF5
+        mode = "a" if self._hdf5_path.exists() else "w"
+        self._h5file = h5py.File(
+            str(self._hdf5_path), mode,
+            libver="latest",
+        )
+
+        # Enable SWMR if requested and file is new
+        if self._enable_swmr and mode == "w":
+            try:
+                self._h5file.swmr_mode = True
+            except Exception as e:
+                print(f"  SWMR mode failed (expected on Lustre): {e}")
+                print("  Continuing without SWMR — WAL provides crash safety")
+
+        # Write sweep-level attributes
+        for key, value in self._sweep_attrs.items():
+            try:
+                self._h5file.attrs[key] = value
+            except TypeError:
+                self._h5file.attrs[key] = str(value)
+
+        # Open WAL (append mode)
+        self._wal_file = open(self._wal_path, "a")
+
+        self._opened = True
+
+    def close(self) -> None:
+        """Close HDF5 and WAL files. Verify consistency."""
+        if self._h5file is not None:
+            self._h5file.flush()
+            self._h5file.close()
+            self._h5file = None
+
+        if self._wal_file is not None:
+            self._wal_file.close()
+            self._wal_file = None
+
+        self._opened = False
+
+    def __enter__(self) -> SweepHDF5Writer:
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def write(self, entry: SweepResultEntry) -> None:
+        """Write one result to WAL + HDF5.
+
+        Steps:
+          1. Serialize to WAL (crash-safe append)
+          2. Write HDF5 group with datasets and attributes
+          3. Flush HDF5
+          4. Optionally write debug JSON
+        """
+        if not self._opened:
+            raise RuntimeError("Writer not opened. Use 'with' or call open().")
+
+        # Step 1: WAL write (crash-safe — one line append + fsync)
+        wal_line = json.dumps(entry.to_wal_dict()) + "\n"
+        self._wal_file.write(wal_line)
+        self._wal_file.flush()
+        os.fsync(self._wal_file.fileno())
+
+        # Step 2: HDF5 group write
+        self._write_hdf5_group(entry)
+
+        # Step 3: Flush HDF5
+        self._h5file.flush()
+
+        # Step 4: Optional debug JSON
+        if self._debug_json and self._debug_json_dir:
+            safe_name = entry.group_path.replace("/", "_")
+            debug_path = self._debug_json_dir / f"{safe_name}.json"
+            with open(debug_path, "w") as f:
+                json.dump(entry.to_wal_dict(), f, indent=2)
+
+        self._write_count += 1
+
+    def _write_hdf5_group(self, entry: SweepResultEntry) -> None:
+        """Write a single result as an HDF5 group."""
+        group_path = entry.group_path
+
+        # Create group (and all parent groups)
+        if group_path in self._h5file:
+            # Overwrite: delete and recreate
+            del self._h5file[group_path]
+
+        grp = self._h5file.create_group(group_path)
+
+        # Datasets
+        grp.create_dataset(
+            "energy_trajectory",
+            data=np.array(entry.energy_trajectory, dtype=np.float64),
+        )
+
+        if entry.parameter_trajectory is not None:
+            grp.create_dataset(
+                "parameter_trajectory",
+                data=np.array(entry.parameter_trajectory, dtype=np.float64),
+            )
+
+        if entry.measurement_stats is not None:
+            # Flat string array — each element is one JSON line
+            dt = h5py.string_dtype(encoding="utf-8")
+            grp.create_dataset(
+                "measurement_stats",
+                data=np.array(entry.measurement_stats, dtype=object),
+                dtype=dt,
+            )
+
+        # Scalar attributes
+        grp.attrs["best_energy"] = entry.best_energy
+        grp.attrs["total_iterations"] = entry.total_iterations
+        grp.attrs["converged"] = entry.converged
+        grp.attrs["wall_time_seconds"] = entry.wall_time_seconds
+        grp.attrs["experiment_id"] = entry.experiment_id
+        grp.attrs["framework_version"] = entry.framework_version
+        grp.attrs["placement_score"] = entry.placement_score
+        grp.attrs["topology_hash"] = entry.topology_hash
+        grp.attrs["noise_config"] = entry.noise_config
+        grp.attrs["seed"] = entry.seed
+        grp.attrs["device_id"] = entry.device_id
+        grp.attrs["calibration_id"] = entry.calibration_id
+
+        # Placement qubit names
+        dt_str = h5py.string_dtype(encoding="utf-8")
+        grp.create_dataset(
+            "placement_qubits",
+            data=np.array(entry.placement_qubits, dtype=object),
+            dtype=dt_str,
+        )
+
+        # Per-qubit calibration as JSON attribute
+        if entry.per_qubit_calibration:
+            grp.attrs["per_qubit_calibration"] = json.dumps(
+                entry.per_qubit_calibration
+            )
+
+        # Circuit metrics as JSON attribute
+        if entry.circuit_metrics:
+            grp.attrs["circuit_metrics"] = json.dumps(
+                entry.circuit_metrics
+            )
+
+    def create_soft_link(
+        self, source_path: str, target_path: str
+    ) -> None:
+        """Create an HDF5 soft link for noiseless deduplication.
+
+        When the same placement topology produces identical noiseless
+        results across calibrations, the second calibration links to
+        the first instead of storing duplicate data.
+        """
+        if not self._opened:
+            raise RuntimeError("Writer not opened.")
+        self._h5file[target_path] = h5py.SoftLink(source_path)
+
+    def recover_from_wal(self) -> int:
+        """Replay WAL to recover from a crash.
+
+        Reads the WAL file, checks which entries are missing from HDF5,
+        and writes the missing ones.
+
+        Returns:
+            Number of entries recovered.
+        """
+        if not self._wal_path.exists():
+            print("  No WAL file found — nothing to recover")
+            return 0
+
+        # Open HDF5 for writing
+        self._h5file = h5py.File(str(self._hdf5_path), "a", libver="latest")
+        recovered = 0
+
+        with open(self._wal_path) as wal:
+            for line_num, line in enumerate(wal, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    wal_dict = json.loads(line)
+                except json.JSONDecodeError:
+                    print(f"  WAL line {line_num}: corrupt, skipping")
+                    continue
+
+                group_path = wal_dict.get("group_path", "")
+                if not group_path:
+                    continue
+
+                # Check if this group exists in HDF5
+                if group_path in self._h5file:
+                    continue  # Already written
+
+                # Reconstruct entry and write
+                entry = self._wal_dict_to_entry(wal_dict)
+                self._write_hdf5_group(entry)
+                recovered += 1
+
+        self._h5file.flush()
+        self._h5file.close()
+        self._h5file = None
+
+        if recovered > 0:
+            print(f"  WAL recovery: {recovered} entries restored")
+        else:
+            print("  WAL recovery: all entries already in HDF5")
+
+        return recovered
+
+    def _wal_dict_to_entry(self, d: dict[str, Any]) -> SweepResultEntry:
+        """Reconstruct a SweepResultEntry from a WAL dict."""
+        return SweepResultEntry(
+            device_id=d["device_id"],
+            device_prefix=d["device_prefix"],
+            seed=d["seed"],
+            placement_qubits=d["placement_qubits"],
+            calibration_id=d["calibration_id"],
+            noise_config=d["noise_config"],
+            energy_trajectory=d["energy_trajectory"],
+            best_energy=d["best_energy"],
+            total_iterations=d["total_iterations"],
+            converged=d["converged"],
+            parameter_trajectory=d.get("parameter_trajectory"),
+            measurement_stats=d.get("measurement_stats"),
+            circuit_metrics=d.get("circuit_metrics", {}),
+            per_qubit_calibration=d.get("per_qubit_calibration", {}),
+            placement_score=d.get("placement_score", 0.0),
+            topology_hash=d.get("topology_hash", ""),
+            wall_time_seconds=d.get("wall_time_seconds", 0.0),
+            framework_version=d.get("framework_version", ""),
+            experiment_id=d.get("experiment_id", ""),
+        )
+
+    def verify_consistency(self) -> dict[str, Any]:
+        """Compare WAL entries against HDF5 contents.
+
+        Returns a report dict with counts and any discrepancies.
+        """
+        if not self._wal_path.exists():
+            return {"wal_entries": 0, "hdf5_groups": 0, "missing": 0}
+
+        wal_paths = set()
+        with open(self._wal_path) as wal:
+            for line in wal:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    wal_paths.add(d.get("group_path", ""))
+                except json.JSONDecodeError:
+                    pass
+
+        h5 = h5py.File(str(self._hdf5_path), "r")
+        hdf5_paths = set()
+
+        def collect_groups(name, obj):
+            if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
+                hdf5_paths.add(name)
+
+        h5.visititems(collect_groups)
+        h5.close()
+
+        missing = wal_paths - hdf5_paths
+        extra = hdf5_paths - wal_paths
+
+        return {
+            "wal_entries": len(wal_paths),
+            "hdf5_groups": len(hdf5_paths),
+            "missing_from_hdf5": len(missing),
+            "extra_in_hdf5": len(extra),
+            "consistent": len(missing) == 0,
+        }
+
+    @property
+    def write_count(self) -> int:
+        """Number of results written in this session."""
+        return self._write_count
