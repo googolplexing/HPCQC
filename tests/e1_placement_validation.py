@@ -457,6 +457,120 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
+print("\n=== E1.8: VE1 — VF2 vs DFS Cross-Validation (4q) ===")
+# ══════════════════════════════════════════════════════════════════════
+try:
+    # Run DFS brute-force enumeration independently of VF2.
+    # Both methods should find the exact same set of valid 4q connected
+    # subgraphs on Q50. This is RED-SPEC-002 VE1.
+    print("    Running DFS brute-force enumeration (may take a few seconds)...")
+    t0 = time.time()
+
+    # DFS: enumerate all connected 4-node subgraphs on Q50
+    dfs_subgraphs = set()
+    adjacency = cal.adjacency
+
+    def dfs_expand(current, target_size):
+        if len(current) == target_size:
+            dfs_subgraphs.add(current)
+            return
+        frontier = set()
+        for node in current:
+            for neighbor in adjacency.get(node, set()):
+                if neighbor not in current and neighbor > min(current):
+                    frontier.add(neighbor)
+        for node in frontier:
+            dfs_expand(current | frozenset({node}), target_size)
+
+    for start_node in range(cal.num_qubits):
+        dfs_expand(frozenset({start_node}), 4)
+
+    t_dfs = time.time() - t0
+    print(f"    DFS found {len(dfs_subgraphs)} subgraphs in {t_dfs:.2f}s")
+
+    # Convert VF2 placements to frozensets for comparison
+    vf2_subgraphs = set(
+        frozenset(p.physical_indices) for p in placements_4q
+    )
+    print(f"    VF2 found {len(vf2_subgraphs)} subgraphs in 0.04s (from E1.3)")
+
+    # Cross-validate: both should find the exact same set
+    check("VE1: VF2 count matches DFS count",
+          len(vf2_subgraphs) == len(dfs_subgraphs),
+          f"VF2={len(vf2_subgraphs)}, DFS={len(dfs_subgraphs)}")
+
+    missing_from_vf2 = dfs_subgraphs - vf2_subgraphs
+    extra_in_vf2 = vf2_subgraphs - dfs_subgraphs
+
+    check("VE1: no placements in DFS but missing from VF2",
+          len(missing_from_vf2) == 0,
+          f"{len(missing_from_vf2)} subgraphs found by DFS but not VF2")
+
+    check("VE1: no placements in VF2 but missing from DFS",
+          len(extra_in_vf2) == 0,
+          f"{len(extra_in_vf2)} subgraphs found by VF2 but not DFS")
+
+    check("VE1: exact set equality",
+          vf2_subgraphs == dfs_subgraphs,
+          "sets differ")
+
+    if missing_from_vf2:
+        print(f"    First 3 missing from VF2: {list(missing_from_vf2)[:3]}")
+    if extra_in_vf2:
+        print(f"    First 3 extra in VF2: {list(extra_in_vf2)[:3]}")
+
+    # Also cross-validate 2q (should equal number of coupling edges = 82)
+    dfs_2q = set()
+    for start_node in range(cal.num_qubits):
+        for neighbor in adjacency.get(start_node, set()):
+            if neighbor > start_node:
+                dfs_2q.add(frozenset({start_node, neighbor}))
+
+    vf2_2q = set(frozenset(p.physical_indices) for p in p_2q)
+    check("VE1 (2q): VF2 matches edge count",
+          len(vf2_2q) == len(dfs_2q),
+          f"VF2={len(vf2_2q)}, edges={len(dfs_2q)}")
+    check("VE1 (2q): exact set equality",
+          vf2_2q == dfs_2q,
+          "sets differ")
+
+except Exception as e:
+    check("E1.8 block", False, f"Exception: {e}")
+    traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
+print("\n=== E1.9: VE2 — Graceful Degradation (oversized circuit) ===")
+# ══════════════════════════════════════════════════════════════════════
+try:
+    # A 60q circuit on Q50 (53 qubits) should return 0 placements.
+    oversized = solver.find_all_placements(
+        circuit_edges=[(i, i+1) for i in range(59)],
+        circuit_qubits=60,
+    )
+    check("VE2: 60q on Q50 (53q) returns 0 placements",
+          len(oversized) == 0,
+          f"got {len(oversized)}")
+
+    # A fully-connected 5q circuit (K5) should return 0 on Q50
+    # because Q50's max degree is 4, but K5 requires degree 4 at every
+    # vertex AND all edges present — no such subgraph exists on Q50's
+    # square lattice topology.
+    k5_edges = [(i, j) for i in range(5) for j in range(i+1, 5)]
+    k5_placements = solver.find_all_placements(
+        circuit_edges=k5_edges,
+        circuit_qubits=5,
+    )
+    check("VE2: K5 (fully-connected 5q) on Q50 returns 0 placements",
+          len(k5_placements) == 0,
+          f"got {len(k5_placements)} — Q50 cannot embed K5")
+
+except Exception as e:
+    check("E1.9 block", False, f"Exception: {e}")
+    traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 60)
