@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import os
 import time
 import uuid
@@ -696,6 +697,17 @@ class SweepEngine:
                         continue
 
                     energy_val = twin_result.energy if twin_result.energy is not None else 0.0
+
+                    # Compute noise fingerprinting features from counts
+                    fingerprint = _compute_fingerprint(
+                        twin_result.counts, qsize
+                    )
+
+                    # Extract per-edge CZ fidelity for this placement
+                    edge_fidelities = _extract_edge_fidelities(
+                        placement, device_cal
+                    )
+
                     entry = SweepResultEntry(
                         device_id=device_cal.device_id,
                         device_prefix=device_cal.device_prefix,
@@ -719,6 +731,8 @@ class SweepEngine:
                         wall_time_seconds=twin_result.execution_time_s,
                         framework_version=self._config.framework_version,
                         experiment_id=f"{self._config.sweep_id}_{task.task_id}_{placement_id_str}_{twin_result.environment}",
+                        noise_fingerprint=fingerprint,
+                        per_edge_cz_fidelity=edge_fidelities,
                     )
 
                     try:
@@ -855,6 +869,106 @@ def _default_model_params(plugin_name: str, num_qubits: int) -> dict[str, Any]:
         }
     else:
         return {"num_qubits": num_qubits}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Noise fingerprinting — computed during execution, stored in HDF5
+# ═══════════════════════════════════════════════════════════════════════
+
+def _compute_fingerprint(
+    counts: dict[str, int] | None,
+    num_qubits: int,
+) -> dict[str, float | int | None]:
+    """Compute noise fingerprinting features from measurement counts.
+
+    Features F1, F2, F5, F6, F8 + original 4 (measurement_entropy,
+    dominant_bitstring_fraction, num_unique_bitstrings,
+    dominant_bitstring_hamming_weight).
+
+    F3 (z_group_expectation_mean), F4 (xz_expectation_ratio), and
+    F7 (expectation_variance_across_groups) require per-Pauli-group
+    data from measurement stats — not available from raw counts alone.
+    These are null here; populated when VQE measurement stats exist.
+
+    Returns empty dict if counts is None (noiseless/statevector).
+    """
+    if not counts:
+        return {}
+
+    total = sum(counts.values())
+    if total == 0:
+        return {}
+
+    # ── Original 4 ──
+    # measurement_entropy: Shannon entropy
+    entropy = 0.0
+    for c in counts.values():
+        if c > 0:
+            p = c / total
+            entropy -= p * math.log2(p)
+
+    # dominant_bitstring_fraction
+    max_count = max(counts.values())
+    dbf = max_count / total
+
+    # num_unique_bitstrings
+    n_unique = len(counts)
+
+    # ── F1: bitstring_hamming_weight_mean ──
+    hw_sum = sum(bs.count("1") * cnt for bs, cnt in counts.items())
+    hw_mean = hw_sum / total
+
+    # ── F2: bitstring_hamming_weight_variance ──
+    hw_var = sum(((bs.count("1") - hw_mean) ** 2) * cnt for bs, cnt in counts.items()) / total
+
+    # ── F5: effective_hilbert_dimension (participation ratio) ──
+    sum_p_sq = sum((c / total) ** 2 for c in counts.values())
+    ehd = 1.0 / sum_p_sq if sum_p_sq > 0 else None
+
+    # ── F6: kl_divergence_from_uniform ──
+    n_states = 2 ** num_qubits
+    q = 1.0 / n_states
+    kl = 0.0
+    for c in counts.values():
+        p = c / total
+        if p > 0:
+            kl += p * math.log2(p / q)
+
+    # ── F8: dominant_bitstring_hamming_weight ──
+    dominant_bs = max(counts, key=counts.get)
+    dbhw = dominant_bs.count("1")
+
+    return {
+        "measurement_entropy": entropy,
+        "dominant_bitstring_fraction": dbf,
+        "num_unique_bitstrings": n_unique,
+        "bitstring_hamming_weight_mean": hw_mean,
+        "bitstring_hamming_weight_variance": hw_var,
+        "z_group_expectation_mean": None,       # F3: needs Pauli-group data
+        "xz_expectation_ratio": None,           # F4: needs Pauli-group data
+        "effective_hilbert_dimension": ehd,
+        "kl_divergence_from_uniform": kl,
+        "expectation_variance_across_groups": None,  # F7: needs Pauli-group data
+        "dominant_bitstring_hamming_weight": dbhw,
+    }
+
+
+def _extract_edge_fidelities(
+    placement: Any,
+    device_cal: Any,
+) -> list[float]:
+    """Extract per-edge CZ fidelity for a placement's internal edges.
+
+    Returns a list of CZ fidelity values for each edge within the
+    placement subgraph, ordered by (min_idx, max_idx).
+    """
+    idx_set = set(placement.physical_indices)
+    fidelities = []
+    for i in sorted(placement.physical_indices):
+        for j in device_cal.adjacency.get(i, set()):
+            if j in idx_set and j > i:
+                fidelities.append(device_cal.gate_fidelity(i, j))
+    return fidelities
 
 
 # ═══════════════════════════════════════════════════════════════════════

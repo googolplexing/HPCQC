@@ -491,6 +491,24 @@ def _extract_row(
         except json.JSONDecodeError:
             pass
 
+    noise_fp = {}
+    nfp_raw = attrs.get("noise_fingerprint", "{}")
+    if isinstance(nfp_raw, str):
+        try:
+            noise_fp = json.loads(nfp_raw)
+        except json.JSONDecodeError:
+            pass
+
+    edge_cz_fidelity = None
+    ecf_raw = attrs.get("per_edge_cz_fidelity", None)
+    if isinstance(ecf_raw, str):
+        try:
+            ecf_parsed = json.loads(ecf_raw)
+            if isinstance(ecf_parsed, list):
+                edge_cz_fidelity = ecf_parsed
+        except json.JSONDecodeError:
+            pass
+
     # ── Read datasets ──
     energy_traj = list(grp["energy_trajectory"][:]) if "energy_trajectory" in grp else []
 
@@ -575,7 +593,7 @@ def _extract_row(
         "per_qubit_t1_us": cal_lists["per_qubit_t1_us"] or None,
         "per_qubit_t2_us": cal_lists["per_qubit_t2_us"] or None,
         "per_qubit_readout_fidelity": cal_lists["per_qubit_readout_fidelity"] or None,
-        "per_edge_cz_fidelity": None,
+        "per_edge_cz_fidelity": edge_cz_fidelity,
 
         # Noise & Mitigation
         "noise_environment": noise_env,
@@ -600,20 +618,20 @@ def _extract_row(
         # Aggregated Features
         "convergence_rate": conv_rate,
         "energy_variance": e_var,
-        "final_gradient_norm": None,
+        "final_gradient_norm": noise_fp.get("final_gradient_norm"),
 
-        # Noise Fingerprinting — null for characterization (no counts)
-        "measurement_entropy": None,
-        "dominant_bitstring_fraction": None,
-        "num_unique_bitstrings": None,
-        "bitstring_hamming_weight_mean": None,
-        "bitstring_hamming_weight_variance": None,
-        "z_group_expectation_mean": None,
-        "xz_expectation_ratio": None,
-        "effective_hilbert_dimension": None,
-        "kl_divergence_from_uniform": None,
-        "expectation_variance_across_groups": None,
-        "dominant_bitstring_hamming_weight": None,
+        # Noise Fingerprinting — from HDF5 noise_fingerprint attribute
+        "measurement_entropy": noise_fp.get("measurement_entropy"),
+        "dominant_bitstring_fraction": noise_fp.get("dominant_bitstring_fraction"),
+        "num_unique_bitstrings": noise_fp.get("num_unique_bitstrings"),
+        "bitstring_hamming_weight_mean": noise_fp.get("bitstring_hamming_weight_mean"),
+        "bitstring_hamming_weight_variance": noise_fp.get("bitstring_hamming_weight_variance"),
+        "z_group_expectation_mean": noise_fp.get("z_group_expectation_mean"),
+        "xz_expectation_ratio": noise_fp.get("xz_expectation_ratio"),
+        "effective_hilbert_dimension": noise_fp.get("effective_hilbert_dimension"),
+        "kl_divergence_from_uniform": noise_fp.get("kl_divergence_from_uniform"),
+        "expectation_variance_across_groups": noise_fp.get("expectation_variance_across_groups"),
+        "dominant_bitstring_hamming_weight": noise_fp.get("dominant_bitstring_hamming_weight"),
     }
 
     return row
