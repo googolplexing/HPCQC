@@ -3,6 +3,110 @@
 
 # Changelog
 
+## 1.1.0 (2026-04-03)
+
+### Phase E — Sweep Engine + Noise Atlas Pipeline (RED-SPEC-002)
+
+Complete YAML-to-Parquet pipeline for systematic noise characterization across
+QPU topologies. 764 checks across 11 E-steps, zero failures. All 22 VE criteria satisfied.
+
+**E1: Placement Solver (`sweep/placement_solver.py`, `topology_library.py`)**
+- VF2 subgraph isomorphism via rustworkx — finds all valid physical qubit placements
+  for arbitrary circuits on arbitrary QPU topologies
+- 7 reference topologies (2q–8q): pair, chain, star, square
+- Multi-device: calibration adapter registers devices, solver searches across all
+- Scoring strategies: max_fidelity, max_connectivity, min_error, diverse
+- Topology equivalence hashing (degree sequence canonical form)
+- Q50 results: 487 4q placements (379 chain + 108 star), 3 distinct topology classes
+
+**E2: Tiered Execution Planner (`sweep/execution_planner.py`)**
+- CPU/GPU routing: ≤8q density_matrix → CPU, ≥10q → GPU
+- 128-way CPU parallelism via multiprocessing.Pool (fork COW, no parent Aer)
+- MPICH_GPU_SUPPORT_ENABLED=0 for CPU partition (permanent fix)
+
+**E3: HDF5-First Writer (`data/hdf5_writer.py`)**
+- Write-during-execution with WAL (write-ahead log) crash safety
+- Atomic group writes: each result flushed immediately
+- SWMR mode support (Lustre-dependent)
+- Noiseless deduplication via HDF5 soft links
+
+**E4: Twin Simulator (`sweep/twin_simulator.py`, `noise_configs.py`)**
+- 11 noise environments per placement per calibration
+- Tiered measurement stats: Tier A=5, Tier B=20, noise_full=10, noiseless=0
+- Noiseless deduplication across calibrations (topology-dependent only)
+- Per-placement noise model from calibration data
+- SyntheticAdapter validates perturbation keys (ValueError on unknown)
+
+**E5: BYO Circuits (`sweep/circuit_loader.py`, `eval_runner.py`)**
+- Load circuits from QPY, QASM, or Python scripts
+- Evaluation-only mode: no optimizer, single execution per config
+- Connectivity extraction for placement solver integration
+
+**E6a: Multi-Round Packing (`sweep/circuit_composer.py`, `demultiplexer.py`, `round_executor.py`)**
+- Same-circuit packing: 379 chain placements → 64 rounds (9–10 per round)
+- Non-overlapping qubits AND coupling edges verified
+- Shot-based and exact (density matrix) execution modes
+
+**E6b: Mixed-Experiment Packing (`sweep/mixed_packing.py`)**
+- Different circuits from different experiments share QPU submissions
+- MixedPacker: greedy non-overlapping round finder across experiment queues
+- compose_mixed_round: heterogeneous circuits into device-width composite
+- demux_mixed_counts: route results back to correct experiments
+- Noisy validation: mixed ≈ independent under real Q50 calibration noise
+
+**E7: Sweep Engine (`sweep/sweep_engine.py`)**
+- YAML config → grid expansion → placement → twin battery → HDF5
+- Cache-locality grouping: placements computed once, reused across seeds
+- Cross-calibration noiseless deduplication
+- Noise fingerprinting computed during execution (F1, F2, F5, F6, F8)
+- Per-edge CZ fidelity extracted from placements
+
+**E8: Sweep Export (`data/sweep_export.py`)**
+- HDF5 → 61-column Parquet (RED-DIRECTIVE-E4-SCHEMA-v1.0 §4)
+- Metadata-scan export: reads attributes only, O(N) in results
+- Summary CSV for quick inspection
+- Snappy compression
+
+**E9: Synthetic Calibration CLI (`data/tools/perturb_calibration.py`)**
+- 7 perturbation types: scale_t1/t2/readout/gate_fidelity, poison_qubit,
+  uniform_noise, improve_all
+- Batch generation for noise regime sweeps
+- `_synthetic_metadata` provenance in every output JSON
+- Physical constraints enforced (T2 ≤ 2*T1, readout clamped)
+
+**E10: Validation + FiQCI Examples**
+- FiQCI circuit builders: GHZ (3/4/5q), Bell (2q), Star (4q) in `examples/fiqci/`
+- QPY round-trip via circuit_loader validated
+- Physics: GHZ-3q ⟨ZZZ⟩=0, Bell ⟨ZZ⟩=1, Star-4q ⟨ZZZZ⟩=1
+- Multi-calibration sweep: real + synthetic produce different energies
+
+**New Plugin: TFIM Hamiltonian (`plugins/hamiltonians/tfim.py`)**
+- Auto-discovered by registry: `name = "tfim"`
+- H = -J Σ Z_i Z_j - g Σ X_i with configurable J, g, boundary conditions
+- 1D chains and 2D grids
+
+**Cross-Check Fixes (RED-RESP-V7-CROSS-CHECK-v1.0)**
+- `measurement_stats_schedule: list[int] | None` in ExperimentConfig + capture logic
+- Noise fingerprinting F1/F2/F5/F6/F8 computed during execution, stored as HDF5 attrs
+- `per_edge_cz_fidelity` extracted from placement edges + calibration
+
+**Validation (764 checks, zero failures)**
+- E1: 70/70 (SLURM 17171430)
+- E2: 36/36 (SLURM 17171581)
+- E2.1: 15/15 (SLURM 17169665)
+- E3: 39/39 (SLURM 17168540)
+- E5: 43/43 (SLURM 17172442)
+- E4: 71/71 (SLURM 17174016)
+- E6a: 32/32 (SLURM 17174597)
+- E7: 92/92 (SLURM 17175062)
+- E8: 86/86 (SLURM 17179592)
+- E9: 60/60 (SLURM 17179873)
+- E10: 57/57 (SLURM 17180201)
+- E6b: 50/50 (SLURM 17180507)
+- V19 regression: 24/24, Phase D regression: 86/86
+
+---
+
 ## 1.0.0rc1 (2026-03-31)
 
 ### Release Candidate 1 — Feature-Complete for Q50 Benchmark Campaign
