@@ -80,7 +80,22 @@ class SyntheticAdapter(AbstractCalibrationAdapter):
 
         Returns:
             New DeviceCalibration with perturbation applied and provenance set.
+
+        Raises:
+            ValueError: If perturbation dict contains unrecognized keys.
         """
+        # Validate perturbation keys — fail fast on typos
+        _RECOGNIZED_KEYS = {
+            "scale_t1", "scale_t2", "scale_readout", "scale_gate_error",
+            "scale_gate_fidelity", "poison_qubit", "description",
+        }
+        unknown = set(perturbation.keys()) - _RECOGNIZED_KEYS
+        if unknown:
+            raise ValueError(
+                f"Unrecognized perturbation keys: {unknown}. "
+                f"Valid keys: {sorted(_RECOGNIZED_KEYS)}"
+            )
+
         # Deep copy qubit and gate data
         new_qubits: dict[str, QubitCalibration] = {}
         new_gates: dict[str, GateCalibration] = dict(base.gates)
