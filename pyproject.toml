@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumi-hpc-qc"
-version = "1.0.0b1"
+version = "1.1.0"
 description = "Modular HPC + Quantum Computing framework for LUMI and VTT Q50"
 requires-python = ">=3.10"
 dependencies = [

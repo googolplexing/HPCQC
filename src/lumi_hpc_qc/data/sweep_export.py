@@ -43,6 +43,8 @@ from typing import Any
 import h5py
 import numpy as np
 
+from lumi_hpc_qc import __version__ as _pkg_version
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Parquet schema definition — 61 columns
@@ -385,7 +387,7 @@ def export_sweep_to_parquet(
 
     with h5py.File(hdf5_path, "r") as h5:
         sweep_attrs = dict(h5.attrs)
-        fw_version = str(sweep_attrs.get("framework_version", "1.1.0-beta1"))
+        fw_version = str(sweep_attrs.get("framework_version", _pkg_version))
 
         # Walk leaf groups
         def _visit(name: str, obj: Any) -> None:

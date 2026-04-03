@@ -64,6 +64,7 @@ from lumi_hpc_qc.sweep.twin_simulator import (
     PlacementBatteryResult,
 )
 from lumi_hpc_qc.data.hdf5_writer import SweepHDF5Writer, SweepResultEntry
+from lumi_hpc_qc import __version__ as _pkg_version
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -117,7 +118,7 @@ class SweepConfig:
 
     # Sweep metadata
     sweep_id: str = ""
-    framework_version: str = "1.1.0-beta1"
+    framework_version: str = _pkg_version
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -291,7 +292,7 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
         enable_swmr=sweep_dict.get("enable_swmr", False),
         debug_json=sweep_dict.get("debug_json", False),
         sweep_id=sweep_dict.get("sweep_id", str(uuid.uuid4())[:8]),
-        framework_version=sweep_dict.get("framework_version", "1.1.0-beta1"),
+        framework_version=sweep_dict.get("framework_version", _pkg_version),
     )
 
     return config
