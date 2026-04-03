@@ -88,6 +88,8 @@ class SyntheticAdapter(AbstractCalibrationAdapter):
         _RECOGNIZED_KEYS = {
             "scale_t1", "scale_t2", "scale_readout", "scale_gate_error",
             "scale_gate_fidelity", "poison_qubit", "description",
+            "uniform_t1", "uniform_t2", "uniform_readout",
+            "improve_all",
         }
         unknown = set(perturbation.keys()) - _RECOGNIZED_KEYS
         if unknown:
@@ -115,6 +117,22 @@ class SyntheticAdapter(AbstractCalibrationAdapter):
                 ro *= perturbation["scale_readout"]
             if "scale_gate_error" in perturbation:
                 sge *= perturbation["scale_gate_error"]
+
+            # Improve all: scale all parameters toward better values
+            if "improve_all" in perturbation:
+                factor = perturbation["improve_all"]
+                t1 *= factor       # longer T1 = better
+                t2 *= factor       # longer T2 = better
+                ro = 1.0 - (1.0 - ro) / factor  # reduce error
+                sge /= factor      # reduce gate error
+
+            # Uniform noise: set all qubits to identical values
+            if "uniform_t1" in perturbation:
+                t1 = perturbation["uniform_t1"]
+            if "uniform_t2" in perturbation:
+                t2 = perturbation["uniform_t2"]
+            if "uniform_readout" in perturbation:
+                ro = perturbation["uniform_readout"]
 
             # Poison specific qubit
             if perturbation.get("poison_qubit") == qname:
@@ -204,5 +222,15 @@ class SyntheticAdapter(AbstractCalibrationAdapter):
                 "cz_error": round(gcal.error, 6),
             }
 
+        # Provenance — RED-SPEC-002 §10.4
+        output["_synthetic_metadata"] = {
+            "source_file": calibration.calibration_source_file,
+            "perturbation": calibration.synthetic_perturbation,
+            "generation_timestamp": calibration.calibration_timestamp,
+            "generator_version": "1.1.0",
+            "is_synthetic": True,
+        }
+
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(output, f, indent=2)
