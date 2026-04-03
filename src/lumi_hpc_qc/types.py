@@ -164,6 +164,7 @@ class ExperimentConfig:
     # Measurement stats capture (V19 — RED-SPEC-001 §5.3.3)
     capture_measurement_stats: bool = False
     measurement_stats_interval: int = 10  # capture every Nth evaluation
+    measurement_stats_schedule: list[int] | None = None  # explicit iteration list (overrides interval)
 
     # Output
     output_dir: str = "results"

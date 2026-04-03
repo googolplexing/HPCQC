@@ -74,6 +74,10 @@ class SweepResultEntry:
     wall_time_seconds: float = 0.0
     framework_version: str = ""
     experiment_id: str = ""
+    noise_fingerprint: dict[str, float | int | None] = field(
+        default_factory=dict
+    )
+    per_edge_cz_fidelity: list[float] | None = None
 
     @property
     def group_path(self) -> str:
@@ -118,6 +122,10 @@ class SweepResultEntry:
             d["parameter_trajectory"] = self.parameter_trajectory
         if self.measurement_stats is not None:
             d["measurement_stats"] = self.measurement_stats
+        if self.noise_fingerprint:
+            d["noise_fingerprint"] = self.noise_fingerprint
+        if self.per_edge_cz_fidelity is not None:
+            d["per_edge_cz_fidelity"] = self.per_edge_cz_fidelity
         return d
 
 
@@ -312,6 +320,18 @@ class SweepHDF5Writer:
                 entry.circuit_metrics
             )
 
+        # Noise fingerprinting features as JSON attribute
+        if entry.noise_fingerprint:
+            grp.attrs["noise_fingerprint"] = json.dumps(
+                entry.noise_fingerprint
+            )
+
+        # Per-edge CZ fidelity as JSON attribute
+        if entry.per_edge_cz_fidelity is not None:
+            grp.attrs["per_edge_cz_fidelity"] = json.dumps(
+                entry.per_edge_cz_fidelity
+            )
+
     def create_soft_link(
         self, source_path: str, target_path: str
     ) -> None:
@@ -399,6 +419,8 @@ class SweepHDF5Writer:
             wall_time_seconds=d.get("wall_time_seconds", 0.0),
             framework_version=d.get("framework_version", ""),
             experiment_id=d.get("experiment_id", ""),
+            noise_fingerprint=d.get("noise_fingerprint", {}),
+            per_edge_cz_fidelity=d.get("per_edge_cz_fidelity"),
         )
 
     def verify_consistency(self) -> dict[str, Any]:

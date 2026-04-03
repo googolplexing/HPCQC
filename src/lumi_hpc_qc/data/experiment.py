@@ -131,9 +131,13 @@ class ExperimentTracker:
         """
         if self._measurement_stats_path is None:
             return
-        # Check interval
-        if eval_count % self._config.measurement_stats_interval != 0:
-            return
+        # Check schedule (explicit iteration list) or interval
+        if self._config.measurement_stats_schedule is not None:
+            if eval_count not in set(self._config.measurement_stats_schedule):
+                return
+        else:
+            if eval_count % self._config.measurement_stats_interval != 0:
+                return
 
         with open(self._measurement_stats_path, "a") as f:
             for group_stat in stats:
