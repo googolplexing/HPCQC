@@ -10,11 +10,23 @@ Available tools:
                                to reduce HDF5 size (lossless — can reconstruct)
     reconstruct_basis_rotations — rebuild basis_rotations from Pauli groups
                                   and grouping_algorithm attribute
+    perturb_calibration      — generate synthetic calibration files with
+                               controlled perturbations (T1/T2 scaling,
+                               qubit poisoning, uniform noise, device projection)
 """
 
 from lumi_hpc_qc.data.tools.strip_basis_rotations import strip_basis_rotations
 from lumi_hpc_qc.data.tools.reconstruct_basis_rotations import (
     reconstruct_basis_rotations,
 )
+from lumi_hpc_qc.data.tools.perturb_calibration import (
+    generate_synthetic,
+    generate_batch,
+)
 
-__all__ = ["strip_basis_rotations", "reconstruct_basis_rotations"]
+__all__ = [
+    "strip_basis_rotations",
+    "reconstruct_basis_rotations",
+    "generate_synthetic",
+    "generate_batch",
+]
