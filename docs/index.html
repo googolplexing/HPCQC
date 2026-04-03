@@ -5,7 +5,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>lumi-hpc-qc v1.0.0b1 — Architecture & Documentation</title>
+<title>lumi-hpc-qc v1.1.0 — Architecture & Documentation</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap');
   :root{--bg:#faf9f6;--fg:#1a1a18;--fg2:#5a5a55;--fg3:#8a8a85;--accent:#2c4a7c;--accent2:#1a6e56;--border:#e0ddd5;--card:#fff;--code-bg:#f0ede5;--warn-bg:#fef3cd;--warn-fg:#856404;--err-bg:#f8d7da;--err-fg:#721c24;--ok-bg:#d4edda;--ok-fg:#155724;--sidebar-w:260px;--font-body:'DM Sans',sans-serif;--font-head:'Source Serif 4',serif;--font-mono:'JetBrains Mono',monospace}
@@ -39,7 +39,6 @@
   .callout-warn{border-left-color:#ffc107;background:var(--warn-bg)}
   .callout-ok{border-left-color:#28a745;background:var(--ok-bg)}
   .diagram-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin:20px 0;text-align:center}
-  .diagram-box svg{max-width:100%}
   .layer{display:flex;align-items:center;border-radius:10px;padding:14px 20px;margin:6px 0;font-size:14px;gap:14px}
   .layer .num{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:13px;flex-shrink:0}
   .l1{background:#eeedfe;color:#534ab7}.l1 .num{background:#534ab7;color:#fff}
@@ -47,11 +46,13 @@
   .l3{background:#e6f1fb;color:#185fa5}.l3 .num{background:#185fa5;color:#fff}
   .l4{background:#faece7;color:#993c1d}.l4 .num{background:#993c1d;color:#fff}
   .l5{background:#faeeda;color:#854f0b}.l5 .num{background:#854f0b;color:#fff}
+  .l6{background:#f0e8f5;color:#6b3a8a}.l6 .num{background:#6b3a8a;color:#fff}
   .arrow-down{text-align:center;color:var(--fg3);font-size:20px;margin:2px 0}
   .version-info{font-size:13px;color:var(--fg3);margin-bottom:24px}
   .file-tree{font-family:var(--font-mono);font-size:13px;line-height:1.8}
   .file-tree .dir{color:var(--accent);font-weight:500}
   .file-tree .comment{color:var(--fg3);font-style:italic}
+  .file-tree .new{color:var(--accent2);font-weight:500}
   details{margin:12px 0}
   details summary{cursor:pointer;font-weight:500;color:var(--accent);padding:6px 0}
   details summary:hover{text-decoration:underline}
@@ -69,38 +70,39 @@
   </ul>
   <div class="section-label">Architecture</div>
   <ul>
-    <li><a href="#five-layers">5-layer architecture</a></li>
-    <li><a href="#dependency-map">Dependency map</a></li>
+    <li><a href="#six-layers">6-layer architecture</a></li>
     <li><a href="#file-structure">File structure</a></li>
     <li><a href="#interfaces">Abstract interfaces</a></li>
     <li><a href="#design-decisions">Design decisions</a></li>
+  </ul>
+  <div class="section-label">Sweep engine</div>
+  <ul>
+    <li><a href="#sweep-overview">Overview</a></li>
+    <li><a href="#sweep-yaml">YAML configuration</a></li>
+    <li><a href="#sweep-pipeline">Pipeline stages</a></li>
+    <li><a href="#sweep-data">Data outputs</a></li>
   </ul>
   <div class="section-label">Configuration</div>
   <ul>
     <li><a href="#env-sh">env.sh — deployment config</a></li>
     <li><a href="#yaml-config">YAML experiment config</a></li>
-    <li><a href="#container-wrappers">Container wrappers</a></li>
   </ul>
   <div class="section-label">Running experiments</div>
   <ul>
     <li><a href="#quickstart">Quickstart</a></li>
+    <li><a href="#running-sweeps">Running sweeps</a></li>
+    <li><a href="#synthetic-cal">Synthetic calibrations</a></li>
     <li><a href="#test-procedures">Test procedures</a></li>
-    <li><a href="#mode-b">Mode B (automated)</a></li>
-    <li><a href="#checkpoint-resume">Checkpoint & resume</a></li>
-    <li><a href="#vqa-summary">Analysing results</a></li>
   </ul>
   <div class="section-label">Researcher guide</div>
   <ul>
-    <li><a href="#plugin-overview">Plugin system overview</a></li>
+    <li><a href="#plugin-overview">Plugin system</a></li>
     <li><a href="#new-hamiltonian">Adding a Hamiltonian</a></li>
-    <li><a href="#new-ansatz">Adding an ansatz</a></li>
-    <li><a href="#new-optimizer">Adding an optimizer</a></li>
-    <li><a href="#custom-experiment">Custom experiments</a></li>
-    <li><a href="#byo-guide">Bring-Your-Own guide</a></li>
+    <li><a href="#byo-guide">BYO circuits</a></li>
   </ul>
-  <div class="section-label">Results & analysis</div>
+  <div class="section-label">Validation</div>
   <ul>
-    <li><a href="#lumi-results">LUMI test results</a></li>
+    <li><a href="#phase-e-results">Phase E results</a></li>
     <li><a href="#known-issues">Known issues</a></li>
     <li><a href="#references">References</a></li>
   </ul>
@@ -110,207 +112,307 @@
 
 <!-- ================================================================ -->
 <h1 id="overview">lumi-hpc-qc</h1>
-<p class="version-info">Version 1.0.0b1 &middot; 2026-03-26 &middot; 55 Python files &middot; 4,615 lines &middot; LUMI (CSC Finland) + VTT Q50</p>
+<p class="version-info">Version 1.1.0 &middot; 2026-04-03 &middot; 100+ Python files &middot; ~16,000 lines &middot; LUMI (CSC Finland) + VTT Q50</p>
 
-<p>A modular framework for running Variational Quantum Algorithms on the LUMI supercomputer (AMD MI250X GPUs) and the VTT Q50 quantum processor via FiQCI. Designed so researchers can add new physics models, ansatze, optimizers, and error mitigation strategies as drop-in plugins without touching the core orchestration code.</p>
+<p>A modular framework for running Variational Quantum Algorithms and systematic noise characterisation on the LUMI supercomputer (AMD MI250X GPUs) and the VTT Q50 quantum processor via FiQCI. Researchers define experiments in YAML; the framework handles placement solving, noise decomposition, HDF5 storage, and Parquet export for ML training data.</p>
 
 <div class="callout">
-<strong>Single configuration point:</strong> All deployment-specific paths (containers, wrappers, SLURM account) live in one file: <code>env.sh</code>. Edit it once; every script picks up the change. Experiment configs (YAML) contain only physics and algorithm parameters — zero deployment paths.
+<strong>v1.1.0 — Phase E complete.</strong> The sweep engine is operational: YAML config &rarr; VF2 placement solving &rarr; 11-environment twin simulation &rarr; HDF5 &rarr; 61-column Parquet. 764 validation checks, zero failures. All 22 VE criteria satisfied. Ready for production sweep campaigns on Q50.
 </div>
 
 <!-- ================================================================ -->
 <h2 id="motivation">Motivation & background</h2>
 
-<p>This project evolved from a proof-of-concept (<code>lumi_vqa</code>) that demonstrated VQE workflows on LUMI GPUs. While the PoC validated the science — convergence of 5 physics models, adiabatic initialization, parameter-shift gradients — it was monolithic Python scripts with hardcoded paths, no plugin system, no crash recovery, and no separation of concerns.</p>
+<p>Noise characterisation on quantum hardware requires running the same circuit across every valid physical qubit layout, under multiple noise regimes, with multiple random seeds. On a 53-qubit device like VTT Q50, a 4-qubit circuit has 487 valid placements. With 11 noise environments and 20 seeds, that's ~107,000 simulations — the noise atlas that ML models need to predict QPU behaviour from calibration data alone.</p>
 
-<p>The V1.0 redesign addresses four priorities identified during PoC testing:</p>
-
-<ol>
-<li><strong>Checkpointing:</strong> A 2-hour Heisenberg job that crashes at minute 110 should be resumable, not lost.</li>
-<li><strong>Multi-backend:</strong> The same experiment config should run on GPU simulation, CPU MPS, or real quantum hardware with a single field change.</li>
-<li><strong>Plugin extensibility:</strong> Researchers adding a new Hamiltonian should not need to understand SLURM scripts, container bindings, or checkpoint serialization.</li>
-<li><strong>Automated orchestration (Mode B):</strong> Long-running experiments should survive user disconnections and auto-retry from checkpoint on node failures.</li>
-</ol>
+<p>This framework automates the entire pipeline: from a single YAML config to a Parquet training table that ML teams can ingest directly. The researcher never writes Python code, never touches SLURM scripts, never manages file formats.</p>
 
 <h3>Key references</h3>
 <ul style="margin-bottom:16px">
-<li><a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">FiQCI blog: Simulating Electrons on LUMI + VTT Q50</a> — adiabatic initialization, circuit benchmarking</li>
+<li><a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">FiQCI blog: Simulating Electrons on LUMI + VTT Q50</a></li>
 <li><a href="https://docs.csc.fi/apps/qiskit/">CSC Qiskit documentation</a></li>
-<li><a href="https://github.com/CSCfi/Quantum/tree/main/Variational-Algorithms-on-Q50">CSC Quantum repository</a></li>
-<li>Wecker et al., "Solving strongly correlated electron models on a quantum computer", Phys. Rev. A 92, 062318 (2015) — HVA ansatz, adiabatic initialization</li>
+<li><a href="https://github.com/FiQCI/fiqci-examples">FiQCI example circuits</a></li>
 </ul>
 
 <!-- ================================================================ -->
 <h2 id="roadmap">Phase roadmap</h2>
 
 <table>
-<tr><th>Phase</th><th>Step</th><th>Status</th><th>Evidence</th></tr>
-<tr><td rowspan="7">Phase 1</td><td>Types + ABCs</td><td><span class="badge badge-ok">Done</span></td><td>9 abstract interfaces</td></tr>
-<tr><td>Plugin registries</td><td><span class="badge badge-ok">Done</span></td><td>Auto-discovery, graceful ImportError skip</td></tr>
-<tr><td>5 Hamiltonian plugins</td><td><span class="badge badge-ok">Done</span></td><td>FH, Heisenberg, QAOA, Molecular, BYO</td></tr>
-<tr><td>5 Ansatz plugins</td><td><span class="badge badge-ok">Done</span></td><td>HVA, SU2, QAOA, UCCSD, BYO</td></tr>
-<tr><td>Gradient + optimizer + initializer plugins</td><td><span class="badge badge-ok">Done</span></td><td>8 plugins total</td></tr>
-<tr><td>Aer GPU backend</td><td><span class="badge badge-ok">Done</span></td><td>Tested: 4–12 qubits on LUMI MI250X</td></tr>
-<tr><td>VQE workflow</td><td><span class="badge badge-ok">Done</span></td><td>BYO TFIM 0.045% error (job 17007219)</td></tr>
-<tr><td rowspan="6">Phase 2</td><td>Checkpoint/resume</td><td><span class="badge badge-ok">Done</span></td><td>Tested: job 17012216</td></tr>
-<tr><td>Aer CPU + IQM QPU backends</td><td><span class="badge badge-ok">Done</span></td><td>Stubs, discoverable by registry</td></tr>
-<tr><td>Mode B controller</td><td><span class="badge badge-ok">Done</span></td><td>Pure bash, small partition</td></tr>
-<tr><td>env.sh centralisation</td><td><span class="badge badge-ok">Done</span></td><td>Zero hardcoded paths in scripts/configs</td></tr>
-<tr><td>Error mitigation (ZNE)</td><td><span class="badge badge-warn">Stub</span></td><td>Discovered, validates config</td></tr>
-<tr><td>MANIFEST + CHANGELOG</td><td><span class="badge badge-ok">Done</span></td><td>SHA256 hash per file</td></tr>
-<tr><td rowspan="4">Phase 3</td><td>QCut circuit cutting</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
-<tr><td>NVIDIA backends (CUDA-Q)</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
-<tr><td>AI/ML training data export</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
-<tr><td>VQD / excited state workflows</td><td><span class="badge badge-info">Planned</span></td><td>—</td></tr>
+<tr><th>Phase</th><th>Scope</th><th>Status</th><th>Checks</th></tr>
+<tr><td>Phase A</td><td>Foundation — types, plugins, VQE workflow, 5 models, LUMI deployment</td><td><span class="badge badge-ok">Done</span></td><td>31/31</td></tr>
+<tr><td>Phase B</td><td>Parameterised noise, topology-noiseless, circuit metrics, placement solver</td><td><span class="badge badge-ok">Done</span></td><td>37/37</td></tr>
+<tr><td>Phase C</td><td>Error mitigation (ZNE + readout), multiplexed QPU, seed sweeps</td><td><span class="badge badge-ok">Done</span></td><td>48/48</td></tr>
+<tr><td>Phase D</td><td>Multi-format export, Schema v2, quality gates, measurement stats (V19)</td><td><span class="badge badge-ok">Done</span></td><td>86/86</td></tr>
+<tr><td><strong>Phase E</strong></td><td><strong>Sweep engine — YAML &rarr; placement &rarr; twin sim &rarr; HDF5 &rarr; Parquet</strong></td><td><span class="badge badge-ok">Done</span></td><td><strong>764/764</strong></td></tr>
 </table>
 
 <!-- ================================================================ -->
-<h2 id="five-layers">5-layer architecture</h2>
+<h2 id="six-layers">6-layer architecture</h2>
 
-<p>All arrows point downward — no upward dependencies. Layer 3 never imports from Layer 2. Layer 4 never imports from Layer 3. This is Dependency Inversion in practice.</p>
+<p>v1.1.0 adds a sixth layer: the sweep engine, which sits between the CLI and orchestration layers. All arrows point downward — no upward dependencies.</p>
 
-<div class="layer l1"><div class="num">1</div><div><strong>CLI</strong> — Config files (YAML), SLURM submission helpers, status monitoring. The only layer researchers touch directly.</div></div>
+<div class="layer l1"><div class="num">1</div><div><strong>CLI</strong> — YAML configs, SLURM submission helpers, status monitoring. The only layer researchers touch directly.</div></div>
 <div class="arrow-down">↓</div>
-<div class="layer l2"><div class="num">2</div><div><strong>Orchestration</strong> — Workflow engine (VQE loop, adiabatic ramp), job scheduler (SLURM submit/monitor), checkpoint manager (save/resume state), controller (Mode A interactive / Mode B automated).</div></div>
+<div class="layer l6"><div class="num">6</div><div><strong>Sweep Engine</strong> — YAML &rarr; grid expansion &rarr; placement solving &rarr; twin simulation battery &rarr; HDF5 &rarr; Parquet export. Orchestrates all of Phase E.</div></div>
 <div class="arrow-down">↓</div>
-<div class="layer l3"><div class="num">3</div><div><strong>Backends</strong> — Pluggable execution: Aer GPU (statevector/density matrix), Aer CPU (MPS), IQM QPU (Q50 via FiQCI), future QCut + CUDA-Q. Each implements the same <code>Backend</code> ABC.</div></div>
+<div class="layer l2"><div class="num">2</div><div><strong>Orchestration</strong> — VQE workflow, job scheduler (SLURM), checkpoint manager, controller (Mode A/B).</div></div>
 <div class="arrow-down">↓</div>
-<div class="layer l4"><div class="num">4</div><div><strong>Plugins</strong> — 6 sub-packages (hamiltonians, ansatze, optimizers, gradients, initializers, error_mitigation). Auto-discovered. Researchers add a Python file, it's available.</div></div>
+<div class="layer l3"><div class="num">3</div><div><strong>Backends</strong> — Aer GPU (statevector/density matrix), Aer CPU (MPS, 128-way parallel), IQM QPU (Q50 via FiQCI).</div></div>
 <div class="arrow-down">↓</div>
-<div class="layer l5"><div class="num">5</div><div><strong>Data</strong> — Experiment tracker, provenance collector (all imported modules), timing (3 formats: human/benchmark/ML), result store (JSON with numpy support).</div></div>
-
-<!-- ================================================================ -->
-<h2 id="dependency-map">Dependency map</h2>
-
-<pre>
-User Interface  →  Orchestration  →  Execution Backends
-                        ↓                    ↓
-                   Checkpoint Mgr      Plugin Registry
-                        ↓                    ↓
-                   Data / Tracking  ←  Experiment Store
-</pre>
-
-<p>Key principle: the workflow engine calls plugin <em>interfaces</em> (ABCs), never concrete implementations. Adding a new Hamiltonian means writing one class that inherits from <code>HamiltonianBuilder</code> — zero changes to workflow, backend, or CLI code.</p>
+<div class="layer l4"><div class="num">4</div><div><strong>Plugins</strong> — 7 sub-packages: hamiltonians (6 incl. TFIM), ansatze (5), optimizers (3), gradients (2), initializers (3), error_mitigation (2), calibration_adapters (3).</div></div>
+<div class="arrow-down">↓</div>
+<div class="layer l5"><div class="num">5</div><div><strong>Data</strong> — HDF5 writer (WAL crash safety), sweep export (61-column Parquet), experiment tracker, provenance, quality gates.</div></div>
 
 <!-- ================================================================ -->
 <h2 id="file-structure">File structure</h2>
 
 <pre class="file-tree">
 <span class="dir">lumi_hpc_qc/</span>
-├── env.sh                          <span class="comment"># deployment config (containers, account, wrappers)</span>
-├── pyproject.toml                  <span class="comment"># version 1.0.0b1</span>
-├── MANIFEST                        <span class="comment"># SHA256 hash + line count per file</span>
-├── CHANGELOG.md                    <span class="comment"># version history with LUMI job IDs</span>
-├── README.md
+├── env.sh                          <span class="comment"># deployment config</span>
+├── MANIFEST                        <span class="comment"># SHA256 hashes, 214 files</span>
+├── CHANGELOG.md                    <span class="comment"># full version history</span>
 │
-├── <span class="dir">configs/</span>                        <span class="comment"># experiment configs (physics only, no paths)</span>
-│   ├── experiment.yaml.example     <span class="comment"># annotated template</span>
-│   ├── byo_tfim_8q.yaml
-│   ├── fermi_hubbard_2x3_12q.yaml
-│   ├── heisenberg_3x4_12q.yaml
-│   ├── qaoa_maxcut_12q.yaml
-│   └── molecular_h2_4q.yaml
+├── <span class="dir">configs/</span>                        <span class="comment"># YAML experiment configs</span>
 │
 ├── <span class="dir">examples/</span>
-│   └── byo_transverse_ising_8q.json
+│   ├── q50_calibration_20260330.json  <span class="comment"># 53-qubit real calibration</span>
+│   └── <span class="dir new">fiqci/</span>                     <span class="comment new"># FiQCI BYO circuits (GHZ, Bell, Star)</span>
 │
 ├── <span class="dir">src/lumi_hpc_qc/</span>
-│   ├── types.py                    <span class="comment"># 20+ shared dataclasses</span>
+│   ├── types.py                    <span class="comment"># 25+ shared dataclasses</span>
 │   │
 │   ├── <span class="dir">cli/</span>
-│   │   ├── main.py                 <span class="comment"># 5 commands: run, submit, status, resume, results</span>
-│   │   ├── config_loader.py        <span class="comment"># YAML → ExperimentConfig + CLI overrides</span>
-│   │   └── slurm_templates.py      <span class="comment"># generates child VQE scripts</span>
+│   │   ├── main.py                 <span class="comment"># run, submit, status, resume, results</span>
+│   │   └── config_loader.py        <span class="comment"># YAML → ExperimentConfig</span>
 │   │
 │   ├── <span class="dir">orchestration/</span>
-│   │   ├── workflow.py             <span class="comment"># VQEWorkflow: _setup → _initialize → _optimize</span>
-│   │   ├── controller.py           <span class="comment"># Mode A (in-process) + Mode B (pointer to bash)</span>
-│   │   ├── scheduler.py            <span class="comment"># SLURM submit/status/wait/cancel/job_info</span>
-│   │   └── checkpoint.py           <span class="comment"># atomic writes, numpy serialization, cleanup</span>
+│   │   ├── workflow.py             <span class="comment"># VQE loop with measurement stats</span>
+│   │   ├── controller.py           <span class="comment"># Mode A + Mode B</span>
+│   │   ├── scheduler.py            <span class="comment"># SLURM interface</span>
+│   │   └── checkpoint.py           <span class="comment"># atomic writes, resume</span>
 │   │
 │   ├── <span class="dir">backends/</span>
-│   │   ├── base.py                 <span class="comment"># Backend ABC</span>
-│   │   ├── registry.py             <span class="comment"># auto-discovers backend classes</span>
-│   │   ├── aer_gpu.py              <span class="comment"># statevector + density_matrix on MI250X</span>
+│   │   ├── aer_gpu.py              <span class="comment"># MI250X: statevector + density_matrix</span>
 │   │   ├── aer_cpu.py              <span class="comment"># MPS on standard partition</span>
-│   │   └── iqm_qpu.py              <span class="comment"># VTT Q50 stub with expectation_from_counts</span>
+│   │   └── iqm_qpu.py              <span class="comment"># VTT Q50 via FiQCI</span>
 │   │
 │   ├── <span class="dir">plugins/</span>
-│   │   ├── registry.py             <span class="comment"># auto-discovers all plugin types</span>
-│   │   ├── <span class="dir">hamiltonians/</span>   (base, fermi_hubbard, heisenberg, qaoa_maxcut, molecular, byo)
-│   │   ├── <span class="dir">ansatze/</span>        (base, hva, su2, qaoa, uccsd, byo)
-│   │   ├── <span class="dir">optimizers/</span>     (base, lbfgsb, cobyla, spsa)
-│   │   ├── <span class="dir">gradients/</span>      (base, parameter_shift, finite_difference)
-│   │   ├── <span class="dir">initializers/</span>   (base, random_init, zero_init, adiabatic)
-│   │   └── <span class="dir">error_mitigation/</span> (base, zne)
+│   │   ├── <span class="dir">hamiltonians/</span>   (byo, fermi_hubbard, heisenberg, qaoa_maxcut, molecular, <span class="new">tfim</span>)
+│   │   ├── <span class="dir">ansatze/</span>        (byo, hva, su2, qaoa, uccsd)
+│   │   ├── <span class="dir">optimizers/</span>     (l_bfgs_b, cobyla, spsa)
+│   │   ├── <span class="dir">gradients/</span>      (parameter_shift, finite_difference)
+│   │   ├── <span class="dir">initializers/</span>   (random, zero, adiabatic)
+│   │   ├── <span class="dir">error_mitigation/</span> (readout, zne)
+│   │   └── <span class="dir new">calibration_adapters/</span> <span class="comment new">(iqm_v2, synthetic, base)</span>
+│   │
+│   ├── <span class="dir new">sweep/</span>                      <span class="comment new"># Phase E sweep engine</span>
+│   │   ├── sweep_engine.py         <span class="comment"># YAML → HDF5 orchestrator (975 lines)</span>
+│   │   ├── placement_solver.py     <span class="comment"># VF2 subgraph isomorphism</span>
+│   │   ├── topology_library.py     <span class="comment"># 7 reference topologies (2q–8q)</span>
+│   │   ├── twin_simulator.py       <span class="comment"># 11 noise environments per placement</span>
+│   │   ├── noise_configs.py        <span class="comment"># NoiseConfig definitions + tiers</span>
+│   │   ├── execution_planner.py    <span class="comment"># CPU/GPU routing + 128-way parallel</span>
+│   │   ├── circuit_loader.py       <span class="comment"># QPY/QASM/script loading</span>
+│   │   ├── eval_runner.py          <span class="comment"># eval-only mode for fixed circuits</span>
+│   │   ├── circuit_composer.py     <span class="comment"># compose placements → device-width circuit</span>
+│   │   ├── demultiplexer.py        <span class="comment"># extract per-placement counts</span>
+│   │   ├── round_executor.py       <span class="comment"># multi-round packing orchestrator</span>
+│   │   └── mixed_packing.py        <span class="comment"># heterogeneous QPU submissions</span>
 │   │
 │   └── <span class="dir">data/</span>
-│       ├── experiment.py           <span class="comment"># ExperimentTracker: start → log → finalize</span>
-│       ├── provenance.py           <span class="comment"># all imported modules, container tag, git commit</span>
-│       ├── timing.py               <span class="comment"># 3 formats: human-readable, benchmark JSON, ML flat</span>
-│       └── result_store.py         <span class="comment"># JSON with numpy array round-trip</span>
+│       ├── hdf5_writer.py          <span class="comment"># WAL crash-safe HDF5 writer</span>
+│       ├── sweep_export.py         <span class="comment"># HDF5 → 61-column Parquet + CSV</span>
+│       ├── export.py               <span class="comment"># Phase D multi-format export</span>
+│       ├── experiment.py           <span class="comment"># ExperimentTracker</span>
+│       ├── schema.py               <span class="comment"># Schema v2.0.0 validation</span>
+│       ├── quality.py              <span class="comment"># Quality gates</span>
+│       └── <span class="dir">tools/</span>
+│           ├── perturb_calibration.py <span class="comment"># synthetic calibration CLI</span>
+│           ├── strip_basis_rotations.py
+│           └── reconstruct_basis_rotations.py
 │
-├── <span class="dir">tests/</span>
-│   ├── vqa_summary.sh              <span class="comment"># diagnostic summary for SLURM outputs</span>
-│   ├── vqe_runner.py               <span class="comment"># generic runner (reads CONFIG_PATH env)</span>
-│   ├── resume_runner.py            <span class="comment"># for Mode B checkpoint resumption</span>
-│   ├── smoke_test_runner.py        <span class="comment"># import + plugin discovery test</span>
-│   ├── checkpoint_resume_runner.py <span class="comment"># 2-phase run→resume test</span>
-│   ├── test_smoke.sh, test_byo_tfim_8q.sh, test_fh_2x3_12q.sh, ...
-│   ├── mode_b_controller.sh        <span class="comment"># pure bash, small partition</span>
-│   └── launch_mode_b.sh            <span class="comment"># one-liner to start Mode B</span>
-│
+├── <span class="dir">tests/</span>                          <span class="comment"># 12 SLURM test scripts (slurm_e1..e10, e6b)</span>
 └── <span class="dir">docs/</span>
     └── index.html                  <span class="comment"># this file</span>
 </pre>
 
 <!-- ================================================================ -->
-<h2 id="interfaces">Abstract interfaces (ABCs)</h2>
-
-<p>The framework defines 9 abstract base classes. Every plugin implements exactly one of these. The workflow engine calls only these interfaces — never concrete classes.</p>
+<h2 id="interfaces">Abstract interfaces</h2>
 
 <table>
 <tr><th>ABC</th><th>Key methods</th><th>Implementations</th></tr>
-<tr><td><code>Backend</code></td><td><code>run_circuits()</code>, <code>compile_circuit()</code>, <code>capabilities()</code></td><td>aer_gpu, aer_cpu, iqm_qpu</td></tr>
-<tr><td><code>HamiltonianBuilder</code></td><td><code>build()</code>, <code>exact_ground_energy()</code>, <code>adiabatic_parameter_name()</code></td><td>fermi_hubbard, heisenberg, qaoa_maxcut, molecular, byo</td></tr>
-<tr><td><code>AnsatzBuilder</code></td><td><code>build()</code> → circuit + AnsatzMetadata</td><td>hva, su2, qaoa, uccsd, byo</td></tr>
-<tr><td><code>OptimizerStrategy</code></td><td><code>minimize()</code> with cost_fn, grad_fn, callback</td><td>l_bfgs_b, cobyla, spsa</td></tr>
-<tr><td><code>GradientStrategy</code></td><td><code>compute()</code>, <code>validate_ansatz()</code></td><td>parameter_shift, finite_difference</td></tr>
-<tr><td><code>InitializerStrategy</code></td><td><code>initialize()</code> → numpy array</td><td>random, zero, adiabatic</td></tr>
-<tr><td><code>ErrorMitigator</code></td><td><code>mitigate()</code>, <code>validate_config()</code></td><td>zne (stub)</td></tr>
+<tr><td><code>Backend</code></td><td><code>run_circuits()</code></td><td>aer_gpu, aer_cpu, iqm_qpu</td></tr>
+<tr><td><code>HamiltonianBuilder</code></td><td><code>build()</code>, <code>exact_ground_energy()</code></td><td>fermi_hubbard, heisenberg, qaoa_maxcut, molecular, byo, tfim</td></tr>
+<tr><td><code>AnsatzBuilder</code></td><td><code>build()</code> &rarr; circuit + metadata</td><td>hva, su2, qaoa, uccsd, byo</td></tr>
+<tr><td><code>OptimizerStrategy</code></td><td><code>minimize()</code></td><td>l_bfgs_b, cobyla, spsa</td></tr>
+<tr><td><code>GradientStrategy</code></td><td><code>compute()</code></td><td>parameter_shift, finite_difference</td></tr>
+<tr><td><code>InitializerStrategy</code></td><td><code>initialize()</code></td><td>random, zero, adiabatic</td></tr>
+<tr><td><code>ErrorMitigator</code></td><td><code>mitigate()</code></td><td>readout, zne</td></tr>
+<tr><td><code>CalibrationAdapter</code></td><td><code>load()</code>, <code>validate()</code></td><td>iqm_v2, synthetic</td></tr>
 </table>
-
-<h3>Metadata-driven wiring</h3>
-<p>The <code>AnsatzMetadata</code> dataclass declares compatibility constraints that the workflow uses to auto-select plugins:</p>
-<pre>
-@dataclass
-class AnsatzMetadata:
-    num_parameters: int
-    gradient_compatibility: str   # "parameter_shift", "finite_difference", "both"
-    preferred_initializer: str    # "random", "zero", "adiabatic"
-    requires_decomposition: bool  # whether backend must decompose before execution
-</pre>
-<p>Example: UCCSD sets <code>gradient_compatibility="finite_difference"</code> and <code>preferred_initializer="zero"</code>. The workflow reads this and automatically selects the right gradient and initializer — no manual wiring.</p>
 
 <!-- ================================================================ -->
 <h2 id="design-decisions">Design decisions</h2>
 
-<p>Every decision below was tested on LUMI with real GPU hours. The SLURM job IDs are included for reproducibility.</p>
-
 <table>
 <tr><th>Decision</th><th>Why</th><th>Evidence</th></tr>
-<tr><td>Double precision by default</td><td>Single precision gradient noise kills optimizers for ≤36q</td><td>PoC testing</td></tr>
-<tr><td>Parameter-shift gradients (noiseless)</td><td>Exact analytical gradients; finite-diff failed at eps=1e-4</td><td>H2 test: gradient=0</td></tr>
-<tr><td>Central FD with eps=0.1 (UCCSD)</td><td>UCCSD gate coefficients are 0.125×t; small eps below sensitivity</td><td>Job 17008293</td></tr>
-<tr><td>Adiabatic init with GD + backtracking</td><td>L-BFGS-B failed on non-convex VQE landscapes; GD with line search more robust</td><td>FH ramp: L-BFGS-B stuck at U=0</td></tr>
-<tr><td>HF state prepended to UCCSD</td><td>qiskit-nature UCCSD doesn't always include HF reference; at θ=0, |0⟩⊗n gives E=0</td><td>H2 E=0.0 → E=-1.245</td></tr>
-<tr><td>QAOA Hamiltonian H = −C</td><td>VQE minimizes; need H=−C so minimum = best cut</td><td>Job 17008092: E=+2.8 → E=-13.0</td></tr>
-<tr><td>Container launched via GPU wrapper</td><td>Direct <code>singularity exec</code> fails with binding error</td><td>"bindings are not OK" error</td></tr>
-<tr><td>Python in separate .py files</td><td>Inline <code>python -c</code> breaks with multi-line code in SLURM scripts</td><td>Tested on LUMI</td></tr>
-<tr><td>Checkpoint: atomic writes (.tmp → rename)</td><td>Crash during write produces corrupt JSON otherwise</td><td>Design decision</td></tr>
-<tr><td>Mode B: pure bash, not Python in container</td><td>Controller needs sbatch/squeue, not qiskit; minimal CPU allocation</td><td>1 core, 1GB RAM on small partition</td></tr>
-<tr><td>Plugin discovery: try/except ImportError</td><td>Molecular needs PySCF; skip gracefully if not installed</td><td>Smoke test passes without PySCF</td></tr>
+<tr><td>VF2 subgraph isomorphism via rustworkx</td><td>Exact placement enumeration for arbitrary circuits on arbitrary topologies</td><td>487 placements for 4q on Q50 in &lt;1s</td></tr>
+<tr><td>WAL (write-ahead log) for HDF5</td><td>h5py crash recovery depends on Lustre metadata semantics — WAL is independent</td><td>E3 kill-9 recovery test</td></tr>
+<tr><td>Compute fingerprints during execution, not export</td><td>Export reads only HDF5 attributes — O(N) metadata scan, never opens datasets</td><td>974 rows exported in 1.9s</td></tr>
+<tr><td>Noiseless deduplication across calibrations</td><td>Noiseless results depend on topology, not calibration — skip redundant sims</td><td>1,512 skipped in VE18 (18% savings)</td></tr>
+<tr><td>CPU ≤8q, GPU ≥10q routing</td><td>Density matrix fits in CPU cache at ≤8q; GPU setup overhead exceeds sim time</td><td>128-way parallel = sequential results</td></tr>
+<tr><td>11 noise environments with tiered intervals</td><td>Individual channels (Tier A) need high resolution; combined (Tier B) need less</td><td>~350 MB/day storage budget</td></tr>
+<tr><td>Mixed-experiment packing</td><td>Non-overlapping circuits share QPU submissions — 2× science per QPU second</td><td>Δ=0.0015 TFIM, Δ=0.0146 GHZ vs independent</td></tr>
 </table>
+
+<!-- ================================================================ -->
+<h2 id="sweep-overview">Sweep engine overview</h2>
+
+<p>The sweep engine takes a YAML config and produces a complete noise atlas: every valid physical qubit layout on the device, under 11 noise environments, across multiple seeds and calibrations. The output is a flat Parquet training table for ML models.</p>
+
+<div class="callout">
+<strong>One command, one YAML file, one Parquet table.</strong> The researcher defines what to sweep; the engine handles placement solving, noise decomposition, HDF5 storage, and export. No Python code required.
+</div>
+
+<pre>
+YAML config
+  → Grid expansion (hamiltonians × topologies × seeds × calibrations)
+  → E1: VF2 placement solver (all valid placements per device)
+  → E4: Twin simulator (11 noise environments per placement)
+  → E2: Tiered execution (CPU ≤8q, GPU ≥10q, 128-way parallel)
+  → E3: HDF5 writer (WAL crash safety, noiseless deduplication)
+  → E8: Export (61-column Parquet + summary CSV)
+</pre>
+
+<!-- ================================================================ -->
+<h2 id="sweep-yaml">Sweep YAML configuration</h2>
+
+<pre>
+sweep:
+  experiments:
+    - type: characterization
+      hamiltonians: [tfim]
+      qubit_sizes: [4]
+      topologies: [4q_chain, 4q_star]
+      seeds: 20
+      noise_configs: all           # all 11 environments
+      placement: all_valid         # every VF2-found placement
+
+  calibrations:
+    - examples/q50_calibration_20260330.json
+
+  execution:
+    cpu_workers: 4
+
+  output_dir: results/sweep_output
+  sweep_id: my_sweep_001
+</pre>
+
+<h4>Placement strategies</h4>
+<table>
+<tr><th>Strategy</th><th>YAML value</th><th>Behaviour</th></tr>
+<tr><td>All valid</td><td><code>all_valid</code></td><td>Every VF2 subgraph isomorphism — 379 chain + 108 star for 4q on Q50</td></tr>
+<tr><td>Top N</td><td><code>top_5</code>, <code>top_10</code></td><td>Highest-scoring N placements by calibration quality</td></tr>
+<tr><td>Specific</td><td><code>specific</code></td><td>Researcher-specified physical qubit sets</td></tr>
+</table>
+
+<h4>Noise environments</h4>
+<table>
+<tr><th>Name</th><th>Channels</th><th>Shots</th><th>Stats interval</th></tr>
+<tr><td><code>noiseless</code></td><td>None</td><td>0</td><td>Disabled</td></tr>
+<tr><td><code>noise_1q_only</code></td><td>Single-qubit depolarizing</td><td>4096</td><td>5 (Tier A)</td></tr>
+<tr><td><code>noise_2q_only</code></td><td>Two-qubit depolarizing</td><td>4096</td><td>5 (Tier A)</td></tr>
+<tr><td><code>noise_t1_only</code></td><td>T1 thermal relaxation</td><td>4096</td><td>5 (Tier A)</td></tr>
+<tr><td><code>noise_t2_only</code></td><td>T2 dephasing</td><td>4096</td><td>5 (Tier A)</td></tr>
+<tr><td><code>noise_readout_only</code></td><td>Readout error</td><td>4096</td><td>5 (Tier A)</td></tr>
+<tr><td><code>noise_coherence</code></td><td>T1 + T2</td><td>4096</td><td>20 (Tier B)</td></tr>
+<tr><td><code>noise_gates</code></td><td>1q + 2q depolarizing</td><td>4096</td><td>20 (Tier B)</td></tr>
+<tr><td><code>noise_gates_readout</code></td><td>1q + 2q + readout</td><td>4096</td><td>20 (Tier B)</td></tr>
+<tr><td><code>noise_full</code></td><td>All 5 channels</td><td>4096</td><td>10</td></tr>
+<tr><td><code>topology_noiseless</code></td><td>None (topology routing only)</td><td>0</td><td>Disabled</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="sweep-pipeline">Pipeline stages</h2>
+
+<table>
+<tr><th>Stage</th><th>System</th><th>What it does</th></tr>
+<tr><td>E1</td><td>Placement Solver</td><td>VF2 subgraph isomorphism — finds all valid qubit layouts on the QPU coupling map. Scores by calibration quality.</td></tr>
+<tr><td>E2</td><td>Execution Planner</td><td>Routes ≤8q to CPU (density matrix), ≥10q to GPU. 128-way parallel on LUMI-C.</td></tr>
+<tr><td>E3</td><td>HDF5 Writer</td><td>Write-during-execution with WAL crash safety. Each result flushed immediately.</td></tr>
+<tr><td>E4</td><td>Twin Simulator</td><td>Runs each placement through all 11 noise environments. Deduplicates noiseless results across calibrations.</td></tr>
+<tr><td>E5</td><td>BYO Circuits</td><td>Load circuits from QPY/QASM/script. Evaluation-only mode for fixed (non-parameterized) circuits.</td></tr>
+<tr><td>E6a</td><td>Same-Circuit Packing</td><td>Multiple placements of one circuit in a single device-width QPU submission.</td></tr>
+<tr><td>E6b</td><td>Mixed-Experiment Packing</td><td>Different experiments' circuits share a QPU submission. Non-overlapping qubits and edges verified.</td></tr>
+<tr><td>E7</td><td>Sweep Engine</td><td>Top-level orchestrator: YAML &rarr; grid &rarr; placements &rarr; twin battery &rarr; HDF5.</td></tr>
+<tr><td>E8</td><td>Sweep Export</td><td>HDF5 &rarr; 61-column Parquet (metadata scan, no dataset reads) + summary CSV.</td></tr>
+<tr><td>E9</td><td>Synthetic Calibration</td><td>CLI tool for generating perturbed calibrations: 7 perturbation types, batch generation.</td></tr>
+<tr><td>E10</td><td>Validation</td><td>End-to-end: FiQCI GHZ BYO &rarr; placement &rarr; twin sim &rarr; HDF5 &rarr; Parquet. Physics verified.</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="sweep-data">Data outputs</h2>
+
+<h3>Output files</h3>
+<pre>
+sweep_output/
+    sweep.h5          ← HDF5 noise atlas (all results, WAL-protected)
+    sweep.parquet     ← 61-column flat ML training table (Snappy compressed)
+    sweep.csv         ← summary CSV for quick inspection
+    sweep.h5.wal      ← write-ahead log (crash recovery)
+</pre>
+
+<h3>Parquet schema (61 columns)</h3>
+
+<details>
+<summary>Identity &amp; Provenance (4 columns)</summary>
+<p><code>experiment_id</code>, <code>schema_version</code>, <code>framework_version</code>, <code>quality_gate_passed</code></p>
+</details>
+
+<details>
+<summary>Experiment Configuration (10 columns)</summary>
+<p><code>model</code>, <code>ansatz</code>, <code>optimizer</code>, <code>gradient_method</code>, <code>initializer</code>, <code>num_qubits</code>, <code>ansatz_reps</code>, <code>num_parameters</code>, <code>optimizer_maxiter</code>, <code>shots</code>, <code>seed</code></p>
+</details>
+
+<details>
+<summary>Hamiltonian Properties (3 columns)</summary>
+<p><code>spectral_gap</code>, <code>hamiltonian_locality</code>, <code>num_pauli_terms</code></p>
+</details>
+
+<details>
+<summary>Device &amp; Placement (7 columns)</summary>
+<p><code>device</code>, <code>placement_qubits</code>, <code>circuit_topology</code>, <code>topology_equivalence_class</code>, <code>placement_fidelity_score</code>, <code>submission_round</code>, <code>coupling_map_source</code></p>
+</details>
+
+<details>
+<summary>Calibration (8 columns)</summary>
+<p><code>calibration_source</code>, <code>calibration_device</code>, <code>calibration_date</code>, <code>calibration_is_synthetic</code>, <code>per_qubit_t1_us</code>, <code>per_qubit_t2_us</code>, <code>per_qubit_readout_fidelity</code>, <code>per_edge_cz_fidelity</code></p>
+</details>
+
+<details>
+<summary>Noise &amp; Mitigation (4 columns)</summary>
+<p><code>noise_environment</code>, <code>noise_channels_active</code>, <code>mitigation_readout</code>, <code>mitigation_zne</code></p>
+</details>
+
+<details>
+<summary>Circuit Metrics (3 columns)</summary>
+<p><code>pre_transpilation_depth</code>, <code>post_transpilation_depth</code>, <code>swap_count</code></p>
+</details>
+
+<details>
+<summary>Results (7 columns)</summary>
+<p><code>best_energy</code>, <code>exact_energy</code>, <code>relative_error</code>, <code>total_iterations</code>, <code>optimizer_converged</code>, <code>wall_time_s</code>, <code>noiseless_tier</code></p>
+</details>
+
+<details>
+<summary>Aggregated Features (3 columns)</summary>
+<p><code>convergence_rate</code>, <code>energy_variance</code>, <code>final_gradient_norm</code></p>
+</details>
+
+<details>
+<summary>Noise Fingerprinting (11 columns)</summary>
+<p><code>measurement_entropy</code>, <code>dominant_bitstring_fraction</code>, <code>num_unique_bitstrings</code>, <code>bitstring_hamming_weight_mean</code>, <code>bitstring_hamming_weight_variance</code>, <code>z_group_expectation_mean</code>, <code>xz_expectation_ratio</code>, <code>effective_hilbert_dimension</code>, <code>kl_divergence_from_uniform</code>, <code>expectation_variance_across_groups</code>, <code>dominant_bitstring_hamming_weight</code></p>
+</details>
 
 <!-- ================================================================ -->
 <h2 id="env-sh">env.sh — deployment configuration</h2>
@@ -324,39 +426,29 @@ export SBATCH_ACCOUNT="${HPCQC_ACCOUNT}"
 
 # ── Container paths ──
 export HPCQC_GPU_CONTAINER="/path/to/gpu-container.sif"
-export HPCQC_CPU_CONTAINER="${HPCQC_GPU_CONTAINER}"  # or separate CPU image
+export HPCQC_CPU_CONTAINER="${HPCQC_GPU_CONTAINER}"
 
 # ── Container launch wrappers ──
 export HPCQC_GPU_WRAPPER="/path/to/run-singularity-with-gpu-affinity"
 export HPCQC_CPU_WRAPPER="/path/to/run-singularity"
 
-# ── GPU affinity mask (LUMI MI250X) ──
-export HPCQC_GPU_MASK="mask_cpu:0xfe000000000000,..."
-
-# ── SLURM partitions ──
-export HPCQC_GPU_PARTITION="standard-g"
-export HPCQC_CPU_PARTITION="standard"
-export HPCQC_SMALL_PARTITION="small"
+# ── Project root ──
+export HPCQC_ROOT="${SLURM_SUBMIT_DIR:-$(pwd)}"
 </pre>
-
-<div class="callout">
-<strong>To deploy on a different system:</strong> Edit <code>env.sh</code> with your container path, wrapper script, and account. Then <code>source env.sh && sbatch tests/test_smoke.sh</code>. If the smoke test passes, everything works.
-</div>
 
 <!-- ================================================================ -->
 <h2 id="yaml-config">YAML experiment configuration</h2>
 
-<p>Configs describe the <strong>experiment</strong> (physics, algorithm, precision) — never deployment paths. Example:</p>
+<p>VQE configs describe the experiment — never deployment paths:</p>
 
 <pre>
-model: fermi_hubbard
+model: tfim
 model_params:
-  lattice_rows: 2
-  lattice_cols: 3
-  hopping_t: 1.0
-  interaction_u: 2.0
+  num_qubits: 4
+  j: 1.0
+  g: 1.0
 
-ansatz: hva
+ansatz: su2
 ansatz_params:
   reps: 3
 
@@ -366,226 +458,111 @@ optimizer_params:
 
 gradient: parameter_shift
 initializer: adiabatic
-initializer_params:
-  adiabatic_steps: 20
-  adiabatic_max_iter: 300
-
 backend: aer_gpu
 precision: double
-
-checkpoint:
-  enabled: true
-  interval: 50
 </pre>
-
-<p>See <code>configs/experiment.yaml.example</code> for all available options with annotations.</p>
-
-<!-- ================================================================ -->
-<h2 id="container-wrappers">Container wrappers</h2>
-
-<p>LUMI requires Singularity containers launched through specific wrapper scripts that handle filesystem bindings and GPU affinity.</p>
-
-<h4>CPU wrapper (<code>run-singularity</code>)</h4>
-<p>Reads bind mount lists from inside the container, sets up MPICH. Used for CPU-only nodes (standard partition, MPS simulation).</p>
-
-<h4>GPU wrapper (<code>run-singularity-with-gpu-affinity</code>)</h4>
-<p>Same as CPU wrapper plus: maps each MPI rank to a specific GCD on the MI250X via <code>ROCR_VISIBLE_DEVICES</code>. The ordering <code>4 5 2 3 6 7 0 1</code> matches NUMA-to-GCD topology so each rank talks to its closest GPU.</p>
 
 <!-- ================================================================ -->
 <h2 id="quickstart">Quickstart</h2>
 
 <pre>
-# 1. Extract and enter project
+# 1. Clone and enter project
 cd /your/project/area
-tar -xzf lumi_hpc_qc.tar.gz && cd lumi_hpc_qc
+git clone ... && cd HPCQC
 
 # 2. Edit env.sh with your container/account paths
 vim env.sh
 
-# 3. Source environment (sets SBATCH_ACCOUNT for all submissions)
+# 3. Source environment
 source env.sh
 
 # 4. Smoke test — validates container + plugin discovery
 sbatch tests/test_smoke.sh
-# Wait, then check: cat slurm_logs/smoke_test.o&lt;jobid&gt;
 
-# 5. Run the proven model — BYO TFIM 8q, ~9 minutes
-sbatch tests/test_byo_tfim_8q.sh
-# Wait, then check: ./tests/vqa_summary.sh slurm_logs/byo_tfim_8q.o&lt;jobid&gt;
+# 5. Run a sweep — TFIM 4q across all Q50 placements
+sbatch tests/slurm_e7.sh
 </pre>
 
 <!-- ================================================================ -->
-<h2 id="test-procedures">Test procedures & expected output</h2>
+<h2 id="running-sweeps">Running sweeps</h2>
 
-<h3>Test 1: Smoke test</h3>
-<p><strong>What it validates:</strong> <code>env.sh</code> paths correct, container launches, all plugins discovered.</p>
-<pre>source env.sh && sbatch tests/test_smoke.sh</pre>
+<p>The sweep engine is invoked via SLURM test scripts or programmatically:</p>
 
-<h4>Expected output (pass):</h4>
 <pre>
-=== Plugin Discovery ===
-  hamiltonians: ['byo', 'fermi_hubbard', 'heisenberg', 'molecular', 'qaoa_maxcut']
-  ansatze: ['byo', 'hva', 'qaoa', 'su2', 'uccsd']
-  optimizers: ['cobyla', 'l_bfgs_b', 'spsa']
-  gradients: ['finite_difference', 'parameter_shift']
-  initializers: ['adiabatic', 'random', 'zero']
-  error_mitigation: ['zne']
-  ...
-  SMOKE TEST PASSED
-</pre>
-
-<h4>Failure modes:</h4>
-<ul>
-<li><strong>"bindings are not OK"</strong> → Container path or wrapper path wrong in <code>env.sh</code></li>
-<li><strong>Missing plugins</strong> → Container missing qiskit-nature or PySCF (molecular/FH plugins will be skipped gracefully)</li>
-</ul>
-
-<h3>Test 2: BYO TFIM 8q (acceptance test)</h3>
-<p><strong>What it validates:</strong> Full VQE pipeline end-to-end. Known-good result for comparison.</p>
-<pre>source env.sh && sbatch tests/test_byo_tfim_8q.sh</pre>
-
-<h4>Expected output (~9 minutes):</h4>
-<pre>
-  CONVERGENCE SUMMARY
-  Total iterations        : ~660-700
-  Best energy             :    -7.63714428
-  Exact ground state      :    -7.64059255
-  Best relative error     :      0.045131%
-  PASSED  (error: 0.0451%)
-</pre>
-
-<h4>squeue during run:</h4>
-<pre>
-$ squeue --me
-  JOBID PARTITION   NAME          STATE   TIME
-  12345 standard-g  hpcqc_byo...  RUNNING 5:30
-</pre>
-
-<h3>Test 3: All 5 models</h3>
-<pre>
+# Full Phase E validation suite
 source env.sh
-sbatch tests/test_byo_tfim_8q.sh
-sbatch tests/test_qaoa_12q.sh
-sbatch tests/test_mol_h2_4q.sh
-sbatch tests/test_fh_2x3_12q.sh
-sbatch tests/test_heis_3x4_12q.sh
-
-# When all complete:
-./tests/vqa_summary.sh slurm_logs/*.o*
-</pre>
-
-<h4>Expected summary table:</h4>
-<pre>
-========================================================================
-  Model                  Experiment ID          Best E      Exact E    Error%    Time
-  ---------------------- -------------------- ----------- ----------- -------- -------
-  byo_tfim_8q            xxxxxxxx_nnnnn       -7.637      -7.641      0.05%    9m  ✓
-  qaoa_12n_12q           xxxxxxxx_nnnnn      -13.012     -14.000      7.06%   15s  ✓
-  fh_2x3_12q             xxxxxxxx_nnnnn       -1.971      -5.777     65.88%   10m
-  heis_3x4_12q           xxxxxxxx_nnnnn       -1.870     -26.767     93.01%  112m
-  mol_H2_4q              xxxxxxxx_nnnnn       -1.245      -1.857     32.99%   12s
-========================================================================
-</pre>
-
-<h3>Test 4: Checkpoint/resume</h3>
-<pre>source env.sh && sbatch tests/test_checkpoint_resume.sh</pre>
-
-<h4>Expected output:</h4>
-<pre>
-  Phase 1: Short run with checkpointing
-  ...50 iterations, checkpoint at iter 20, 40...
-  Phase 1 best energy: -7.619...
-
-  Phase 2: Resume from checkpoint
-  ...RESUMING from checkpoint: iteration 40
-  ...173 more iterations...
-  Phase 2 best energy: -7.637...
-
-  CHECKPOINT/RESUME TEST PASSED
+sbatch tests/slurm_e7.sh     # E7: sweep engine (92 checks, ~4 min)
+sbatch tests/slurm_e8.sh     # E8: export pipeline (86 checks, ~30s)
+sbatch tests/slurm_e9.sh     # E9: synthetic calibration (60 checks, ~9s)
+sbatch tests/slurm_e10.sh    # E10: end-to-end validation (57 checks, ~11s)
+sbatch tests/slurm_e6b.sh    # E6b: mixed-experiment packing (50 checks, ~4s)
 </pre>
 
 <!-- ================================================================ -->
-<h2 id="mode-b">Mode B (automated orchestration)</h2>
+<h2 id="synthetic-cal">Synthetic calibrations</h2>
 
-<p>Mode B runs a lightweight bash controller on a minimal CPU node. The controller submits the actual VQE as a child GPU job, monitors it via <code>squeue</code>, and auto-retries from the latest checkpoint on failure.</p>
-
-<pre>
-# Launch Mode B
-source env.sh
-./tests/launch_mode_b.sh configs/byo_tfim_8q.yaml --walltime 00:15:00
-
-# Monitor both jobs
-squeue --me
-# You'll see:
-#   11111 small      modeb_controller  RUNNING  0:30
-#   22222 standard-g modeb_child_a1    RUNNING  2:15
-
-# Check controller output
-tail -f slurm_logs/modeb_ctrl.o&lt;controller-jobid&gt;
-</pre>
-
-<h4>Controller lifecycle:</h4>
-<ol>
-<li>Generates child VQE script (matching the LUMI launch pattern)</li>
-<li>Submits child to <code>standard-g</code> via <code>sbatch</code></li>
-<li>Polls <code>squeue</code> every 30 seconds, reads progress files from shared filesystem</li>
-<li>On child <strong>COMPLETED</strong> → collects results → done</li>
-<li>On child <strong>FAILED/TIMEOUT</strong> → finds checkpoint → generates resume script → resubmits (up to 3 retries)</li>
-<li>On child <strong>CANCELLED</strong> → aborts</li>
-</ol>
-
-<!-- ================================================================ -->
-<h2 id="checkpoint-resume">Checkpoint & resume</h2>
-
-<p>The VQE workflow saves checkpoints at configurable intervals during optimization. Each checkpoint contains: current parameters, best energy, best parameters, iteration count, and timestamp.</p>
-
-<h4>Checkpoint format:</h4>
-<pre>
-checkpoints/&lt;experiment_id&gt;_iter000050.json
-{
-  "params": {"__ndarray__": true, "data": [0.12, -0.45, ...], "dtype": "float64"},
-  "best_energy": -7.619,
-  "best_params": {"__ndarray__": true, "data": [...]},
-  "iteration": 50,
-  "_checkpoint_meta": {
-    "iteration": 50,
-    "experiment_id": "abc123_12345",
-    "timestamp": "2026-03-26T09:15:30+00:00"
-  }
-}
-</pre>
-
-<p>Resume rebuilds the full pipeline (<code>_setup()</code>: registries, Hamiltonian, ansatz, backend) then calls <code>_optimize()</code> with restored parameters — the optimizer continues from where it left off.</p>
-
-<!-- ================================================================ -->
-<h2 id="vqa-summary">Analysing results</h2>
+<p>Generate perturbed calibration files for sensitivity analysis, future device projection, and anomalous qubit detection:</p>
 
 <pre>
-# Summary of one job
-./tests/vqa_summary.sh slurm_logs/byo_tfim_8q.o12345
+# Scale T1 by 0.7 (30% degradation)
+python -m lumi_hpc_qc.data.tools.perturb_calibration \
+    examples/q50_calibration_20260330.json \
+    --perturb t1 --factor 0.7 \
+    --output calibrations/synthetic_t1_degraded.json
 
-# Summary of all jobs (table at bottom)
-./tests/vqa_summary.sh slurm_logs/*.o*
+# Set all qubits to identical noise (remove diversity)
+python -m lumi_hpc_qc.data.tools.perturb_calibration \
+    examples/q50_calibration_20260330.json \
+    --uniform-noise --t1 25.0 --t2 12.0 \
+    --output calibrations/synthetic_uniform.json
 
-# Check for Python errors
-./tests/vqa_summary.sh slurm_logs/*.e*
-# (only prints .e files that contain "Traceback" or "Error")
+# Project to a future 2× better device
+python -m lumi_hpc_qc.data.tools.perturb_calibration \
+    examples/q50_calibration_20260330.json \
+    --improve-all --factor 2.0 \
+    --output calibrations/synthetic_future_2x.json
 </pre>
 
-<!-- ================================================================ -->
-<h2 id="plugin-overview">Plugin system overview</h2>
-
-<p>The plugin registry auto-discovers classes in each sub-package. To add a new plugin:</p>
-<ol>
-<li>Create a Python file in the right directory (e.g. <code>src/lumi_hpc_qc/plugins/hamiltonians/my_model.py</code>)</li>
-<li>Define a class that inherits from the base ABC</li>
-<li>Set the <code>name</code> class attribute</li>
-<li>Implement the required methods</li>
-</ol>
-<p>That's it. No registration, no config changes. The registry finds it automatically.</p>
+<p>Every output JSON carries <code>_synthetic_metadata</code> provenance. Physical constraints enforced: T2 ≤ 2*T1, readout fidelity clamped to [0.5, 1.0].</p>
 
 <!-- ================================================================ -->
-<h2 id="new-hamiltonian">Adding a new Hamiltonian</h2>
+<h2 id="test-procedures">Test procedures</h2>
+
+<h3>Phase E validation (764 checks)</h3>
+<table>
+<tr><th>Test</th><th>Command</th><th>Checks</th><th>Time</th></tr>
+<tr><td>E1: Placement solver</td><td><code>sbatch tests/slurm_e1.sh</code></td><td>70</td><td>~30s</td></tr>
+<tr><td>E2: Execution planner</td><td><code>sbatch tests/slurm_e2_planner.sh</code></td><td>36</td><td>~10s</td></tr>
+<tr><td>E3: HDF5 writer</td><td><code>sbatch tests/slurm_e3.sh</code></td><td>39</td><td>~20s</td></tr>
+<tr><td>E4: Twin simulator</td><td><code>sbatch tests/slurm_e4.sh</code></td><td>71</td><td>~20s</td></tr>
+<tr><td>E5: BYO circuits</td><td><code>sbatch tests/slurm_e5.sh</code></td><td>43</td><td>~15s</td></tr>
+<tr><td>E6a: Same-circuit packing</td><td><code>sbatch tests/slurm_e6a.sh</code></td><td>32</td><td>~15s</td></tr>
+<tr><td>E7: Sweep engine</td><td><code>sbatch tests/slurm_e7.sh</code></td><td>92</td><td>~4 min</td></tr>
+<tr><td>E8: Sweep export</td><td><code>sbatch tests/slurm_e8.sh</code></td><td>86</td><td>~30s</td></tr>
+<tr><td>E9: Synthetic calibration</td><td><code>sbatch tests/slurm_e9.sh</code></td><td>60</td><td>~9s</td></tr>
+<tr><td>E10: End-to-end validation</td><td><code>sbatch tests/slurm_e10.sh</code></td><td>57</td><td>~11s</td></tr>
+<tr><td>E6b: Mixed-experiment packing</td><td><code>sbatch tests/slurm_e6b.sh</code></td><td>50</td><td>~4s</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="plugin-overview">Plugin system</h2>
+
+<p>The plugin registry auto-discovers classes in each sub-package. To add a new plugin: create a Python file, define a class that inherits from the base ABC, set the <code>name</code> attribute, implement the required methods. No registration, no config changes.</p>
+
+<h4>Current plugins</h4>
+<table>
+<tr><th>Type</th><th>Available</th></tr>
+<tr><td>Hamiltonians</td><td><code>byo</code>, <code>fermi_hubbard</code>, <code>heisenberg</code>, <code>molecular</code>, <code>qaoa_maxcut</code>, <code>tfim</code></td></tr>
+<tr><td>Ansatze</td><td><code>byo</code>, <code>hva</code>, <code>qaoa</code>, <code>su2</code>, <code>uccsd</code></td></tr>
+<tr><td>Optimizers</td><td><code>cobyla</code>, <code>l_bfgs_b</code>, <code>spsa</code></td></tr>
+<tr><td>Gradients</td><td><code>finite_difference</code>, <code>parameter_shift</code></td></tr>
+<tr><td>Initializers</td><td><code>adiabatic</code>, <code>random</code>, <code>zero</code></td></tr>
+<tr><td>Error mitigation</td><td><code>readout</code>, <code>zne</code></td></tr>
+<tr><td>Calibration adapters</td><td><code>iqm_v2</code>, <code>synthetic</code></td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="new-hamiltonian">Adding a Hamiltonian</h2>
 
 <pre>
 # src/lumi_hpc_qc/plugins/hamiltonians/my_model.py
@@ -597,11 +574,9 @@ import numpy as np
 
 class MyModelHamiltonian(HamiltonianBuilder):
     name = "my_model"                      # ← used in YAML: model: my_model
-    description = "My custom physics model"
 
     def build(self, config: ExperimentConfig):
         p = config.model_params
-        # Build your SparsePauliOp here
         terms = [("ZZ", p.get("coupling", 1.0)), ("XI", p.get("field", 0.5))]
         ham = SparsePauliOp.from_list(terms).simplify()
         meta = HamiltonianMetadata(
@@ -613,185 +588,95 @@ class MyModelHamiltonian(HamiltonianBuilder):
 
     def exact_ground_energy(self, hamiltonian):
         if hamiltonian.num_qubits > 24:
-            return None  # too expensive
+            return None
         return float(np.real(np.linalg.eigvalsh(hamiltonian.to_matrix())[0]))
-
-    def adiabatic_parameter_name(self):
-        return "coupling"  # or None if adiabatic init doesn't apply
-
-    def build_at_parameter(self, value, config):
-        config.model_params["coupling"] = value
-        ham, _ = self.build(config)
-        return ham
-</pre>
-
-<p>Then use it in a YAML config:</p>
-<pre>
-model: my_model
-model_params:
-  coupling: 1.5
-  field: 0.3
-ansatz: su2
-...
 </pre>
 
 <!-- ================================================================ -->
-<h2 id="new-ansatz">Adding a new ansatz</h2>
+<h2 id="byo-guide">BYO circuits</h2>
 
+<p>The framework supports three BYO circuit ingestion paths:</p>
+
+<h4>Path A — QPY file (primary)</h4>
 <pre>
-# src/lumi_hpc_qc/plugins/ansatze/my_ansatz.py
-
-from lumi_hpc_qc.plugins.ansatze.base import AnsatzBuilder
-from lumi_hpc_qc.types import AnsatzMetadata, ExperimentConfig
-from qiskit import QuantumCircuit
-from qiskit.circuit import ParameterVector
-
-class MyAnsatz(AnsatzBuilder):
-    name = "my_ansatz"
-
-    def build(self, num_qubits, config):
-        reps = config.ansatz_params.get("reps", 2)
-        n_params = num_qubits * reps
-        params = ParameterVector('θ', n_params)
-        qc = QuantumCircuit(num_qubits)
-
-        idx = 0
-        for r in range(reps):
-            for q in range(num_qubits):
-                qc.ry(params[idx], q)
-                idx += 1
-            for q in range(num_qubits - 1):
-                qc.cx(q, q + 1)
-
-        meta = AnsatzMetadata(
-            num_parameters=n_params,
-            parameter_names=[f"p{i}" for i in range(n_params)],
-            gradient_compatibility="parameter_shift",  # or "finite_difference"
-            preferred_initializer="random",             # or "zero", "adiabatic"
-            requires_decomposition=False,
-        )
-        return qc, meta
+# Save your circuit as QPY
+from qiskit.qpy import dump
+with open("my_circuit.qpy", "wb") as f:
+    dump([my_circuit], f)
 </pre>
+
+<h4>Path B — Python script</h4>
+<pre>
+# examples/fiqci/build_fiqci_circuits.py
+def build_circuit():
+    qc = QuantumCircuit(3)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.cx(1, 2)
+    return qc
+</pre>
+
+<h4>Path C — QASM string</h4>
+<pre>
+OPENQASM 3;
+include "stdgates.inc";
+qubit[3] q;
+h q[0];
+cx q[0], q[1];
+cx q[1], q[2];
+</pre>
+
+<p>Non-parameterized circuits run in evaluation-only mode: no optimizer, single execution per placement per noise config. Used for characterisation sweeps (GHZ states, Bell pairs, FiQCI examples).</p>
 
 <!-- ================================================================ -->
-<h2 id="new-optimizer">Adding a new optimizer</h2>
+<h2 id="phase-e-results">Phase E validation results</h2>
 
-<pre>
-# src/lumi_hpc_qc/plugins/optimizers/my_optimizer.py
-
-from lumi_hpc_qc.plugins.optimizers.base import OptimizerStrategy
-from lumi_hpc_qc.types import ExperimentConfig, IterationRecord, OptimizeResult
-import numpy as np
-
-class MyOptimizer(OptimizerStrategy):
-    name = "my_optimizer"
-    requires_gradient = False  # True if your optimizer needs gradients
-
-    def minimize(self, cost_fn, x0, grad_fn=None, config=None, callback=None):
-        # Your optimization logic here
-        maxiter = config.optimizer_params.get("maxiter", 100)
-        best_x, best_f = x0.copy(), cost_fn(x0)
-
-        for i in range(maxiter):
-            # ... your optimization step ...
-            if callback:
-                callback(IterationRecord(iteration=i+1, energy=best_f, parameters=best_x))
-
-        return OptimizeResult(x=best_x, fun=best_f, nfev=maxiter, nit=maxiter, success=True)
-</pre>
-
-<!-- ================================================================ -->
-<h2 id="custom-experiment">Creating a custom experiment</h2>
-
-<ol>
-<li>Copy an existing config: <code>cp configs/byo_tfim_8q.yaml configs/my_experiment.yaml</code></li>
-<li>Edit the YAML with your model, ansatz, optimizer choices</li>
-<li>Create a test script:
-<pre>
-cp tests/test_byo_tfim_8q.sh tests/test_my_experiment.sh
-# Edit: change CONFIG_PATH to your new YAML
-# Change --time if needed
-</pre></li>
-<li>Run: <code>source env.sh && sbatch tests/test_my_experiment.sh</code></li>
-</ol>
-
-<!-- ================================================================ -->
-<h2 id="byo-guide">Bring-Your-Own (BYO) guide</h2>
-
-<p>The BYO model lets you run VQE on any Hamiltonian without writing Python code. Just provide a JSON file:</p>
-
-<pre>
-{
-  "description": "My custom 4-qubit Hamiltonian",
-  "pauli_terms": [
-    {"label": "IIZZ", "coeff_real": 0.5, "coeff_imag": 0.0},
-    {"label": "ZZII", "coeff_real": 0.3, "coeff_imag": 0.0},
-    {"label": "XIXI", "coeff_real": -0.2, "coeff_imag": 0.0}
-  ]
-}
-</pre>
-
-<p>Or the simpler list format:</p>
-<pre>
-{
-  "pauli_terms": [["IIZZ", 0.5], ["ZZII", 0.3], ["XIXI", -0.2]]
-}
-</pre>
-
-<p>Reference it in your YAML:</p>
-<pre>
-model: byo
-model_params:
-  hamiltonian_file: examples/my_hamiltonian.json
-ansatz: su2
-ansatz_params:
-  reps: 3
-</pre>
-
-<!-- ================================================================ -->
-<h2 id="lumi-results">LUMI test results</h2>
-
-<p>All results from testing on LUMI standard-g partition, AMD MI250X GPUs, double precision, Singularity container with qiskit 2.3.0, qiskit-aer 0.17.2.</p>
+<p>All 22 VE criteria from RED-SPEC-002 satisfied. 764 checks, zero failures.</p>
 
 <table>
-<tr><th>Model</th><th>Best E</th><th>Exact E</th><th>Error</th><th>Time</th><th>SLURM Job</th><th>Status</th></tr>
-<tr><td>BYO TFIM 8q (SU2)</td><td>-7.637</td><td>-7.641</td><td>0.045%</td><td>9 min</td><td>17007219</td><td><span class="badge badge-ok">Excellent</span></td></tr>
-<tr><td>QAOA MaxCut 12q (COBYLA)</td><td>-13.01</td><td>-14.00</td><td>7.06%</td><td>15 sec</td><td>17008294</td><td><span class="badge badge-ok">Good</span></td></tr>
-<tr><td>FH 2×3 12q (HVA+adiabatic)</td><td>-1.97</td><td>-5.78</td><td>65.9%</td><td>10 min</td><td>17008291</td><td><span class="badge badge-warn">Local min</span></td></tr>
-<tr><td>Heisenberg 3×4 12q (HVA+adiabatic)</td><td>-1.87</td><td>-26.77</td><td>93.0%</td><td>112 min</td><td>17008292</td><td><span class="badge badge-warn">Local min</span></td></tr>
-<tr><td>H2 UCCSD 4q</td><td>-1.24</td><td>-1.86</td><td>33.0%</td><td>12 sec</td><td>17008293</td><td><span class="badge badge-err">Decomp issue</span></td></tr>
-<tr><td>Checkpoint/resume</td><td>-7.637</td><td>-7.641</td><td>0.052%</td><td>3 min</td><td>17012216</td><td><span class="badge badge-ok">Passed</span></td></tr>
+<tr><th>ID</th><th>Criterion</th><th>Status</th></tr>
+<tr><td>VE1</td><td>VF2 finds all 487 placements (379 chain + 108 star) for 4q on Q50</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE7</td><td>All 11 noise environments produce results</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE8</td><td>Noiseless deduplication across calibrations</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE11</td><td>128-way CPU parallel = sequential</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE12</td><td>WAL crash recovery</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE14</td><td>FiQCI GHZ-3q BYO sweep: ⟨ZZZ⟩ = 0 (odd parity)</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE16</td><td>Parquet: no raw histograms, aggregated features only</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE18</td><td>Full sweep: 379 placements × 11 envs × 2 seeds = 8,338 HDF5 writes</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE20</td><td>Mixed packing: TFIM + GHZ demuxed, match independent (Δ=0.015)</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE22</td><td>Multi-topology: chain + star in same sweep, distinct hashes</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>VE25</td><td>Multi-calibration: real + synthetic produce different energies</td><td><span class="badge badge-ok">✓</span></td></tr>
 </table>
 
+<p>Full results: see <code>CHANGELOG.md</code> for all SLURM job IDs and per-step check counts.</p>
+
 <!-- ================================================================ -->
-<h2 id="known-issues">Known research-level issues</h2>
+<h2 id="known-issues">Known issues</h2>
 
-<h3>FH / Heisenberg — HVA local minima</h3>
-<p>The HVA ansatz at 3 layers captures only a fraction of the correlation energy on 2D lattices. The adiabatic ramp produces a smooth, monotonically decreasing energy curve, but tracks a local minimum rather than the global one. The literature (Wiersema et al., PRX Quantum 1, 020319, 2020) shows this requires either deeper circuits, different ansatze (ADAPT-VQE), or symmetry-exploiting initializations. These are exactly the kind of improvements that can be plugged in as new ansatz/initializer plugins.</p>
+<h3>F3/F4/F7 fingerprinting columns null for characterisation sweeps</h3>
+<p>Three Pauli-group-dependent features (<code>z_group_expectation_mean</code>, <code>xz_expectation_ratio</code>, <code>expectation_variance_across_groups</code>) require per-Pauli-group data from VQE measurement stats. These are null for eval-only characterisation sweeps (no measurement stats captured). They will be populated when VQE sweep campaigns run with <code>capture_measurement_stats: true</code>.</p>
 
-<h3>H2 UCCSD — parameter binding after decomposition</h3>
-<p>The qiskit-nature UCCSD circuit after 10 rounds of <code>.decompose()</code> loses its parameterization — the energy is constant regardless of parameter values. The fix path is to use Qiskit's Estimator primitive (which handles circuit compilation internally) or avoid full decomposition. This would be a new backend evaluation strategy plugin.</p>
+<h3>T1/T2 scaling alone has no effect on circuits without idle gates</h3>
+<p>Thermal relaxation noise applies to <code>id</code> and <code>delay</code> instructions. Simple circuits (GHZ = H + CX) have no idle gates, so T1/T2 perturbation alone doesn't change the noise model's effect. Use gate error or readout perturbation for observable differences on shallow circuits.</p>
 
-<h3>Container binding requirements</h3>
-<p>The LUMI container has a built-in runscript that validates bindings. Direct <code>singularity exec</code> fails — must use the GPU or CPU wrapper scripts that extract bind mount lists from inside the container.</p>
+<h3>Container <code>nonlocal</code> limitation</h3>
+<p>The LUMI Singularity container's Python does not support <code>nonlocal</code> in module-scope nested functions. Use mutable list pattern: <code>counter = [0]</code> and <code>counter[0] += 1</code>.</p>
 
 <!-- ================================================================ -->
 <h2 id="references">References</h2>
 
 <ul>
-<li>FiQCI blog: <a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">Simulating Electrons on LUMI + VTT Q50</a></li>
+<li>FiQCI: <a href="https://fiqci.fi/publications/2025-09-12-Simulating-Electrons">Simulating Electrons on LUMI + VTT Q50</a></li>
+<li>FiQCI: <a href="https://github.com/FiQCI/fiqci-examples">Example circuits for IQM hardware</a></li>
 <li>CSC: <a href="https://docs.csc.fi/apps/qiskit/">Qiskit documentation</a></li>
 <li>CSC: <a href="https://docs.csc.fi/computing/quantum-computing/running-quantum-jobs/">Running quantum jobs</a></li>
-<li>CSC: <a href="https://github.com/CSCfi/Quantum/tree/main/Variational-Algorithms-on-Q50">Quantum repository — VQA on Q50</a></li>
-<li><a href="https://github.com/JooNiv/QCut">QCut — circuit cutting library</a></li>
 <li>Wecker et al., Phys. Rev. A 92, 062318 (2015) — HVA ansatz, adiabatic initialization</li>
 <li>Mitarai et al., Phys. Rev. A 98, 032309 (2018) — parameter-shift rule</li>
-<li>Schuld et al., Phys. Rev. A 99, 032331 (2019) — analytic gradients on quantum hardware</li>
 <li>Wiersema et al., PRX Quantum 1, 020319 (2020) — local minima in HVA</li>
 </ul>
 
 <hr style="margin-top:60px;border:none;border-top:1px solid var(--border)">
-<p style="font-size:12px;color:var(--fg3);margin-top:16px">lumi-hpc-qc v1.0.0b1 &middot; Generated 2026-03-26 &middot; CSC / LUMI / FiQCI</p>
+<p style="font-size:12px;color:var(--fg3);margin-top:16px">lumi-hpc-qc v1.1.0 &middot; Generated 2026-04-03 &middot; CSC / LUMI / FiQCI / EuroHPC</p>
 
 </main>
 

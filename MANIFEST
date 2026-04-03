@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #
 # lumi-hpc-qc MANIFEST
-# Generated: 2026-04-03T13:25:02Z
+# Generated: 2026-04-03T13:15:00Z
 # Version: 1.1.0
 # sha256  lines  path
 daab86759173a7e62b356348e2919c6e830d8e9fd7b737083ee7b1fc2bd8b4e2  28  configs/byo_tfim_8q_mps.yaml
@@ -44,7 +44,7 @@ af5a88f2290014a5507fed877a5a2f4352d2072fa99f359671c524dd3cd6f1a1  40  configs/q5
 4f7e771ac41a8acf7eb117bec77e29bfdd1cf6a07684ad7b548a523e81d5352b  33  configs/tier3_adiabatic/q50bench_tfim_4q_noiseless_adiabatic_seed0047.yaml
 41b5ea074f8ff8216b2d52b3a31b5e008d22194344fd725dc30c6ec146171e08  33  configs/tier3_adiabatic/q50bench_tfim_4q_noiseless_adiabatic_seed0048.yaml
 c36227ffa510ee1470d431bccacd38627915e34b2ad12d7cf90debf0f29e75d4  33  configs/tier3_adiabatic/q50bench_tfim_4q_noiseless_adiabatic_seed0058.yaml
-351a4f3aca71ee55b41a0c906b67db15d3eef6af4085a8b2c3f9ae5840c3b3ed  811  docs/index.html
+08cf6baf2cb820611b24e8f572cfda4d440c8f0d0f68b7bba34c091fd2ea17ea  696  docs/index.html
 ebbc14412e91b75e0079c8c689937b7ed099464fbf896e916252672221c1e7c4  337  docs/INTEGRATION_TEST_INSTRUCTIONS.md
 8fbb084870aaac0b3304c148a4b82f07943d560351296157f2d7279483ded361  225  docs/TESTING_GUIDE.md
 4a50b8c439377fff7d7c77575099c017ca253f746b832afc66fbaa6020454df1  9  examples/byo_tfim_2q_q50.json
