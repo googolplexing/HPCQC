@@ -46,24 +46,38 @@ def check(name, condition, detail=""):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Shared test fixtures
+# ══════════════════════════════════════════════════════════════════════
+bell = QuantumCircuit(2)
+bell.h(0)
+bell.cx(0, 1)
+
+obs_zz = SparsePauliOp.from_list([("ZZ", 1.0)])
+
+
+# ══════════════════════════════════════════════════════════════════════
 print("\n=== E6a.1: Circuit Composition — Single Round ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
     from lumi_hpc_qc.sweep.circuit_composer import compose_round
     from lumi_hpc_qc.sweep.placement_solver import Placement
 
-    # Build a simple 2q Bell circuit (no measurements)
-    bell = QuantumCircuit(2)
-    bell.h(0)
-    bell.cx(0, 1)
-
     # Create 3 non-overlapping 2q placements on a 10-qubit device
-    p1 = Placement(physical_indices=[0, 1], qubit_mapping={0: "Q0", 1: "Q1"},
-                    topology_hash="h1", device_prefix="test")
-    p2 = Placement(physical_indices=[3, 4], qubit_mapping={0: "Q3", 1: "Q4"},
-                    topology_hash="h1", device_prefix="test")
-    p3 = Placement(physical_indices=[6, 7], qubit_mapping={0: "Q6", 1: "Q7"},
-                    topology_hash="h1", device_prefix="test")
+    p1 = Placement(placement_id=0, device_id="test", device_prefix="test",
+                    qubit_mapping={0: "Q0", 1: "Q1"},
+                    physical_indices=[0, 1], score=1.0,
+                    internal_edges=1, avg_readout_fidelity=0.99,
+                    avg_gate_fidelity=0.99, topology_hash="h1")
+    p2 = Placement(placement_id=1, device_id="test", device_prefix="test",
+                    qubit_mapping={0: "Q3", 1: "Q4"},
+                    physical_indices=[3, 4], score=0.9,
+                    internal_edges=1, avg_readout_fidelity=0.98,
+                    avg_gate_fidelity=0.98, topology_hash="h1")
+    p3 = Placement(placement_id=2, device_id="test", device_prefix="test",
+                    qubit_mapping={0: "Q6", 1: "Q7"},
+                    physical_indices=[6, 7], score=0.8,
+                    internal_edges=1, avg_readout_fidelity=0.97,
+                    avg_gate_fidelity=0.97, topology_hash="h1")
 
     composite = compose_round(bell, [p1, p2, p3], device_qubits=10)
 
@@ -76,8 +90,11 @@ try:
           sum(1 for inst in composite.data if inst.operation.name == "measure") == 6)
 
     # Overlapping placements should raise
-    p_overlap = Placement(physical_indices=[1, 2], qubit_mapping={0: "Q1", 1: "Q2"},
-                          topology_hash="h1", device_prefix="test")
+    p_overlap = Placement(placement_id=99, device_id="test", device_prefix="test",
+                          qubit_mapping={0: "Q1", 1: "Q2"},
+                          physical_indices=[1, 2], score=0.5,
+                          internal_edges=1, avg_readout_fidelity=0.95,
+                          avg_gate_fidelity=0.95, topology_hash="h1")
     overlap_caught = False
     try:
         compose_round(bell, [p1, p_overlap], device_qubits=10)
@@ -140,7 +157,6 @@ try:
     # Use a small synthetic device (10 qubits) so exact DM is feasible
     # 3 non-overlapping 2q placements
     small_placements = [p1, p2, p3]  # from E6a.1 on 10-qubit device
-    obs_zz = SparsePauliOp.from_list([("ZZ", 1.0)])
 
     print("    Executing 3 Bell pairs packed on 10q device (exact DM)...")
     t0 = time.time()
@@ -238,7 +254,7 @@ try:
     # Execute first 3 rounds shot-based (Q50 composite is too large for DM)
     max_rounds = min(3, len(rounds))
     test_rounds = rounds[:max_rounds]
-    total_in_rounds = sum(len(r) for r in test_rounds)
+    total_in_rounds = sum(len(r.placements) for r in test_rounds)
 
     print(f"    Executing {max_rounds} rounds ({total_in_rounds} placements, shot-based)...")
     t0 = time.time()
@@ -307,9 +323,9 @@ try:
 
     # Round sizes should match packing
     for i, rr in enumerate(multi_result.rounds):
-        check(f"Provenance: round {i} has {len(test_rounds[i])} placements",
-              rr.num_placements == len(test_rounds[i]),
-              f"expected {len(test_rounds[i])}, got {rr.num_placements}")
+        check(f"Provenance: round {i} has {len(test_rounds[i].placements)} placements",
+              rr.num_placements == len(test_rounds[i].placements),
+              f"expected {len(test_rounds[i].placements)}, got {rr.num_placements}")
 
 except Exception as e:
     check("E6a.5 block", False, f"Exception: {e}")

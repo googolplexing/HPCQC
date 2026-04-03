@@ -63,7 +63,7 @@ class MultiRoundResult:
 def execute_packed_rounds(
     circuit: Any,
     observable: Any,
-    rounds: list[list[Placement]],
+    rounds: list[Any],
     device_qubits: int,
     *,
     method: str = "density_matrix",
@@ -81,7 +81,7 @@ def execute_packed_rounds(
     Args:
         circuit: Template circuit (N logical qubits, no measurements).
         observable: SparsePauliOp for energy computation.
-        rounds: List of rounds, each a list of non-overlapping Placements.
+        rounds: List of PackingRound objects or list[Placement] lists.
         device_qubits: Total device qubit count (e.g., 53 for Q50).
         method: "density_matrix" or "statevector".
         shots: Measurement shots (0 for exact).
@@ -95,11 +95,21 @@ def execute_packed_rounds(
     """
     from qiskit_aer import AerSimulator
 
-    result = MultiRoundResult(total_rounds=len(rounds))
+    # Normalize rounds: accept both PackingRound objects and raw lists
+    normalized_rounds = []
+    for r in rounds:
+        if hasattr(r, 'placements'):
+            normalized_rounds.append(r.placements)
+        elif isinstance(r, list):
+            normalized_rounds.append(r)
+        else:
+            raise TypeError(f"Expected PackingRound or list, got {type(r)}")
+
+    result = MultiRoundResult(total_rounds=len(normalized_rounds))
     all_placement_results: list[PlacementResult] = []
     t_total_start = time.time()
 
-    for round_idx, round_placements in enumerate(rounds):
+    for round_idx, round_placements in enumerate(normalized_rounds):
         round_seed = seed + round_idx * 1000
         t_round_start = time.time()
         rr = RoundResult(
