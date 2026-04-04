@@ -265,7 +265,8 @@ def run_twin_battery(
 
         # ── Noiseless deduplication ──
         if env.tier == "noiseless":
-            cache_key = f"{topology_hash}:{env.name}"
+            obs_hash = hashlib.sha256(str(observable).encode()).hexdigest()[:12]
+            cache_key = f"{obs_hash}:{circuit.num_qubits}:{topology_hash}:{env.name}"
             if cache_key in noiseless_cache:
                 cached = noiseless_cache[cache_key]
                 result = TwinResult(
@@ -345,7 +346,8 @@ def run_twin_battery(
 
         # Cache noiseless results for deduplication
         if env.tier == "noiseless" and result.error is None:
-            cache_key = f"{topology_hash}:{env.name}"
+            obs_hash = hashlib.sha256(str(observable).encode()).hexdigest()[:12]
+            cache_key = f"{obs_hash}:{circuit.num_qubits}:{topology_hash}:{env.name}"
             noiseless_cache[cache_key] = result
 
     battery.total_time_s = time.time() - t_total_start
