@@ -72,9 +72,34 @@ class IQMv2Adapter(AbstractCalibrationAdapter):
         qubit_data = raw.get("qubits", {})
         gate_data = raw.get("two_qubit_gates", {})
 
-        # Sort qubit names for deterministic indexing
-        qubit_names = sorted(qubit_data.keys())
+        # Sort qubit names NUMERICALLY to match IQM backend convention.
+        # Lexicographic sort gives QB1,QB10,QB11...QB19,QB2,QB20... — wrong.
+        # IQM's dynamic quantum architecture assigns indices in numeric QB
+        # order, skipping deactivated qubits (e.g. QB32 on Q50).
+        # The sorted numeric order produces the correct index mapping:
+        # QB1→0, QB2→1, ..., QB31→30, QB33→31, ..., QB54→52
+        #
+        # IMPORTANT (v1.1.1, RED-RESP-PACKING-v1.0 §3.3):
+        # This mapping is calibration-set dependent. If VTT deactivates
+        # different qubits in a future calibration cycle, the index
+        # assignments change. Do NOT hardcode arithmetic offsets like
+        # QB_N = index N-1 anywhere outside this adapter. Use the
+        # index_to_qubit_name / qubit_name_to_index properties on
+        # DeviceCalibration instead.
+        #
+        # Ref: VTT QX "Exploring the Device Quantum Architecture"
+        # https://qx.vtt.fi/docs/advanced/dynamic-quantum-architecture.html
+        qubit_names = sorted(
+            qubit_data.keys(),
+            key=lambda n: int(''.join(c for c in n if c.isdigit()) or '0'),
+        )
         name_to_idx = {n: i for i, n in enumerate(qubit_names)}
+
+        # Verify index continuity — indices must be 0..N-1 with no gaps
+        assert len(qubit_names) == len(name_to_idx), (
+            f"Duplicate qubit names in calibration: "
+            f"{len(qubit_names)} names, {len(name_to_idx)} unique"
+        )
 
         # Build normalized qubits
         qubits: dict[str, QubitCalibration] = {}

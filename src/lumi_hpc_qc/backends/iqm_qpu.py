@@ -47,6 +47,9 @@ class IqmQpuBackend(Backend):
 
     name = "iqm_qpu"
 
+    # VTT enforces max 200 circuits per batch (QX FAQ)
+    VTT_BATCH_LIMIT = 200
+
     def __init__(self, config: ExperimentConfig | None = None) -> None:
         self._config = config
         self._sim = None  # IQM backend object (named _sim for interface compat)
@@ -155,11 +158,12 @@ class IqmQpuBackend(Backend):
                             meas_circuits, backend=self._sim, optimization_level=2
                         )
 
-                    # Submit each measurement circuit to QPU
-                    counts_list = []
-                    for mc in meas_circuits:
-                        qpu_result = self._sim.run(mc, shots=shots).result()
-                        counts_list.append(qpu_result.get_counts())
+                    # ── Batch submission to QPU ──
+                    # IQM .run() accepts list[QuantumCircuit] as single batch.
+                    # VTT caps at 200 circuits/batch — auto-chunk if needed.
+                    counts_list = self._submit_batch(
+                        meas_circuits, shots=shots,
+                    )
 
                     energy = expectation_from_grouped_counts(
                         counts_list, meas_groups, identity_e, shots
@@ -183,6 +187,50 @@ class IqmQpuBackend(Backend):
             ))
 
         return results
+
+    def _submit_batch(
+        self,
+        circuits: list,
+        shots: int,
+    ) -> list[dict[str, int]]:
+        """Submit circuits as batched .run() calls, auto-chunking at VTT limit.
+
+        IQM's IQMBackend.run() accepts list[QuantumCircuit] as a single
+        batch job — one queue entry for the entire list. VTT enforces a
+        hard cap of 200 circuits per batch (QX FAQ). This method:
+
+        1. If len(circuits) <= VTT_BATCH_LIMIT: single .run() call
+        2. If len(circuits) > VTT_BATCH_LIMIT: chunk into sequential
+           batches of <=200, submit each, reassemble in original order
+
+        Returns:
+            List of count dicts in the same order as input circuits.
+            result[i] corresponds to circuits[i].
+
+        Ordering guarantee: IQM .run(list) returns results in submission
+        order — result.get_counts(i) corresponds to circuit_list[i].
+        Verified by Test A (single batch) and Test B (multi-batch).
+        """
+        if not circuits:
+            return []
+
+        all_counts: list[dict[str, int]] = []
+        limit = self.VTT_BATCH_LIMIT
+
+        for chunk_start in range(0, len(circuits), limit):
+            chunk = circuits[chunk_start:chunk_start + limit]
+
+            if len(chunk) == 1:
+                # Single circuit — submit directly (no list wrapping needed)
+                result = self._sim.run(chunk[0], shots=shots).result()
+                all_counts.append(result.get_counts())
+            else:
+                # Batch submission — one queue wait for the entire chunk
+                result = self._sim.run(chunk, shots=shots).result()
+                for i in range(len(chunk)):
+                    all_counts.append(result.get_counts(i))
+
+        return all_counts
 
     def compile_circuit(self, circuit):
         """Transpile circuit for IQM native gate set (CZ + phased-RX)."""
