@@ -19,7 +19,7 @@
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=128
 #SBATCH --mem=32G
 #SBATCH --output=slurm_logs/v111_validate.o%j
 #SBATCH --error=slurm_logs/v111_validate.e%j

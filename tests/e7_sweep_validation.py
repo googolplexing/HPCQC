@@ -92,7 +92,7 @@ try:
             ],
             "calibrations": [cal_path],
             "execution": {
-                "cpu_workers": 4,
+                "cpu_workers": 128,
             },
             "output_dir": tempfile.mkdtemp(prefix="e7_test_"),
             "sweep_id": "e7_test_001",
@@ -104,7 +104,7 @@ try:
     check("Sweep ID set", config.sweep_id == "e7_test_001")
     check("1 experiment block", len(config.experiments) == 1)
     check("1 calibration file", len(config.calibrations) == 1)
-    check("CPU workers = 4", config.cpu_workers == 4)
+    check("CPU workers = 128", config.cpu_workers == 128)
 
     # ── Validate ──
     v_errors = validate_sweep_config(config)
@@ -207,7 +207,7 @@ try:
                 "placement": "all_valid",
             }],
             "calibrations": [cal_path],
-            "execution": {"cpu_workers": 4},
+            "execution": {"cpu_workers": 128},
             "output_dir": tempfile.mkdtemp(prefix="e7_ve18_"),
             "sweep_id": "ve18_test",
         }
@@ -438,7 +438,7 @@ try:
                 "placement": "all_valid",
             }],
             "calibrations": [cal_path],
-            "execution": {"cpu_workers": 4},
+            "execution": {"cpu_workers": 128},
             "output_dir": tempfile.mkdtemp(prefix="e7_ve22_"),
             "sweep_id": "ve22_test",
         }
