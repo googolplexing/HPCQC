@@ -727,27 +727,17 @@ class SweepEngine:
 
         exact_energy = ham_metadata.get("exact_ground_energy")
 
-        # ── Pre-populate noiseless cache ──
-        # Run one battery serially to populate noiseless dedup entries.
-        # Workers then get the pre-filled cache (read-only for noiseless hits).
-        from lumi_hpc_qc.sweep.noise_configs import NOISELESS_ENVS
-        if placements:
-            first_p = placements[0]
-            qn_first = [first_p.qubit_mapping[i] for i in range(qsize)]
-            pid_first = "_".join(qn_first)
-            noiseless_envs = [e for e in (tasks[0].noise_configs or [])
-                              if e.tier == "noiseless"]
-            if noiseless_envs:
-                run_twin_battery(
-                    circuit=circuit, observable=observable,
-                    qubit_names=qn_first, calibration_data=cal_json,
-                    calibration_id=cal_id, placement_id=pid_first,
-                    topology_hash=first_p.topology_hash,
-                    environments=noiseless_envs,
-                    seed=tasks[0].seed * 1000 + first_p.placement_id,
-                    device=self._device,
-                    noiseless_cache=self._noiseless_cache,
-                )
+        # NOTE (v1.1.1): Noiseless cache pre-population removed.
+        # The old code ran run_twin_battery() in the parent process to
+        # populate the noiseless dedup cache before forking workers.
+        # This called AerSimulator in the parent, initializing C++ thread
+        # pools whose mutexes deadlock child processes after fork.
+        # See debug_e2_fork_order.py for proof.
+        #
+        # Workers now compute noiseless results independently. Cost:
+        # N_workers × 2 noiseless sims × ~5ms = negligible for 4q.
+        # The noiseless_cache is passed empty; each worker populates
+        # its own copy. Dedup still works WITHIN each battery.
 
         # ── Collect work items ──
         work_items = []
@@ -767,7 +757,7 @@ class SweepEngine:
                     circuit, observable, qubit_names, cal_json, cal_id,
                     placement_id_str, placement.topology_hash, noise_envs,
                     seed * 1000 + placement.placement_id,
-                    self._device, dict(self._noiseless_cache),
+                    self._device, {},  # empty cache — workers compute independently
                 ))
                 work_meta.append((task, placement, qubit_names, seed))
 
