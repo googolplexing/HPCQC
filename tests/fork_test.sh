@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=fork_test
 #SBATCH --partition=standard
-#SBATCH --time=00:05:00
+#SBATCH --time=00:10:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
@@ -13,4 +13,4 @@ source "${SLURM_SUBMIT_DIR}/env.sh"
 
 export SINGULARITYENV_OMP_NUM_THREADS=1
 
-srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} python ${HPCQC_ROOT}/tests/fork_test_imports.py
+srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} python ${HPCQC_ROOT}/tests/fork_test_spawn.py
