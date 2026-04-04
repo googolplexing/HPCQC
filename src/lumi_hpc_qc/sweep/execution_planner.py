@@ -263,7 +263,8 @@ def execute_cpu_batch(
     actual_workers = min(workers, len(worker_args))
 
     t0 = time.time()
-    with mp.Pool(actual_workers) as pool:
+    ctx = mp.get_context("forkserver")
+    with ctx.Pool(actual_workers) as pool:
         raw_results = pool.map(_cpu_worker, worker_args)
     total_time = time.time() - t0
 

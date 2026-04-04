@@ -773,11 +773,19 @@ class SweepEngine:
 
         if cpu_workers > 1 and n_items > 1:
             # E2/E7 Level 1: Parallel execution via multiprocessing
+            # CRITICAL: Use 'forkserver' context, not default 'fork'.
+            # The parent process has initialized C++ thread pools
+            # (numpy BLAS via exact_ground_energy, Aer if imported)
+            # whose mutexes deadlock children after fork.
+            # forkserver starts a clean server process before any C++
+            # state exists, then forks workers from that clean state.
+            # See tests/debug_e2_fork_order.py for proof of the constraint.
             actual_workers = min(self._planner.cpu_workers, n_items)
             print(f"    E2: Parallel execution — {n_items} batteries across "
-                  f"{actual_workers} workers")
+                  f"{actual_workers} workers (forkserver)")
             t_par = time.time()
-            with mp.Pool(actual_workers) as pool:
+            ctx = mp.get_context("forkserver")
+            with ctx.Pool(actual_workers) as pool:
                 battery_results = pool.map(_battery_worker, work_items)
             print(f"    E2: Parallel complete in {time.time()-t_par:.1f}s")
         else:

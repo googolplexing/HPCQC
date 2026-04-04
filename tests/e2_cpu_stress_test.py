@@ -112,7 +112,8 @@ print("\n=== E2.1: Sequential Baseline (4 runs) ===")
 # ══════════════════════════════════════════════════════════════════════
 try:
     t0 = time.time()
-    with mp.Pool(1) as pool:
+    ctx = mp.get_context("forkserver")
+    with ctx.Pool(1) as pool:
         sequential_results = pool.map(run_single_vqe, [(i, 42 + i, 4) for i in range(4)])
     t_seq = time.time() - t0
 
@@ -143,7 +144,8 @@ try:
     tasks = [(i, 42 + i, 4) for i in range(n_workers)]
 
     t0 = time.time()
-    with mp.Pool(n_workers) as pool:
+    ctx = mp.get_context("forkserver")
+    with ctx.Pool(n_workers) as pool:
         parallel_results_16 = pool.map(run_single_vqe, tasks)
     t_par_16 = time.time() - t0
 
@@ -177,7 +179,8 @@ try:
     tasks = [(i, 100 + i, 4) for i in range(n_workers)]
 
     t0 = time.time()
-    with mp.Pool(n_workers) as pool:
+    ctx = mp.get_context("forkserver")
+    with ctx.Pool(n_workers) as pool:
         parallel_results_64 = pool.map(run_single_vqe, tasks)
     t_par_64 = time.time() - t0
 
@@ -211,7 +214,8 @@ try:
     tasks = [(i, 200 + i, 4) for i in range(n_workers)]
 
     t0 = time.time()
-    with mp.Pool(n_workers) as pool:
+    ctx = mp.get_context("forkserver")
+    with ctx.Pool(n_workers) as pool:
         parallel_results_128 = pool.map(run_single_vqe, tasks)
     t_par_128 = time.time() - t0
 
