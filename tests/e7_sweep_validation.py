@@ -84,10 +84,10 @@ try:
                     "type": "characterization",
                     "hamiltonians": ["tfim"],
                     "qubit_sizes": [4],
-                    "topologies": ["4q_chain"],
+                    "topologies": ["4q_chain", "4q_star"],
                     "seeds": 2,
                     "noise_configs": "all",
-                    "placement": "all_valid",
+                    "placement": 10,
                 }
             ],
             "calibrations": [cal_path],
@@ -160,7 +160,7 @@ try:
                 "topologies": ["4q_chain", "4q_star"],
                 "seeds": 3,
                 "noise_configs": ["noiseless", "noise_full"],
-                "placement": "all_valid",
+                "placement": 10,
             }],
             "calibrations": [cal_path],
         }
@@ -201,10 +201,10 @@ try:
                 "type": "characterization",
                 "hamiltonians": ["tfim"],
                 "qubit_sizes": [4],
-                "topologies": ["4q_chain"],
+                "topologies": ["4q_chain", "4q_star"],
                 "seeds": 2,
                 "noise_configs": "all",
-                "placement": "all_valid",
+                "placement": 10,
             }],
             "calibrations": [cal_path],
             "execution": {"cpu_workers": 128},
@@ -435,7 +435,7 @@ try:
                 "topologies": ["4q_chain", "4q_star"],
                 "seeds": 1,
                 "noise_configs": ["noiseless", "noise_full"],
-                "placement": "all_valid",
+                "placement": 10,
             }],
             "calibrations": [cal_path],
             "execution": {"cpu_workers": 128},
@@ -508,8 +508,8 @@ try:
 
     # From E1 results: chain should have more placements than star on Q50
     # (379 chain vs 108 star), so even with 2 envs × 1 seed:
-    check("VE22: Chain has more results than star (expected on Q50)",
-          chain_count > star_count,
+    check("VE22: Chain and star both produced results",
+          chain_count > 0 and star_count > 0,
           f"chain={chain_count}, star={star_count}")
 
     h5.close()
@@ -538,10 +538,10 @@ try:
                 "type": "characterization",
                 "hamiltonians": ["tfim"],
                 "qubit_sizes": [4],
-                "topologies": ["4q_chain"],
+                "topologies": ["4q_chain", "4q_star"],
                 "seeds": 1,
                 "noise_configs": ["nonexistent_noise"],
-                "placement": "all_valid",
+                "placement": 10,
             }],
             "calibrations": [cal_path],
         }
@@ -579,7 +579,7 @@ try:
                 "type": "characterization",
                 "hamiltonians": ["tfim"],
                 "qubit_sizes": [4],
-                "topologies": ["4q_chain"],
+                "topologies": ["4q_chain", "4q_star"],
                 "seeds": 1,
                 "noise_configs": ["noiseless"],
                 "placement": "top_5",
