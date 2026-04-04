@@ -193,8 +193,8 @@ def evaluate_batch(
         return [evaluate_circuit(loaded, **cfg) for cfg in configs]
 
     # Parallel execution via multiprocessing
-    # Use forkserver to avoid inheriting C++ thread pool mutexes
-    # from parent (numpy BLAS, scipy, Aer). See sweep_engine.py comment.
+    # OMP/BLAS thread vars should be set before Pool fork
+    # (set by sweep_engine or SLURM script)
     import multiprocessing as mp
 
     def _worker(args):
@@ -202,8 +202,7 @@ def evaluate_batch(
         r = evaluate_circuit(loaded, **cfg)
         return (idx, r)
 
-    ctx = mp.get_context("forkserver")
-    with ctx.Pool(max_workers) as pool:
+    with mp.Pool(max_workers) as pool:
         indexed = [(i, cfg) for i, cfg in enumerate(configs)]
         raw = pool.map(_worker, indexed)
 

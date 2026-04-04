@@ -19,8 +19,8 @@
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128
-#SBATCH --mem=0
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
 #SBATCH --output=slurm_logs/v111_validate.o%j
 #SBATCH --error=slurm_logs/v111_validate.e%j
 
@@ -29,6 +29,13 @@ source "${SLURM_SUBMIT_DIR}/env.sh"
 mkdir -p "${HPCQC_ROOT}/slurm_logs"
 
 export SINGULARITYENV_PROJECT_DIR="${HPCQC_ROOT}"
+
+# CRITICAL: Disable C++ thread pools (BLAS/OpenMP) before Python starts.
+# Parallelism comes from multiprocessing.Pool, not per-worker BLAS.
+# Without this, fork() copies locked mutexes → child process deadlock.
+export OMP_NUM_THREADS=1
+# Pass into Singularity container
+export SINGULARITYENV_OMP_NUM_THREADS=1
 
 SLURM_START_EPOCH=$(date +%s)
 echo "═══════════════════════════════════════════════════════════"
