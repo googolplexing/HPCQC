@@ -13,4 +13,4 @@ source "${SLURM_SUBMIT_DIR}/env.sh"
 
 export SINGULARITYENV_OMP_NUM_THREADS=1
 
-srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} python ${HPCQC_ROOT}/tests/fork_test_sweep.py
+srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} python ${HPCQC_ROOT}/tests/fork_test_lazy.py
