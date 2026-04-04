@@ -101,6 +101,8 @@ def _build_parquet_schema():
         pa.field("per_qubit_t2_us", pa.list_(pa.float64())),
         pa.field("per_qubit_readout_fidelity", pa.list_(pa.float64())),
         pa.field("per_edge_cz_fidelity", pa.list_(pa.float64())),
+        pa.field("placement_min_cz_fidelity", pa.float64()),
+        pa.field("placement_avg_cz_fidelity", pa.float64()),
 
         # ── Noise & Mitigation (4) ──
         pa.field("noise_environment", pa.string()),
@@ -596,6 +598,13 @@ def _extract_row(
         "per_qubit_t2_us": cal_lists["per_qubit_t2_us"] or None,
         "per_qubit_readout_fidelity": cal_lists["per_qubit_readout_fidelity"] or None,
         "per_edge_cz_fidelity": edge_cz_fidelity,
+        "placement_min_cz_fidelity": (
+            min(edge_cz_fidelity) if edge_cz_fidelity else None
+        ),
+        "placement_avg_cz_fidelity": (
+            sum(edge_cz_fidelity) / len(edge_cz_fidelity)
+            if edge_cz_fidelity else None
+        ),
 
         # Noise & Mitigation
         "noise_environment": noise_env,
