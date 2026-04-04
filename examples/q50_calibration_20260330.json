@@ -1,7 +1,7 @@
 {
   "calibration_set_id": "b9890ab3-0383-44d4-a0de-34ec3f920d1e",
   "timestamp": "2026-03-29T18:16:26.190342Z",
-  "device": "VTT Q50 (Aalto Helmi)",
+  "device": "Q50",
   "notes": "Full Q50 calibration from IQM/FiQCI, converted from native format",
   "qubits": {
     "QB1": {
