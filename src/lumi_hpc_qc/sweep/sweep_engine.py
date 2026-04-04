@@ -35,6 +35,7 @@ import json
 import math
 import multiprocessing as mp
 import os
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -444,6 +445,101 @@ def _battery_worker(args: tuple) -> dict[str, Any]:
         }
 
 
+def _run_pool_subprocess(
+    work_items: list[tuple],
+    n_workers: int,
+    project_dir: str,
+) -> list[dict[str, Any]]:
+    """Run _battery_worker pool in a clean subprocess.
+
+    The parent process has C++ thread pools (numpy BLAS, h5py HDF5,
+    Aer) whose mutexes deadlock forked children at high worker counts.
+    This function serializes work items, launches a fresh Python process
+    that creates mp.Pool without inherited C++ state, and reads results
+    back via pickle.
+
+    Proven on LUMI: Pool(100) → 100/100 in 7.43s
+    See tests/fork_test_subprocess.py
+
+    Args:
+        work_items: list of tuples matching _battery_worker signature
+        n_workers: number of parallel workers
+        project_dir: project root for sys.path in subprocess
+
+    Returns:
+        List of dicts with battery results (same as _battery_worker output)
+    """
+    import pickle
+    import subprocess
+    import tempfile
+
+    tmp_dir = tempfile.mkdtemp(prefix="hpcqc_pool_")
+    items_path = os.path.join(tmp_dir, "work_items.pkl")
+    results_path = os.path.join(tmp_dir, "results.pkl")
+
+    # Serialize work items
+    with open(items_path, "wb") as f:
+        pickle.dump(work_items, f)
+
+    # Write the subprocess runner script
+    runner_path = os.path.join(tmp_dir, "pool_runner.py")
+    with open(runner_path, "w") as f:
+        f.write(f'''import sys, os, pickle, time, multiprocessing as mp
+sys.path.insert(0, os.path.join("{project_dir}", "src"))
+os.environ["OMP_NUM_THREADS"] = "1"
+
+from lumi_hpc_qc.sweep.twin_simulator import run_twin_battery
+
+def battery_worker(args):
+    (circuit, observable, qubit_names, cal_json, cal_id,
+     placement_id_str, topology_hash, noise_envs, seed,
+     device, noiseless_cache) = args
+    try:
+        battery = run_twin_battery(
+            circuit=circuit, observable=observable,
+            qubit_names=qubit_names, calibration_data=cal_json,
+            calibration_id=cal_id, placement_id=placement_id_str,
+            topology_hash=topology_hash, environments=noise_envs,
+            seed=seed, device=device, noiseless_cache=noiseless_cache,
+        )
+        return {{"placement_id_str": placement_id_str, "battery": battery, "error": None}}
+    except Exception as e:
+        return {{"placement_id_str": placement_id_str, "battery": None, "error": str(e)}}
+
+with open("{items_path}", "rb") as f:
+    work_items = pickle.load(f)
+
+workers = min({n_workers}, len(work_items))
+with mp.Pool(workers) as pool:
+    results = pool.map(battery_worker, work_items)
+
+with open("{results_path}", "wb") as f:
+    pickle.dump(results, f)
+''')
+
+    # Launch clean subprocess
+    result = subprocess.run(
+        [sys.executable, runner_path],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Pool subprocess failed (rc={result.returncode}):\n"
+            f"stderr: {result.stderr[:2000]}"
+        )
+
+    # Read results back
+    with open(results_path, "rb") as f:
+        battery_results = pickle.load(f)
+
+    # Cleanup temp files
+    import shutil
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return battery_results
+
+
 class SweepEngine:
     """Top-level sweep orchestrator.
 
@@ -484,6 +580,15 @@ class SweepEngine:
 
         # Placement cache: (topology_name, device_id) → list[Placement]
         self._placement_cache: dict[tuple[str, str], list[Placement]] = {}
+
+        # Project root for subprocess worker scripts
+        self._project_dir = os.environ.get(
+            "PROJECT_DIR",
+            os.environ.get(
+                "SINGULARITYENV_PROJECT_DIR",
+                str(Path(__file__).resolve().parents[3]),  # src/lumi_hpc_qc/sweep → root
+            ),
+        )
 
     def run(self) -> SweepResult:
         """Execute the complete sweep. Returns SweepResult.
@@ -772,33 +877,34 @@ class SweepEngine:
               f"({qsize}q, density_matrix)")
 
         if cpu_workers > 1 and n_items > 1:
-            # E2/E7 Level 1: Parallel execution via multiprocessing
-            # CRITICAL: Disable C++ thread pools before fork.
-            # numpy BLAS (via exact_ground_energy → eigvalsh) and OpenMP
-            # initialize thread pools whose mutexes deadlock children
-            # after fork. Setting these to 1 prevents thread creation.
-            # Parallelism comes from Pool workers, not per-worker BLAS.
-            # See tests/debug_e2_fork_order.py for proof.
-            import os
-            os.environ.setdefault("OMP_NUM_THREADS", "1")
-            os.environ.setdefault("MKL_NUM_THREADS", "1")
-            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-            os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-
+            # E2/E7 Level 1: Parallel execution via clean subprocess
+            # CRITICAL: The parent process has initialized C++ thread pools
+            # (numpy BLAS, h5py HDF5, Aer if imported). Forking directly
+            # with mp.Pool causes children to inherit poisoned mutex state,
+            # deadlocking at high worker counts (>8). The race condition is
+            # scale-dependent: Pool(8) often works, Pool(100) always hangs.
+            #
+            # Solution: serialize work items to disk, launch a CLEAN
+            # subprocess (no inherited C++ state), run Pool there, read
+            # results back. Proven in tests/fork_test_subprocess.py:
+            # Pool(100) → 100/100 success in 7.43s on LUMI.
+            #
+            # Cost: ~14KB pickle I/O + subprocess launch (~0.5s).
+            # Benefit: guaranteed deadlock-free at any worker count.
             actual_workers = min(self._planner.cpu_workers, n_items)
             print(f"    E2: Parallel execution — {n_items} batteries across "
-                  f"{actual_workers} workers")
+                  f"{actual_workers} workers (subprocess)")
             t_par = time.time()
 
-            # CRITICAL: Close HDF5 before fork. h5py.File holds C-level
-            # HDF5 mutexes that deadlock forked children. Workers don't
-            # use HDF5 — they return dicts. We reopen after Pool completes.
+            # Close HDF5 before subprocess (not strictly needed since
+            # subprocess doesn't inherit, but keeps file clean)
             writer.close()
 
-            with mp.Pool(actual_workers) as pool:
-                battery_results = pool.map(_battery_worker, work_items)
+            battery_results = _run_pool_subprocess(
+                work_items, actual_workers, project_dir=self._project_dir,
+            )
 
-            # Reopen HDF5 for result writing (serial, after all workers done)
+            # Reopen HDF5 for result writing
             writer.open()
             print(f"    E2: Parallel complete in {time.time()-t_par:.1f}s")
         else:
