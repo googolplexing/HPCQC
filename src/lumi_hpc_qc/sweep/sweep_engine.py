@@ -33,6 +33,7 @@ import hashlib
 import itertools
 import json
 import math
+import multiprocessing as mp
 import os
 import time
 import uuid
@@ -86,9 +87,11 @@ class SweepExperimentConfig:
     qubit_sizes: list[int] = field(default_factory=list)
     topologies: str | list[str] = "auto"  # "auto" or explicit list
     seeds: int = 20
+    seed_offset: int = 0  # Starting seed (seeds run from offset to offset+seeds-1)
 
     # Noise scope
     noise_configs: str | list[str] = "all"  # "all" or explicit list
+    measurement_stats_interval_override: int | None = None  # Override per-env default
 
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
@@ -171,6 +174,14 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             nc_names = exp.noise_configs if isinstance(exp.noise_configs, list) else [exp.noise_configs]
             noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names if n in NOISE_ENV_BY_NAME]
 
+        # Apply measurement_stats_interval override from YAML (Item 4)
+        if exp.measurement_stats_interval_override is not None:
+            from dataclasses import replace
+            noise_envs = [
+                replace(env, measurement_stats_interval=exp.measurement_stats_interval_override)
+                for env in noise_envs
+            ]
+
         # Resolve placement strategy
         placement_strategy = "all_valid"
         max_placements = None
@@ -214,7 +225,7 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                 qubit_size=qsize,
                                 topology_name=topo_name,
                                 topology_edges=list(topo_spec["edges"]),
-                                seed=seed_idx,
+                                seed=exp.seed_offset + seed_idx,
                                 calibration_path=cal_path,
                                 calibration_id=_calibration_id(cal_path),
                                 experiment_type=exp.experiment_type,
@@ -272,7 +283,11 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             qubit_sizes=exp_dict.get("qubit_sizes", []),
             topologies=exp_dict.get("topologies", "auto"),
             seeds=exp_dict.get("seeds", 20),
+            seed_offset=exp_dict.get("seed_offset", 0),
             noise_configs=exp_dict.get("noise_configs", "all"),
+            measurement_stats_interval_override=exp_dict.get(
+                "measurement_stats_interval", None
+            ),
             placement=exp_dict.get("placement", "all_valid"),
             grid=exp_dict.get("grid", {}),
             label=exp_dict.get("label", ""),
@@ -380,6 +395,55 @@ class SweepResult:
     placement_summary: dict[str, int] = field(default_factory=dict)
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Parallel battery worker (E2/E7 Level 1 integration)
+# ═══════════════════════════════════════════════════════════════════════
+
+def _battery_worker(args: tuple) -> dict[str, Any]:
+    """Run one twin battery in a worker process.
+
+    Module-level function for multiprocessing.Pool (must be picklable).
+    Each worker runs all noise environments for one (seed, placement).
+
+    Args:
+        Tuple of: (circuit, observable, qubit_names, cal_json, cal_id,
+                   placement_id_str, topology_hash, noise_envs, seed,
+                   device, noiseless_cache)
+
+    Returns:
+        Dict with battery results and metadata for HDF5 writing.
+    """
+    (circuit, observable, qubit_names, cal_json, cal_id,
+     placement_id_str, topology_hash, noise_envs, seed,
+     device, noiseless_cache) = args
+
+    try:
+        battery = run_twin_battery(
+            circuit=circuit,
+            observable=observable,
+            qubit_names=qubit_names,
+            calibration_data=cal_json,
+            calibration_id=cal_id,
+            placement_id=placement_id_str,
+            topology_hash=topology_hash,
+            environments=noise_envs,
+            seed=seed,
+            device=device,
+            noiseless_cache=noiseless_cache,
+        )
+        return {
+            "placement_id_str": placement_id_str,
+            "battery": battery,
+            "error": None,
+        }
+    except Exception as e:
+        return {
+            "placement_id_str": placement_id_str,
+            "battery": None,
+            "error": str(e),
+        }
+
+
 class SweepEngine:
     """Top-level sweep orchestrator.
 
@@ -405,6 +469,12 @@ class SweepEngine:
 
         # E1: Placement solver (shared across tasks with same device)
         self._solver = GeneralPlacementSolver()
+
+        # E2: Tiered execution planner (v1.1.1 — Level 1 integration)
+        from lumi_hpc_qc.sweep.execution_planner import TieredExecutionPlanner
+        self._planner = TieredExecutionPlanner(
+            cpu_workers=config.cpu_workers,
+        )
 
         # E4: Noiseless deduplication cache (shared across calibrations)
         self._noiseless_cache: dict[str, TwinResult] = {}
@@ -657,7 +727,31 @@ class SweepEngine:
 
         exact_energy = ham_metadata.get("exact_ground_energy")
 
-        # ── Execute per seed ──
+        # ── Pre-populate noiseless cache ──
+        # Run one battery serially to populate noiseless dedup entries.
+        # Workers then get the pre-filled cache (read-only for noiseless hits).
+        from lumi_hpc_qc.sweep.noise_configs import NOISELESS_ENVS
+        if placements:
+            first_p = placements[0]
+            qn_first = [first_p.qubit_mapping[i] for i in range(qsize)]
+            pid_first = "_".join(qn_first)
+            noiseless_envs = [e for e in (tasks[0].noise_configs or [])
+                              if e.tier == "noiseless"]
+            if noiseless_envs:
+                run_twin_battery(
+                    circuit=circuit, observable=observable,
+                    qubit_names=qn_first, calibration_data=cal_json,
+                    calibration_id=cal_id, placement_id=pid_first,
+                    topology_hash=first_p.topology_hash,
+                    environments=noiseless_envs,
+                    seed=tasks[0].seed * 1000 + first_p.placement_id,
+                    device=self._device,
+                    noiseless_cache=self._noiseless_cache,
+                )
+
+        # ── Collect work items ──
+        work_items = []
+        work_meta = []  # parallel metadata for result processing
         for task in tasks:
             seed = task.seed
             noise_envs = task.noise_configs
@@ -669,84 +763,118 @@ class SweepEngine:
                 ]
                 placement_id_str = "_".join(qubit_names)
 
-                # ── E4: Twin battery ──
-                battery = run_twin_battery(
-                    circuit=circuit,
-                    observable=observable,
-                    qubit_names=qubit_names,
-                    calibration_data=cal_json,
-                    calibration_id=cal_id,
-                    placement_id=placement_id_str,
-                    topology_hash=placement.topology_hash,
-                    environments=noise_envs,
-                    seed=seed * 1000 + placement.placement_id,
-                    device=self._device,
-                    noiseless_cache=self._noiseless_cache,
+                work_items.append((
+                    circuit, observable, qubit_names, cal_json, cal_id,
+                    placement_id_str, placement.topology_hash, noise_envs,
+                    seed * 1000 + placement.placement_id,
+                    self._device, dict(self._noiseless_cache),
+                ))
+                work_meta.append((task, placement, qubit_names, seed))
+
+        # ── Execute batteries ──
+        cpu_workers = self._config.cpu_workers
+        n_items = len(work_items)
+
+        # E2: Route tasks through TieredExecutionPlanner for CPU/GPU decision
+        from lumi_hpc_qc.sweep.execution_planner import SimulationTask, select_backend
+        exec_backend = select_backend(qsize, method="density_matrix")
+        print(f"    E2: Routing {n_items} batteries → {exec_backend} "
+              f"({qsize}q, density_matrix)")
+
+        if cpu_workers > 1 and n_items > 1:
+            # E2/E7 Level 1: Parallel execution via multiprocessing
+            actual_workers = min(self._planner.cpu_workers, n_items)
+            print(f"    E2: Parallel execution — {n_items} batteries across "
+                  f"{actual_workers} workers")
+            t_par = time.time()
+            with mp.Pool(actual_workers) as pool:
+                battery_results = pool.map(_battery_worker, work_items)
+            print(f"    E2: Parallel complete in {time.time()-t_par:.1f}s")
+        else:
+            # Serial fallback (single worker or single item)
+            battery_results = [_battery_worker(item) for item in work_items]
+
+        # ── Process results and write to HDF5 (serial — HDF5 not thread-safe) ──
+        task_completion = set()
+        for idx, br in enumerate(battery_results):
+            task, placement, qubit_names, seed = work_meta[idx]
+            placement_id_str = "_".join(qubit_names)
+
+            if br["error"] is not None:
+                self._progress.total_errors += 1
+                errors.append(
+                    f"Battery error: {task.task_id} / {placement_id_str}: "
+                    f"{br['error']}"
+                )
+                continue
+
+            battery = br["battery"]
+            self._progress.total_simulations += battery.simulated_count
+            self._progress.total_deduplicated += battery.deduplicated_count
+
+            # ── E3: Write to HDF5 ──
+            for twin_result in battery.results:
+                if twin_result.error is not None:
+                    self._progress.total_errors += 1
+                    errors.append(
+                        f"Sim error: {task.task_id} / {placement_id_str} / "
+                        f"{twin_result.environment}: {twin_result.error}"
+                    )
+                    continue
+
+                energy_val = twin_result.energy if twin_result.energy is not None else 0.0
+
+                # Compute noise fingerprinting features from counts
+                fingerprint = _compute_fingerprint(
+                    twin_result.counts, qsize
                 )
 
-                self._progress.total_simulations += battery.simulated_count
-                self._progress.total_deduplicated += battery.deduplicated_count
+                # Extract per-edge CZ fidelity for this placement
+                edge_fidelities = _extract_edge_fidelities(
+                    placement, device_cal
+                )
 
-                # ── E3: Write to HDF5 ──
-                for twin_result in battery.results:
-                    if twin_result.error is not None:
-                        self._progress.total_errors += 1
-                        errors.append(
-                            f"Sim error: {task.task_id} / {placement_id_str} / "
-                            f"{twin_result.environment}: {twin_result.error}"
-                        )
-                        continue
+                entry = SweepResultEntry(
+                    device_id=device_cal.device_id,
+                    device_prefix=device_cal.device_prefix,
+                    seed=seed,
+                    placement_qubits=qubit_names,
+                    calibration_id=cal_id,
+                    noise_config=twin_result.environment,
+                    energy_trajectory=[energy_val],
+                    best_energy=energy_val,
+                    total_iterations=1,
+                    converged=True,
+                    circuit_metrics={
+                        "num_qubits": qsize,
+                        "topology_name": topo_name,
+                        "hamiltonian": ham_name,
+                        "pre_transpilation_depth": circuit.depth(),
+                    },
+                    per_qubit_calibration=placement.per_qubit_calibration,
+                    placement_score=placement.score,
+                    topology_hash=placement.topology_hash,
+                    wall_time_seconds=twin_result.execution_time_s,
+                    framework_version=self._config.framework_version,
+                    experiment_id=f"{self._config.sweep_id}_{task.task_id}_{placement_id_str}_{twin_result.environment}",
+                    noise_fingerprint=fingerprint,
+                    per_edge_cz_fidelity=edge_fidelities,
+                )
 
-                    energy_val = twin_result.energy if twin_result.energy is not None else 0.0
-
-                    # Compute noise fingerprinting features from counts
-                    fingerprint = _compute_fingerprint(
-                        twin_result.counts, qsize
+                try:
+                    writer.write(entry)
+                    self._progress.hdf5_writes += 1
+                except Exception as e:
+                    errors.append(
+                        f"HDF5 write error: {entry.group_path}: {e}"
                     )
 
-                    # Extract per-edge CZ fidelity for this placement
-                    edge_fidelities = _extract_edge_fidelities(
-                        placement, device_cal
-                    )
-
-                    entry = SweepResultEntry(
-                        device_id=device_cal.device_id,
-                        device_prefix=device_cal.device_prefix,
-                        seed=seed,
-                        placement_qubits=qubit_names,
-                        calibration_id=cal_id,
-                        noise_config=twin_result.environment,
-                        energy_trajectory=[energy_val],
-                        best_energy=energy_val,
-                        total_iterations=1,
-                        converged=True,
-                        circuit_metrics={
-                            "num_qubits": qsize,
-                            "topology_name": topo_name,
-                            "hamiltonian": ham_name,
-                            "pre_transpilation_depth": circuit.depth(),
-                        },
-                        per_qubit_calibration=placement.per_qubit_calibration,
-                        placement_score=placement.score,
-                        topology_hash=placement.topology_hash,
-                        wall_time_seconds=twin_result.execution_time_s,
-                        framework_version=self._config.framework_version,
-                        experiment_id=f"{self._config.sweep_id}_{task.task_id}_{placement_id_str}_{twin_result.environment}",
-                        noise_fingerprint=fingerprint,
-                        per_edge_cz_fidelity=edge_fidelities,
-                    )
-
-                    try:
-                        writer.write(entry)
-                        self._progress.hdf5_writes += 1
-                    except Exception as e:
-                        errors.append(
-                            f"HDF5 write error: {entry.group_path}: {e}"
-                        )
-
-            self._progress.completed_tasks += 1
-            if self._progress_callback:
-                self._progress_callback(self._progress)
+            # Track task completion for progress
+            if task.task_id not in task_completion:
+                task_completion.add(task.task_id)
+                self._progress.completed_tasks += 1
+                if self._progress_callback:
+                    self._progress_callback(self._progress)
 
         # Print group summary
         print(f"    Completed: {len(tasks)} seeds × {len(placements)} placements "

@@ -82,6 +82,10 @@ class SimulationTask:
     parameters: Any = None            # ndarray of parameter values
     observable: Any = None            # SparsePauliOp for expectation value
 
+    # Noise context (v1.1.1 — Level 1 E2/E7 integration)
+    noise_model: Any = None           # qiskit_aer.noise.NoiseModel or None
+    coupling_map: Any = None          # qiskit CouplingMap or None
+
     # Execution metadata (filled by planner after routing)
     assigned_backend: str = ""
     seed: int = 0
@@ -152,17 +156,28 @@ def _cpu_worker(args: tuple) -> dict:
     (parent inherits via fork COW). The child creates its own AerSimulator
     instance — no shared state with other workers.
 
+    v1.1.1: Accepts optional noise_model and coupling_map for noisy
+    simulation (Level 1 E2/E7 integration).
+
     Returns a dict (not SimulationResult) for pickle compatibility.
     """
     import numpy as np
     from qiskit_aer import AerSimulator
 
-    task_id, circuit, parameters, observable, num_qubits, method, shots, seed = args
+    (task_id, circuit, parameters, observable, num_qubits,
+     method, shots, seed, noise_model, coupling_map) = args
 
     try:
         t0 = time.time()
 
-        sim = AerSimulator(method=method, device="CPU")
+        # Build simulator with optional noise model
+        sim_kwargs: dict[str, Any] = {"method": method, "device": "CPU"}
+        if noise_model is not None:
+            sim_kwargs["noise_model"] = noise_model
+        if coupling_map is not None:
+            sim_kwargs["coupling_map"] = coupling_map
+
+        sim = AerSimulator(**sim_kwargs)
 
         # Bind parameters if needed
         if parameters is not None and circuit.num_parameters > 0:
@@ -240,6 +255,8 @@ def execute_cpu_batch(
             task.method,
             task.shots,
             task.seed,
+            task.noise_model,
+            task.coupling_map,
         ))
 
     # Clamp workers to task count — no point having idle workers

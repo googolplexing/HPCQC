@@ -389,6 +389,36 @@ try:
 except Exception as e:
     check("VE19 tiered stats", False, traceback.format_exc())
 
+# VE19 amendment — YAML interval override (v1.1.1, RED-RESP-V8-STATUS-AMENDMENT)
+try:
+    from dataclasses import replace as dc_replace
+    from lumi_hpc_qc.sweep.sweep_engine import SweepExperimentConfig
+
+    # Test 1: Default — no override, intervals come from NoiseConfig defaults
+    exp_default = SweepExperimentConfig(
+        hamiltonians=["tfim"], qubit_sizes=[4],
+    )
+    check("VE19-amend: default override is None",
+          exp_default.measurement_stats_interval_override is None)
+
+    # Test 2: Override applied via dataclasses.replace on NoiseConfig
+    env_original = NOISE_ENV_BY_NAME["noise_readout_only"]
+    check("VE19-amend: noise_readout_only default interval is 5",
+          env_original.measurement_stats_interval == 5,
+          f"got {env_original.measurement_stats_interval}")
+
+    env_overridden = dc_replace(env_original, measurement_stats_interval=50)
+    check("VE19-amend: override sets interval to 50",
+          env_overridden.measurement_stats_interval == 50)
+    check("VE19-amend: original unchanged after replace",
+          env_original.measurement_stats_interval == 5)
+    check("VE19-amend: other fields preserved after replace",
+          env_overridden.name == env_original.name
+          and env_overridden.tier == env_original.tier)
+
+except Exception as e:
+    check("VE19 amendment", False, traceback.format_exc())
+
 
 # ═══════════════════════════════════════════════════════════════════════
 print("\n=== E7.5: VE22 — Topology Library Integration ===")
