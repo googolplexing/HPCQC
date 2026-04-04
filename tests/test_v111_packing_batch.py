@@ -246,13 +246,13 @@ print("  Verifies DSatur rounds <= greedy rounds on Q50 calibration data")
 
 try:
     from lumi_hpc_qc.sweep.placement_solver import GeneralPlacementSolver
-    from lumi_hpc_qc.plugins.calibration_adapters.iqm_v2 import IqmV2Adapter
+    from lumi_hpc_qc.plugins.calibration_adapters.iqm_v2 import IQMv2Adapter
     import json
 
     # Load Q50 calibration
     cal_path = os.path.join(project_dir, "examples", "q50_calibration_20260330.json")
     if os.path.exists(cal_path):
-        adapter = IqmV2Adapter()
+        adapter = IQMv2Adapter()
         cal = adapter.load(cal_path)
 
         solver = GeneralPlacementSolver()
