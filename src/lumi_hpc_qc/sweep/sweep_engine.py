@@ -789,8 +789,17 @@ class SweepEngine:
             print(f"    E2: Parallel execution — {n_items} batteries across "
                   f"{actual_workers} workers")
             t_par = time.time()
+
+            # CRITICAL: Close HDF5 before fork. h5py.File holds C-level
+            # HDF5 mutexes that deadlock forked children. Workers don't
+            # use HDF5 — they return dicts. We reopen after Pool completes.
+            writer.close()
+
             with mp.Pool(actual_workers) as pool:
                 battery_results = pool.map(_battery_worker, work_items)
+
+            # Reopen HDF5 for result writing (serial, after all workers done)
+            writer.open()
             print(f"    E2: Parallel complete in {time.time()-t_par:.1f}s")
         else:
             # Serial fallback (single worker or single item)

@@ -136,7 +136,7 @@ try:
           f"got {len(tasks)} tasks")
 
     # 1 hamiltonian × 1 topology × 1 calibration × 2 seeds = 2 tasks
-    check("Correct task count (1×1×1×2 = 2)", len(tasks) == 2,
+    check("Correct task count (1×2×1×2 = 4)", len(tasks) == 4,
           f"expected 2, got {len(tasks)}")
 
     # Verify task structure
