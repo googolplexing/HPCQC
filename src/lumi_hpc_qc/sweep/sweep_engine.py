@@ -905,7 +905,7 @@ class SweepEngine:
             debug_json_dir=str(output_dir / "debug_json") if self._config.debug_json else None,
         ) as writer:
             for group_idx, (group_key, group_tasks) in enumerate(groups.items()):
-                ham_name, topo_name, cal_path = group_key
+                ham_name, topo_name, cal_path, _params_key = group_key
                 print(f"\n  Group {group_idx + 1}/{len(groups)}: "
                       f"{ham_name} / {topo_name} / {_calibration_id(cal_path)}")
 
