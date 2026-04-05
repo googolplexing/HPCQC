@@ -26,6 +26,7 @@ Phase E — RED-DIRECTIVE-PHASE-E-ROADMAP-v1.0, System 5
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -88,15 +89,28 @@ class SweepResultEntry:
         Format: /devices/{device_prefix}/seeds/seed_{seed:04d}/
                 placements/{device_prefix}-{qubit_names}/
                 calibrations/{calibration_id}/{noise_config}/
+                [params_{hash}]   ← only when model_params non-empty (LHS mode)
+
+        The params hash suffix prevents path collisions when multiple
+        LHS samples share the same (device, seed, placement, calibration,
+        noise_config) combination but have different Hamiltonian parameters.
+        Grid-mode tasks have empty model_params → path unchanged.
         """
         qubit_str = "_".join(self.placement_qubits)
-        return (
+        base = (
             f"devices/{self.device_prefix}/"
             f"seeds/seed_{self.seed:04d}/"
             f"placements/{self.device_prefix}-{qubit_str}/"
             f"calibrations/{self.calibration_id}/"
             f"{self.noise_config}"
         )
+        if self.model_params:
+            params_str = ",".join(
+                f"{k}={v:.8f}" for k, v in sorted(self.model_params.items())
+            )
+            params_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
+            return f"{base}/params_{params_hash}"
+        return base
 
     def to_wal_dict(self) -> dict[str, Any]:
         """Serialize to a WAL-safe dict (JSON-serializable)."""
