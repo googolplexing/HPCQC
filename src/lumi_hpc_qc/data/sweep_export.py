@@ -618,9 +618,12 @@ def _extract_row(
         "exact_ground_energy": exact_ground_energy_val,
 
         # Model Parameters (v1.2.0 Item C — typed columns per RED-SPEC-003)
-        "param_j": model_params.get("j"),
-        "param_g": model_params.get("g"),
-        "param_disorder_w": model_params.get("disorder_w"),
+        # Check both short and long parameter name forms.
+        # DiagnosticTFIM accepts j|coupling_j, g|transverse_h, w|disorder_w.
+        # LHS YAML may use either form as the parameter key.
+        "param_j": model_params.get("j", model_params.get("coupling_j")),
+        "param_g": model_params.get("g", model_params.get("transverse_h")),
+        "param_disorder_w": model_params.get("disorder_w", model_params.get("w")),
 
         # Device & Placement
         "device": str(attrs.get("device_id", "")),
