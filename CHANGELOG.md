@@ -1,19 +1,21 @@
+<!-- Copyright (c) 2026 Michael Mucciardi -->
+<!-- SPDX-License-Identifier: SSPL-1.0 -->
+
+# Changelog
+
 ## 1.2.1 (2026-04-06)
 
-### Calibration Adapter Registry, Entry Point Plugin Discovery (RED-DIRECTIVE-V121)
+### Plugin Architecture Completion (RED-DIRECTIVE-V121 v1.1)
 
-3 items. Plugin architecture extended to support external packages via
-standard Python entry points. No QPU dependency.
+6 items. Plugin system extended: external packages contribute plugins via
+entry points, plugins provide their own defaults, calibration routing is
+explicit. No QPU dependency.
 
 **Item 1: Calibration Adapter Registry Integration (`plugins/registry.py`, `sweep/sweep_engine.py`)**
 - `calibration_adapters` added as 7th plugin type in `_PLUGIN_TYPES`
 - `get_calibration_adapter(name)` typed accessor on `PluginRegistry`
 - `_discover_builtin()` now scans calibration_adapters directory alongside all other plugin types
 - `registry.list_available("calibration_adapters")` returns `["iqm_v2", "synthetic"]`
-- Sweep engine `_load_calibration()` uses registry-based adapter lookup instead of hardcoded
-  `IQMv2Adapter()` import — enables future device adapters (IT4I VLQ, Aalto Q20)
-- `_detect_adapter()` heuristic: QB-prefixed qubit names → `iqm_v2`,
-  `_synthetic_metadata` field → `synthetic`, default → `iqm_v2`
 
 **Item 2: Entry Point Plugin Discovery (`plugins/registry.py`)**
 - `_discover_entrypoints()` scans `hpcqc.plugins.*` entry point groups from pip-installed packages
@@ -25,16 +27,40 @@ standard Python entry points. No QPU dependency.
 - R4: Failure isolation — broken entry points produce warnings, not crashes
 - Enables Orange's DiagnosticTFIM deployment via `pip install -e animll` instead of file copying
 
-**Item 3: Dual-Name Parameter Extraction Fix (`data/sweep_export.py`)**
+**Item 3: `default_params()` on HamiltonianBuilder ABC (`plugins/hamiltonians/base.py`)**
+- Non-abstract `default_params(num_qubits)` method returns plugin-specific defaults
+- Base implementation returns `{"num_qubits": num_qubits}` — all existing plugins work unchanged
+- `tfim.py`: returns `{num_qubits, j=1.0, g=1.0, boundary_condition="open"}`
+- `heisenberg.py`: returns `{lattice_rows=1, lattice_cols, jx=1.0, jy=1.0, jz=1.0}`
+- `fermi_hubbard.py`: returns `{lattice_rows=1, lattice_cols, hopping_t=1.0, interaction_u=2.0}`
+- Eliminates centralized `_default_model_params()` switch statement in `sweep_engine.py`
+- External plugins (DiagnosticTFIM) override to provide correct param columns in Parquet
+
+**Item 4: Explicit `adapter` Field in Calibration JSON (`sweep/sweep_engine.py`)**
+- `_load_calibration()` reads `cal_json.get("adapter", "iqm_v2")` — explicit routing
+- Replaces `_detect_adapter()` heuristic (removed)
+- Default `"iqm_v2"` for backward compat with files lacking the field
+- Single JSON read (was two: one for detection, one for noise model)
+- New devices add `"adapter": "aalto_q20"` to their calibration JSON
+
+**Item 5: Entry Point Group Names in API Stability (documentation)**
+- 7 entry point group names (`hpcqc.plugins.*`) committed as stable
+- Will not be renamed without a deprecation cycle
+
+**Item 6: Dual-Name Parameter Extraction Fix (`data/sweep_export.py`)**
 - `param_j` checks both `model_params["j"]` and `model_params["coupling_j"]`
 - `param_g` checks both `model_params["g"]` and `model_params["transverse_h"]`
 - `param_disorder_w` checks both `model_params["disorder_w"]` and `model_params["w"]`
 - Fixes null Parquet columns when LHS YAML uses long parameter name aliases
 
-<!-- Copyright (c) 2026 Michael Mucciardi -->
-<!-- SPDX-License-Identifier: SSPL-1.0 -->
+**Performance: Registry cached on SweepEngine (`sweep/sweep_engine.py`)**
+- `PluginRegistry` instantiated once in `__init__`, shared across all methods
+- Was: 2 separate instantiations + `discover()` calls per sweep
+- Eliminates redundant plugin directory scans during execution
 
-# Changelog
+**SLURM Wall Times Tightened**
+- All test scripts set to ~2× observed runtime (was 15–60 min, now 15s–4min)
+- Fail-fast on hangs: runaway forks killed in seconds, not minutes
 
 ## 1.2.0 (2026-04-05)
 

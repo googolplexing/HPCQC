@@ -1,9 +1,9 @@
 # HPCQC MANIFEST — v1.2.1
-# Generated: 2026-04-05T22:42:00+00:00
+# Generated: 2026-04-05T23:38:02+00:00
 # sha256 hashes for all tracked files
 
 81fb3d66be07a85ac18702f16c7e07e7bc0068c0accc92f5f960a7c10d7b9416  ./.gitignore
-340aec4d49dbc104c8eba8555e799ddb47abed1140596d96f1bd47b27ffd2cbe  ./CHANGELOG.md
+8cf36ffd9f1e28dd84562560eb83046db403453ddfa908b6b4e8457537528b3e  ./CHANGELOG.md
 72dd4d9c3f449d2d4f54cc2662d3abf54d05e38f448107d6f03866c3154eec14  ./LICENSE
 d9f190830cdfb93a23e73c48b85b3a3d33095c1de6b2c7cb1bb5953d80e9c068  ./README.md
 3452b943bea2408f7751481003f5aa115a84bff243fd7311f79c13ec2c8f5dc5  ./configs/byo_tfim_8q.yaml
@@ -119,13 +119,13 @@ a5280cbad718d3fee3e3354d4d70aa98685181cb30e06e5de062543b69dcaa63  ./src/lumi_hpc
 49889e7087b73db001169a9ce43c4a5608776008ad9de5a4d335415c0d4dad67  ./src/lumi_hpc_qc/plugins/gradients/finite_difference.py
 eea6a257e5613deab1d6eac1031ea1035c3e29bb18b83d34c281c1aaa9e819e1  ./src/lumi_hpc_qc/plugins/gradients/parameter_shift.py
 6f9e7f00df9038bfc1b8d778ad8f0c8214312212388c7105a1b64e927d2aa4a7  ./src/lumi_hpc_qc/plugins/hamiltonians/__init__.py
-96aaefa1cc37fb9e4f35b29e65ae1456ee8dc3f93467f6f255311a5caa2b6d57  ./src/lumi_hpc_qc/plugins/hamiltonians/base.py
+cea1256935a408eed8d77ff0507e931a4c81209fada3ca7feb8009ee6cbd32d1  ./src/lumi_hpc_qc/plugins/hamiltonians/base.py
 b363d7668c9e8906ff9dca61160da27647bc8d1afacfc05f60ed8c7b2f6f0580  ./src/lumi_hpc_qc/plugins/hamiltonians/byo.py
-78500bb79f99977608fdca84af1e2278f96287a1621d4a5d422a3ae7b37c9d3f  ./src/lumi_hpc_qc/plugins/hamiltonians/fermi_hubbard.py
-1f8eec92a9fab14afc099903b8b30ea2ec58e98845b9c34e483aa67c5f2c1f64  ./src/lumi_hpc_qc/plugins/hamiltonians/heisenberg.py
+d986d6fc10c971cd76603101cf906fdd251cd96ff7120b40bd25fc4e41f7a377  ./src/lumi_hpc_qc/plugins/hamiltonians/fermi_hubbard.py
+0a8931e31384449bd1e19444f65a58449240d1b1849c955c388dae15563c0e99  ./src/lumi_hpc_qc/plugins/hamiltonians/heisenberg.py
 db9f3b3b1b8b4eec35ba3e272d77fd523019de24ae227bde7267906dc59a5021  ./src/lumi_hpc_qc/plugins/hamiltonians/molecular.py
 d5320ca29e59c6f264e81d06b26d7ee79a96a3f3b1942e8e7f1c9464f19a4c47  ./src/lumi_hpc_qc/plugins/hamiltonians/qaoa_maxcut.py
-15d64b1f18a893cf47264c5c63d6f0add393f691259bbcefb620564d14cf92ec  ./src/lumi_hpc_qc/plugins/hamiltonians/tfim.py
+025c9a69bc881744caaaf9d23971d115653711c7062f8e1d817565464877f698  ./src/lumi_hpc_qc/plugins/hamiltonians/tfim.py
 bed2ce275bba14d2e79067ed3af9878ff251ecb191eb366490066da0ddea691d  ./src/lumi_hpc_qc/plugins/initializers/__init__.py
 4e0e3ca7d27d933feb885531a7089a99777e0fe3a7d1547e5a47ef3a42a9a2e4  ./src/lumi_hpc_qc/plugins/initializers/adiabatic.py
 ead5a7461074e5cd555fe14a2abecd861c65e8a606b5ec1161c072c16afee1b6  ./src/lumi_hpc_qc/plugins/initializers/base.py
@@ -150,7 +150,7 @@ ed9d5fcd1cf0eb732079539a44b2de4a23cf2e470953c1d469f126ca1d8f7166  ./src/lumi_hpc
 79a9de8cbcf5088054e74172d994a8949c200378a9c0a45782e30b82c3272ee2  ./src/lumi_hpc_qc/sweep/noise_configs.py
 d26014df362a57a7077c5788fc383944a1cccc485f7d9b5a451543c3aca25f74  ./src/lumi_hpc_qc/sweep/placement_solver.py
 7fdf098c9c1d7ee13676cb0e1917b5406f5c3a01a3c0976e09db8f6d58324ccf  ./src/lumi_hpc_qc/sweep/round_executor.py
-fb0b3fd66fb9b5e07ec7e1165851a52a9bb68c955686cc3cc7f50856ed9bc496  ./src/lumi_hpc_qc/sweep/sweep_engine.py
+539f188c124b1a659f9efac965875e3b04af8c39030170de0bc1ca3c0f4bef31  ./src/lumi_hpc_qc/sweep/sweep_engine.py
 948f136c51fc2822795f64d68143c32234bccb02a08998ae00f3f17fe754f129  ./src/lumi_hpc_qc/sweep/topology_library.py
 9d8904d22e484290edc9afdd318c40ac1a296dbd2f44981e5ed1f5260129269c  ./src/lumi_hpc_qc/sweep/twin_simulator.py
 4a69898063b29ac2eacf211424d7e36eab5534ae11b1b417aa4110b89b7342b3  ./src/lumi_hpc_qc/types.py
@@ -203,18 +203,18 @@ d75ab030f19cc55bada3e0aa25ba941eeb54cab9d1201f880bb38970db786a23  ./tests/qpu_si
 b5a1b594ad78e81a15333077a1ceda810e84b22660a0899ec1cf10b3fb6814e0  ./tests/resume_runner.py
 d5c5474321f4f04c84b1bce4a064f58d55d44d0e17830303c54ec1426339ebe9  ./tests/run_all_tests.sh
 ef7037bb1fda468b0dc916e0ea6202a813f871cbcfc28bc896fd798344690208  ./tests/slurm_cross_impl.sh
-f8b98c061cbfbdd9b3e2e31f3aabd531e0b119e86aaaeef0044c23a0a5c05e7c  ./tests/slurm_e1.sh
-246480bd32394ce912f6db00b8bb46ae9f78afaacdf290db24b3a910a269a08b  ./tests/slurm_e10.sh
-bc3fabe937df337efb337e5cc6580c32f44526610a2eb3f25819e399dcddb38f  ./tests/slurm_e2_planner.sh
-af66f415f5bc87e6f9a777616190f4c537715fb8b8b0669b4060073213983137  ./tests/slurm_e2_stress.sh
-f73946808300d5b05b8ec337e349e4db94e977676f7586741448793b9d2734b3  ./tests/slurm_e3.sh
-fa11809db06e045dbeaa9599d07e7198af4700d11aeda83d71e1e55334deeb88  ./tests/slurm_e4.sh
-d66ccd912f78ecc6be9243397278fecd161327b563e30e59e8664800a9c2c48e  ./tests/slurm_e5.sh
-2df6c1a62954d94c99a3d34dd5ad6e5806077b209f9ec16cd619034f83116629  ./tests/slurm_e6a.sh
-79694d7ceb24be6e17fcf3c6104bbf600a5da4b7f63167de00b43ffb3dc0af1d  ./tests/slurm_e6b.sh
-eaa07771b125fe72de3e1721df906641750d3b50838a2692fda41cd85e981c9a  ./tests/slurm_e7.sh
-dead8d740fa666cbf29cfb582cb2977ee44f9a33c86ed6dca728efa2dcabd3a8  ./tests/slurm_e8.sh
-7c89a37eb2381009184b2508c7993adaa67428a1b7e2286eca255cae50c34dd5  ./tests/slurm_e9.sh
+8a683d89aee1ac13d001ae8c60933d434811ac488833391c36615b81422098ee  ./tests/slurm_e1.sh
+b36aa8a7ed4dec3d91d6e0be02d0c6c40a72c882365cfebd7b86376e3df38822  ./tests/slurm_e10.sh
+0083177be6c373d2f19a3a7ed5dbd774d8e4689113be87194647654e2a75f85e  ./tests/slurm_e2_planner.sh
+175b81351f2c2b54b7e1f088dfb1ccd1a3b148e327578d56604ad64fc07471b3  ./tests/slurm_e2_stress.sh
+2634d69c4e1b04a5f79ad7c36c536454faa2ba876f1483a49642bddf55c26ec9  ./tests/slurm_e3.sh
+abc9d7868edddc1b189596cba4cab6ba41ae6f4d65b1485d0ec02408ba855213  ./tests/slurm_e4.sh
+f2bb2db6f24afe07d68ac7d2a253a61e868f2b28afa12eaaabc35b5002cf740b  ./tests/slurm_e5.sh
+3eab1f3f3f417c06252bc80aa6832e3101f483b1751425ccad6dec48ced0f954  ./tests/slurm_e6a.sh
+0deeeae481d7a1e7516e1ee445779909478d39e828537f2bd701d129e84587ae  ./tests/slurm_e6b.sh
+044e8b643137f5fca3a6546cbaf8305f8273f58a616749292986be018f61bcd4  ./tests/slurm_e7.sh
+e5d9efceba8f3a9258f5f0bf7b20fe4ade483b27cf295b3d4515390b4bfb5256  ./tests/slurm_e8.sh
+88787baefab86173d0ecbaef586f477d1b0878148eb818e119d99cddddda9bf3  ./tests/slurm_e9.sh
 8b3819016e867085b5bfe471512b2963b4053cfb47bce0f30cc66f22707904fc  ./tests/slurm_phase_d.sh
 685e7b0e9fed63e25ddec9e32c5de794bb47cae37135554a811dd752778f943a  ./tests/slurm_phase_d_export.sh
 79c2d901077ad31d4c1bd9f5fba7c28190554c09ce9a7f4cc75353d17be341fe  ./tests/slurm_qpy_export.sh
@@ -233,7 +233,7 @@ f7c4ed99e757340c7700d7aa8324979ee388fcee10f8ca23790960493f1cc5dc  ./tests/test_q
 920ce9476c97fc842eeb4ea008a5dfc1ef15fb29b5ffa66bcd60eae5134c3776  ./tests/test_smoke.sh
 73629347e3c01cb75b5da353d1d9bff330eefe174750dd40134e275eae3124a5  ./tests/test_v111_packing_batch.py
 448941838c9dc14218dc703d58ba3e7525df1144a39ace2344f2661920030b86  ./tests/test_v111_qpu_timing.sh
-08c32b50e21b99e86002d24685fd7b150bef6addcd61a037efd01ceb15e0dcc7  ./tests/test_v111_validate.sh
+16538356dfa5d96b89fa29520b9fe341a43bb6452f4fee1a4790c9622b48399c  ./tests/test_v111_validate.sh
 b126db222922e98516694f3588bdf87ff821a5ba1e0c228e934fe10775909725  ./tests/unit/test_config_loader.py
 3de1f6f0c3a5be2125d35ad62bbde3e5f7acd6c36557c15f49c91cc229dc6cc7  ./tests/unit/test_hamiltonians.py
 ab919d62793938a15d74320651328706d11e3856f502fcfe7da1537d69b9b3c6  ./tests/unit/test_pauli_measurement.py

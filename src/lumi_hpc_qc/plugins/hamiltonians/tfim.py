@@ -31,6 +31,10 @@ class TFIMHamiltonian(HamiltonianBuilder):
     name = "tfim"
     description = "Transverse-Field Ising Model — ZZ coupling + X field"
 
+    def default_params(self, num_qubits: int) -> dict[str, Any]:
+        return {"num_qubits": num_qubits, "j": 1.0, "g": 1.0,
+                "boundary_condition": "open"}
+
     def build(self, config: ExperimentConfig) -> tuple[SparsePauliOp, HamiltonianMetadata]:
         p = config.model_params
         n = config.num_qubits

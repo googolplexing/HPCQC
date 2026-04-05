@@ -17,6 +17,10 @@ class FermiHubbardHamiltonian(HamiltonianBuilder):
     name = "fermi_hubbard"
     description = "2D Fermi-Hubbard model with Jordan-Wigner encoding"
 
+    def default_params(self, num_qubits: int) -> dict[str, Any]:
+        return {"lattice_rows": 1, "lattice_cols": max(2, num_qubits // 2),
+                "hopping_t": 1.0, "interaction_u": 2.0}
+
     def build(self, config: ExperimentConfig) -> tuple[SparsePauliOp, HamiltonianMetadata]:
         p = config.model_params
         rows = p.get("lattice_rows", 2)

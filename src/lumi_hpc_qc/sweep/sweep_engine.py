@@ -814,6 +814,11 @@ class SweepEngine:
             ),
         )
 
+        # Plugin registry (shared across all methods, discovered once)
+        from lumi_hpc_qc.plugins.registry import PluginRegistry
+        self._registry = PluginRegistry()
+        self._registry.discover()
+
     def run(self) -> SweepResult:
         """Execute the complete sweep. Returns SweepResult.
 
@@ -964,53 +969,29 @@ class SweepEngine:
     def _load_calibration(self, cal_path: str) -> None:
         """Load and cache a calibration file, register device with solver.
 
-        Uses the plugin registry to discover the correct calibration
-        adapter based on file contents (v1.2.1 — RED-DIRECTIVE-V121 Item 1).
+        Reads the 'adapter' field from the calibration JSON to determine
+        which calibration adapter to use. Defaults to 'iqm_v2' for
+        backward compatibility with files that lack the field.
+
+        v1.2.1 — RED-DIRECTIVE-V121 Items 1+4.
         """
         if cal_path in self._cal_cache:
             return
 
-        from lumi_hpc_qc.plugins.registry import PluginRegistry
-
-        registry = PluginRegistry()
-        registry.discover()
-
-        adapter_name = self._detect_adapter(cal_path)
-        adapter = registry.get_calibration_adapter(adapter_name)
-        device_cal = adapter.load(cal_path)
-
-        # Load raw JSON for twin simulator noise model builder
+        # Load raw JSON — used for adapter routing AND twin sim noise model
         with open(cal_path) as f:
             cal_json = json.load(f)
+
+        # Item 4: explicit adapter field, default iqm_v2 for backward compat
+        adapter_name = cal_json.get("adapter", "iqm_v2")
+        adapter = self._registry.get_calibration_adapter(adapter_name)
+        device_cal = adapter.load(cal_path)
 
         cal_id = _calibration_id(cal_path)
         self._cal_cache[cal_path] = (cal_id, cal_json, device_cal)
 
         # Register device with placement solver
         self._solver.add_device(device_cal)
-
-    def _detect_adapter(self, cal_path: str) -> str:
-        """Detect calibration adapter from file contents.
-
-        Reads the calibration JSON and identifies the vendor format
-        by structural signatures. When the consortium onboards new
-        devices (IT4I VLQ, Aalto Q20), their detection signatures
-        are added here.
-
-        v1.2.1 — RED-DIRECTIVE-V121 Item 1.
-        """
-        with open(cal_path) as f:
-            raw = json.load(f)
-        # IQM files have "qubits" dict with QB-prefixed names
-        if "qubits" in raw and any(
-            k.startswith("QB") for k in raw.get("qubits", {})
-        ):
-            return "iqm_v2"
-        # Synthetic files have _synthetic_metadata
-        if "_synthetic_metadata" in raw:
-            return "synthetic"
-        # Default to IQM (backward compat)
-        return "iqm_v2"
 
     # ── Internal: task grouping ──
 
@@ -1316,17 +1297,15 @@ class SweepEngine:
             (circuit, observable, metadata_dict)
         """
         from qiskit import QuantumCircuit
-        from lumi_hpc_qc.plugins.registry import PluginRegistry
         from lumi_hpc_qc.types import ExperimentConfig
-
-        registry = PluginRegistry()
-        registry.discover()
 
         # Resolve aliases
         plugin_name = _SWEEP_TO_PLUGIN.get(hamiltonian_name, hamiltonian_name)
 
-        # Build default model_params per plugin, then apply overrides
-        model_params = _default_model_params(plugin_name, num_qubits)
+        # Build default model_params via the plugin's own default_params()
+        # (v1.2.1 Item 3 — replaces centralized switch statement)
+        ham_builder = self._registry.get_hamiltonian(plugin_name)
+        model_params = ham_builder.default_params(num_qubits)
         if model_params_override:
             model_params.update(model_params_override)
 
@@ -1347,7 +1326,6 @@ class SweepEngine:
             output_dir="/tmp/sweep_tmp",
         )
 
-        ham_builder = registry.get_hamiltonian(plugin_name)
         hamiltonian, ham_meta = ham_builder.build(exp_config)
 
         exact_energy = None
@@ -1380,40 +1358,6 @@ _SWEEP_TO_PLUGIN: dict[str, str] = {
     "qaoa": "qaoa_maxcut",
 }
 
-
-def _default_model_params(plugin_name: str, num_qubits: int) -> dict[str, Any]:
-    """Return sensible default model_params for a plugin.
-
-    Each Hamiltonian plugin expects specific keys in model_params.
-    These defaults produce a reasonable sweep Hamiltonian for the
-    given qubit count. Researchers override via the YAML config
-    when they need non-default couplings or lattice shapes.
-    """
-    if plugin_name == "tfim":
-        return {
-            "num_qubits": num_qubits,
-            "j": 1.0,
-            "g": 1.0,
-            "boundary_condition": "open",
-        }
-    elif plugin_name == "heisenberg":
-        return {
-            "lattice_rows": 1,
-            "lattice_cols": num_qubits,
-            "jx": 1.0,
-            "jy": 1.0,
-            "jz": 1.0,
-            "boundary_condition": "open",
-        }
-    elif plugin_name == "fermi_hubbard":
-        return {
-            "lattice_rows": 1,
-            "lattice_cols": max(2, num_qubits // 2),
-            "hopping_t": 1.0,
-            "interaction_u": 2.0,
-        }
-    else:
-        return {"num_qubits": num_qubits}
 
 
 # ═══════════════════════════════════════════════════════════════════════

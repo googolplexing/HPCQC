@@ -78,3 +78,19 @@ class HamiltonianBuilder(ABC):
         Returns:
             SparsePauliOp at the specified parameter value
         """
+
+    def default_params(self, num_qubits: int) -> dict[str, Any]:
+        """Return default model_params for this Hamiltonian.
+
+        Override in subclasses to provide plugin-specific defaults.
+        The sweep engine calls this when no explicit model_params are
+        provided in the YAML config (grid mode without LHS sampling).
+
+        The base implementation returns {"num_qubits": num_qubits}.
+        External plugins (e.g., DiagnosticTFIM) override this so that
+        grid-mode sweeps produce correct typed parameter columns in
+        Parquet without requiring a centralized switch statement.
+
+        v1.2.1 — RED-DIRECTIVE-V121 Item 3.
+        """
+        return {"num_qubits": num_qubits}

@@ -17,6 +17,11 @@ class HeisenbergHamiltonian(HamiltonianBuilder):
     name = "heisenberg"
     description = "Heisenberg XXZ model — direct spin-to-qubit mapping"
 
+    def default_params(self, num_qubits: int) -> dict[str, Any]:
+        return {"lattice_rows": 1, "lattice_cols": num_qubits,
+                "jx": 1.0, "jy": 1.0, "jz": 1.0,
+                "boundary_condition": "open"}
+
     def build(self, config: ExperimentConfig) -> tuple[SparsePauliOp, HamiltonianMetadata]:
         p = config.model_params
         ham = self._build_heis(
