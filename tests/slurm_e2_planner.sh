@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e2_planner
 #SBATCH --partition=standard
-#SBATCH --time=00:15:00
+#SBATCH --time=00:00:20
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16

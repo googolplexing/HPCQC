@@ -16,7 +16,7 @@
 #
 #SBATCH --job-name=v111_validate
 #SBATCH --partition=standard
-#SBATCH --time=00:30:00
+#SBATCH --time=00:02:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128

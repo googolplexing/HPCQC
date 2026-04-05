@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e5_byo_eval
 #SBATCH --partition=standard
-#SBATCH --time=00:15:00
+#SBATCH --time=00:00:15
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16

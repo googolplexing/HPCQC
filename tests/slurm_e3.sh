@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e3_hdf5_writer
 #SBATCH --partition=standard-g
-#SBATCH --time=00:15:00
+#SBATCH --time=00:00:15
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
