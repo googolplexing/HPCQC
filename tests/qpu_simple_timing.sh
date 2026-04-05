@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=qpu_timing
-#SBATCH --account=project_462000888
+#SBATCH --account=project_462001126
 #SBATCH --partition=q_fiqci
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
