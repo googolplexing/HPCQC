@@ -962,13 +962,21 @@ class SweepEngine:
     # ── Internal: calibration loading ──
 
     def _load_calibration(self, cal_path: str) -> None:
-        """Load and cache a calibration file, register device with solver."""
+        """Load and cache a calibration file, register device with solver.
+
+        Uses the plugin registry to discover the correct calibration
+        adapter based on file contents (v1.2.1 — RED-DIRECTIVE-V121 Item 1).
+        """
         if cal_path in self._cal_cache:
             return
 
-        from lumi_hpc_qc.plugins.calibration_adapters.iqm_v2 import IQMv2Adapter
+        from lumi_hpc_qc.plugins.registry import PluginRegistry
 
-        adapter = IQMv2Adapter()
+        registry = PluginRegistry()
+        registry.discover()
+
+        adapter_name = self._detect_adapter(cal_path)
+        adapter = registry.get_calibration_adapter(adapter_name)
         device_cal = adapter.load(cal_path)
 
         # Load raw JSON for twin simulator noise model builder
@@ -980,6 +988,29 @@ class SweepEngine:
 
         # Register device with placement solver
         self._solver.add_device(device_cal)
+
+    def _detect_adapter(self, cal_path: str) -> str:
+        """Detect calibration adapter from file contents.
+
+        Reads the calibration JSON and identifies the vendor format
+        by structural signatures. When the consortium onboards new
+        devices (IT4I VLQ, Aalto Q20), their detection signatures
+        are added here.
+
+        v1.2.1 — RED-DIRECTIVE-V121 Item 1.
+        """
+        with open(cal_path) as f:
+            raw = json.load(f)
+        # IQM files have "qubits" dict with QB-prefixed names
+        if "qubits" in raw and any(
+            k.startswith("QB") for k in raw.get("qubits", {})
+        ):
+            return "iqm_v2"
+        # Synthetic files have _synthetic_metadata
+        if "_synthetic_metadata" in raw:
+            return "synthetic"
+        # Default to IQM (backward compat)
+        return "iqm_v2"
 
     # ── Internal: task grouping ──
 

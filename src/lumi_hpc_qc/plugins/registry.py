@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import warnings
 from typing import Any
 
 from lumi_hpc_qc.plugins.ansatze.base import AnsatzBuilder
+from lumi_hpc_qc.plugins.calibration_adapters.base import AbstractCalibrationAdapter
 from lumi_hpc_qc.plugins.error_mitigation.base import ErrorMitigator
 from lumi_hpc_qc.plugins.gradients.base import GradientStrategy
 from lumi_hpc_qc.plugins.hamiltonians.base import HamiltonianBuilder
@@ -35,6 +37,7 @@ _PLUGIN_TYPES: dict[str, tuple[str, type]] = {
     "gradients": ("lumi_hpc_qc.plugins.gradients", GradientStrategy),
     "initializers": ("lumi_hpc_qc.plugins.initializers", InitializerStrategy),
     "error_mitigation": ("lumi_hpc_qc.plugins.error_mitigation", ErrorMitigator),
+    "calibration_adapters": ("lumi_hpc_qc.plugins.calibration_adapters", AbstractCalibrationAdapter),
 }
 
 
@@ -48,16 +51,27 @@ class PluginRegistry:
         }
 
     def discover(self) -> None:
-        """Scan all plugin sub-packages and register found classes.
+        """Scan built-in plugin directories, then entry points from installed packages.
 
-        For each sub-package (hamiltonians, ansatze, ...):
-          1. Walk every .py file in the package directory
-          2. Import it
-          3. Find all classes that subclass the relevant ABC
-          4. Register them by their .name attribute
+        Phase 1: Walk each plugin sub-package for classes that subclass
+        the relevant ABC and register them by their .name attribute.
+
+        Phase 2: Scan Python entry points in the hpcqc.plugins.* groups.
+        External packages (e.g., ANIMLL) can declare plugins via
+        pyproject.toml entry points without copying files into HPCQC.
+
+        v1.2.1 — RED-DIRECTIVE-V121, Items 1+2.
         """
+        self._discover_builtin()
+        self._discover_entrypoints()
+
+    def _discover_builtin(self) -> None:
+        """Scan built-in plugin sub-packages and register found classes."""
         for type_name, (pkg_path, abc_class) in _PLUGIN_TYPES.items():
-            pkg = importlib.import_module(pkg_path)
+            try:
+                pkg = importlib.import_module(pkg_path)
+            except ImportError:
+                continue
             for importer, modname, ispkg in pkgutil.iter_modules(pkg.__path__):
                 if modname in ("base", "__init__"):
                     continue
@@ -75,6 +89,66 @@ class PluginRegistry:
                         and getattr(attr, "name", "")
                     ):
                         self._plugins[type_name][attr.name] = attr
+
+    def _discover_entrypoints(self) -> None:
+        """Scan entry points from pip-installed packages.
+
+        External packages declare plugins via pyproject.toml:
+
+            [project.entry-points."hpcqc.plugins.hamiltonians"]
+            diagnostic_tfim = "animll.plugins.diagnostic_tfim:DiagnosticTFIM"
+
+        Requirements (RED-RESP-ORANGE-COMMS-013 §3):
+          R1: ABC validation — entry point must subclass the correct ABC
+          R2: Built-in priority — built-in plugins are never overridden
+          R3: Audit logging — source package name + version printed
+          R4: 7 categories — groups derived from _PLUGIN_TYPES keys
+        """
+        from importlib.metadata import entry_points
+
+        for type_name, (_, abc_class) in _PLUGIN_TYPES.items():
+            group = f"hpcqc.plugins.{type_name}"
+            try:
+                eps = entry_points(group=group)
+            except TypeError:
+                # Python 3.9 compatibility: entry_points() doesn't accept group=
+                eps = entry_points().get(group, [])
+
+            for ep in eps:
+                try:
+                    plugin_class = ep.load()
+
+                    # R1: ABC validation
+                    if not (isinstance(plugin_class, type)
+                            and issubclass(plugin_class, abc_class)):
+                        warnings.warn(
+                            f"Entry point '{ep.name}' ({group}) does not subclass "
+                            f"{abc_class.__name__} — skipping"
+                        )
+                        continue
+
+                    # R2: Built-in priority
+                    if ep.name in self._plugins[type_name]:
+                        warnings.warn(
+                            f"Entry point '{ep.name}' ({group}) conflicts with "
+                            f"built-in plugin — skipping"
+                        )
+                        continue
+
+                    # R3: Audit logging
+                    dist_info = (
+                        f"{ep.dist.name}=={ep.dist.version}"
+                        if ep.dist else "unknown"
+                    )
+                    print(f"  Plugin '{ep.name}' loaded via entry point "
+                          f"{group} from {dist_info}")
+
+                    self._plugins[type_name][ep.name] = plugin_class
+
+                except Exception as e:
+                    warnings.warn(
+                        f"Failed to load entry point '{ep.name}' ({group}): {e}"
+                    )
 
     def register(self, type_name: str, plugin_cls: type) -> None:
         """Manually register a plugin class."""
@@ -115,6 +189,9 @@ class PluginRegistry:
 
     def get_error_mitigator(self, name: str) -> ErrorMitigator:
         return self._get("error_mitigation", name)
+
+    def get_calibration_adapter(self, name: str) -> AbstractCalibrationAdapter:
+        return self._get("calibration_adapters", name)
 
     def list_available(self, type_name: str) -> list[str]:
         """List all registered plugin names for a given type."""

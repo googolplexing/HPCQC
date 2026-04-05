@@ -1,3 +1,36 @@
+## 1.2.1 (2026-04-06)
+
+### Calibration Adapter Registry, Entry Point Plugin Discovery (RED-DIRECTIVE-V121)
+
+3 items. Plugin architecture extended to support external packages via
+standard Python entry points. No QPU dependency.
+
+**Item 1: Calibration Adapter Registry Integration (`plugins/registry.py`, `sweep/sweep_engine.py`)**
+- `calibration_adapters` added as 7th plugin type in `_PLUGIN_TYPES`
+- `get_calibration_adapter(name)` typed accessor on `PluginRegistry`
+- `_discover_builtin()` now scans calibration_adapters directory alongside all other plugin types
+- `registry.list_available("calibration_adapters")` returns `["iqm_v2", "synthetic"]`
+- Sweep engine `_load_calibration()` uses registry-based adapter lookup instead of hardcoded
+  `IQMv2Adapter()` import — enables future device adapters (IT4I VLQ, Aalto Q20)
+- `_detect_adapter()` heuristic: QB-prefixed qubit names → `iqm_v2`,
+  `_synthetic_metadata` field → `synthetic`, default → `iqm_v2`
+
+**Item 2: Entry Point Plugin Discovery (`plugins/registry.py`)**
+- `_discover_entrypoints()` scans `hpcqc.plugins.*` entry point groups from pip-installed packages
+- 7 groups: hamiltonians, ansatze, optimizers, gradients, initializers, error_mitigation,
+  calibration_adapters — derived from `_PLUGIN_TYPES` keys
+- R1: ABC validation — entry point must subclass the correct ABC or is skipped with warning
+- R2: Built-in priority — built-in plugins are never overridden by entry points
+- R3: Audit logging — source package name + version printed for every external plugin loaded
+- R4: Failure isolation — broken entry points produce warnings, not crashes
+- Enables Orange's DiagnosticTFIM deployment via `pip install -e animll` instead of file copying
+
+**Item 3: Dual-Name Parameter Extraction Fix (`data/sweep_export.py`)**
+- `param_j` checks both `model_params["j"]` and `model_params["coupling_j"]`
+- `param_g` checks both `model_params["g"]` and `model_params["transverse_h"]`
+- `param_disorder_w` checks both `model_params["disorder_w"]` and `model_params["w"]`
+- Fixes null Parquet columns when LHS YAML uses long parameter name aliases
+
 <!-- Copyright (c) 2026 Michael Mucciardi -->
 <!-- SPDX-License-Identifier: SSPL-1.0 -->
 
