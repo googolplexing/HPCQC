@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
-"""Phase E — E8: Sweep Export (HDF5 → 61-Column Parquet) Validation.
+"""Phase E — E8: Sweep Export (HDF5 → 67-Column Parquet) Validation.
 
 Tests the export pipeline that converts E7's HDF5 noise atlas into
 the 61-column Parquet training table defined in RED-DIRECTIVE-E4-SCHEMA-v1.0 §4.
@@ -13,7 +13,7 @@ Validation targets:
   VE23: Topology columns populated from topology library metadata
 
 Additional checks:
-  - Schema has exactly 61 columns
+  - Schema has exactly 67 columns
   - All column types match the spec
   - Every HDF5 leaf group becomes exactly one Parquet row
   - Per-qubit calibration arrays have correct length
@@ -132,7 +132,7 @@ try:
 
     schema = _build_parquet_schema()
 
-    check("Schema has 61 columns", len(schema) == 61,
+    check("Schema has 67 columns", len(schema) == 67,
           f"got {len(schema)}")
 
     # Verify column names match the spec
@@ -143,17 +143,21 @@ try:
         "model", "ansatz", "optimizer", "gradient_method", "initializer",
         "num_qubits", "ansatz_reps", "num_parameters", "optimizer_maxiter",
         "shots", "seed",
-        # Hamiltonian Properties (3)
+        # Hamiltonian Properties (4) — +1 exact_ground_energy in v1.2.0
         "spectral_gap", "hamiltonian_locality", "num_pauli_terms",
+        "exact_ground_energy",
+        # Model Parameters (3) — v1.2.0 Item C
+        "param_j", "param_g", "param_disorder_w",
         # Device & Placement (7)
         "device", "placement_qubits", "circuit_topology",
         "topology_equivalence_class", "placement_fidelity_score",
         "submission_round", "coupling_map_source",
-        # Calibration (8)
+        # Calibration (10) — +2 placement CZ fidelity in v1.1.1
         "calibration_source", "calibration_device", "calibration_date",
         "calibration_is_synthetic",
         "per_qubit_t1_us", "per_qubit_t2_us", "per_qubit_readout_fidelity",
         "per_edge_cz_fidelity",
+        "placement_min_cz_fidelity", "placement_avg_cz_fidelity",
         # Noise & Mitigation (4)
         "noise_environment", "noise_channels_active",
         "mitigation_readout", "mitigation_zne",
@@ -173,7 +177,7 @@ try:
     ]
 
     actual_columns = [f.name for f in schema]
-    check("All 61 expected columns present",
+    check("All 67 expected columns present",
           actual_columns == expected_columns,
           f"missing: {set(expected_columns) - set(actual_columns)}, "
           f"extra: {set(actual_columns) - set(expected_columns)}")
@@ -223,7 +227,7 @@ try:
           export_result["total_rows"] == hdf5_leaf_count,
           f"parquet={export_result['total_rows']}, hdf5={hdf5_leaf_count}")
 
-    check("61 columns in export", export_result["columns"] == 61,
+    check("67 columns in export", export_result["columns"] == 67,
           f"got {export_result['columns']}")
 
     csv_path = export_result.get("csv_path")
@@ -244,7 +248,7 @@ try:
     df_cols = table.column_names
 
     check("Parquet readable", table is not None)
-    check("Parquet has 61 columns", len(df_cols) == 61,
+    check("Parquet has 67 columns", len(df_cols) == 67,
           f"got {len(df_cols)}")
     check("Parquet row count matches",
           table.num_rows == hdf5_leaf_count,

@@ -17,7 +17,7 @@ End-to-end tests:
   - BYO circuit → E1 placement → E4 twin battery → E3 HDF5 → E8 Parquet
   - Synthetic calibration (E9) → sweep → different noise fingerprints
   - Sweep engine regression (TFIM, small)
-  - Full export pipeline: 61 columns, fingerprinting populated for noisy envs
+  - Full export pipeline: 67 columns, fingerprinting populated for noisy envs
 
 Run on LUMI standard partition:
     srun ... python tests/e10_validation.py
@@ -282,8 +282,8 @@ try:
 
     check("Pipeline: Parquet exported",
           export_result["total_rows"] > 0)
-    check("Pipeline: 61 columns",
-          export_result["columns"] == 61)
+    check("Pipeline: 67 columns",
+          export_result["columns"] == 67)
     check("Pipeline: row count matches HDF5",
           export_result["total_rows"] == leaf_count[0])
 
