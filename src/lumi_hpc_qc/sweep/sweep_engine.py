@@ -74,6 +74,23 @@ from lumi_hpc_qc import __version__ as _pkg_version
 # ═══════════════════════════════════════════════════════════════════════
 
 @dataclass
+class SamplingConfig:
+    """LHS or other sampling configuration for parameter space exploration.
+
+    When method="lhs", generates Latin Hypercube samples across the
+    parameter ranges. Each sample becomes a SweepTask with unique
+    model_params that override the Hamiltonian plugin's defaults.
+
+    v1.2.0 Item C — RED-SPEC-003.
+    """
+    method: str = "grid"           # "grid" (default Cartesian) or "lhs"
+    n_samples: int = 100           # number of LHS samples
+    parameters: dict[str, list[float]] = field(default_factory=dict)
+    # Each value is [min, max] range, e.g. {"j": [0.5, 2.0], "g": [0.5, 2.0]}
+    seed: int = 42                 # LHS reproducibility seed
+
+
+@dataclass
 class SweepExperimentConfig:
     """One experiment block from the sweep YAML.
 
@@ -99,6 +116,9 @@ class SweepExperimentConfig:
 
     # VQE-specific grid (only for vqe_sweep type)
     grid: dict[str, list[Any]] = field(default_factory=dict)
+
+    # LHS / parameter sampling (v1.2.0 Item C)
+    sampling: SamplingConfig | None = None
 
     # Metadata
     label: str = ""
@@ -150,6 +170,7 @@ class SweepTask:
     placement_strategy: str = "all_valid"
     max_placements: int | None = None
     label: str = ""
+    model_params: dict[str, float] = field(default_factory=dict)
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -218,23 +239,49 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             for ham in exp.hamiltonians:
                 for topo_name, topo_spec in topos.items():
                     for cal_path in config.calibrations:
-                        for seed_idx in range(exp.seeds):
-                            task_counter += 1
-                            tasks.append(SweepTask(
-                                task_id=f"T{task_counter:06d}",
-                                hamiltonian=ham,
-                                qubit_size=qsize,
-                                topology_name=topo_name,
-                                topology_edges=list(topo_spec["edges"]),
-                                seed=exp.seed_offset + seed_idx,
-                                calibration_path=cal_path,
-                                calibration_id=_calibration_id(cal_path),
-                                experiment_type=exp.experiment_type,
-                                noise_configs=noise_envs,
-                                placement_strategy=placement_strategy,
-                                max_placements=max_placements,
-                                label=exp.label,
-                            ))
+                        # ── LHS sampling path (v1.2.0 Item C) ──
+                        if (exp.sampling is not None
+                                and exp.sampling.method == "lhs"
+                                and exp.sampling.parameters):
+                            lhs_samples = _generate_lhs_samples(exp.sampling)
+                            for sample_idx, params in enumerate(lhs_samples):
+                                for seed_idx in range(exp.seeds):
+                                    task_counter += 1
+                                    tasks.append(SweepTask(
+                                        task_id=f"T{task_counter:06d}",
+                                        hamiltonian=ham,
+                                        qubit_size=qsize,
+                                        topology_name=topo_name,
+                                        topology_edges=list(topo_spec["edges"]),
+                                        seed=exp.seed_offset + seed_idx,
+                                        calibration_path=cal_path,
+                                        calibration_id=_calibration_id(cal_path),
+                                        experiment_type=exp.experiment_type,
+                                        noise_configs=noise_envs,
+                                        placement_strategy=placement_strategy,
+                                        max_placements=max_placements,
+                                        label=exp.label,
+                                        model_params=params,
+                                    ))
+                        else:
+                            # ── Standard grid expansion ──
+                            for seed_idx in range(exp.seeds):
+                                task_counter += 1
+                                tasks.append(SweepTask(
+                                    task_id=f"T{task_counter:06d}",
+                                    hamiltonian=ham,
+                                    qubit_size=qsize,
+                                    topology_name=topo_name,
+                                    topology_edges=list(topo_spec["edges"]),
+                                    seed=exp.seed_offset + seed_idx,
+                                    calibration_path=cal_path,
+                                    calibration_id=_calibration_id(cal_path),
+                                    experiment_type=exp.experiment_type,
+                                    noise_configs=noise_envs,
+                                    placement_strategy=placement_strategy,
+                                    max_placements=max_placements,
+                                    label=exp.label,
+                                ))
 
     return tasks
 
@@ -250,6 +297,48 @@ def _calibration_id(path: str) -> str:
             if p.isdigit() and len(p) == 8:
                 return f"cal_{p}"
     return f"cal_{hashlib.md5(path.encode()).hexdigest()[:8]}"
+
+
+def _generate_lhs_samples(
+    sampling: SamplingConfig,
+) -> list[dict[str, float]]:
+    """Generate Latin Hypercube samples scaled to parameter ranges.
+
+    Uses scipy.stats.qmc.LatinHypercube for quasi-random sampling
+    that provides better coverage of high-dimensional parameter spaces
+    than grid or random sampling with the same number of points.
+
+    v1.2.0 Item C — RED-SPEC-003.
+
+    Args:
+        sampling: SamplingConfig with method="lhs", parameter ranges,
+                  n_samples, and seed.
+
+    Returns:
+        List of dicts, each mapping parameter name → sampled value.
+    """
+    from scipy.stats.qmc import LatinHypercube
+
+    param_names = list(sampling.parameters.keys())
+    param_ranges = list(sampling.parameters.values())
+    d = len(param_names)
+
+    if d == 0:
+        return [{}]
+
+    sampler = LatinHypercube(d=d, seed=sampling.seed)
+    raw = sampler.random(n=sampling.n_samples)  # shape (n_samples, d) in [0, 1]
+
+    # Scale from [0, 1] to [lo, hi] for each parameter
+    samples = []
+    for row in raw:
+        params: dict[str, float] = {}
+        for i, name in enumerate(param_names):
+            lo, hi = param_ranges[i][0], param_ranges[i][1]
+            params[name] = lo + row[i] * (hi - lo)
+        samples.append(params)
+
+    return samples
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -293,6 +382,23 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             grid=exp_dict.get("grid", {}),
             label=exp_dict.get("label", ""),
         )
+
+        # Parse sampling block (v1.2.0 Item C)
+        sampling_dict = exp_dict.get("sampling")
+        if sampling_dict and isinstance(sampling_dict, dict):
+            # Convert parameter ranges: {"j": [0.5, 2.0]} stays as-is
+            params_raw = sampling_dict.get("parameters", {})
+            params = {}
+            for k, v in params_raw.items():
+                if isinstance(v, list) and len(v) == 2:
+                    params[k] = [float(v[0]), float(v[1])]
+            exp.sampling = SamplingConfig(
+                method=sampling_dict.get("method", "grid"),
+                n_samples=int(sampling_dict.get("n_samples", 100)),
+                parameters=params,
+                seed=int(sampling_dict.get("seed", 42)),
+            )
+
         experiments.append(exp)
 
     # Parse execution section
@@ -879,15 +985,18 @@ class SweepEngine:
 
     def _group_tasks(
         self, tasks: list[SweepTask],
-    ) -> dict[tuple[str, str, str], list[SweepTask]]:
-        """Group tasks by (hamiltonian, topology, calibration).
+    ) -> dict[tuple[str, str, str, tuple], list[SweepTask]]:
+        """Group tasks by (hamiltonian, topology, calibration, model_params).
 
         This grouping ensures placement solver results are reused
         across seeds within the same (topology, device) combination.
+        Tasks with different model_params (e.g. from LHS sampling) are
+        placed in separate groups since they produce different Hamiltonians.
         """
-        groups: dict[tuple[str, str, str], list[SweepTask]] = {}
+        groups: dict[tuple[str, str, str, tuple], list[SweepTask]] = {}
         for task in tasks:
-            key = (task.hamiltonian, task.topology_name, task.calibration_path)
+            params_key = tuple(sorted(task.model_params.items())) if task.model_params else ()
+            key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
             if key not in groups:
                 groups[key] = []
             groups[key].append(task)
@@ -946,6 +1055,7 @@ class SweepEngine:
         # ── Build circuit and observable ──
         circuit, observable, ham_metadata = self._build_circuit_and_observable(
             ham_name, qsize, representative.topology_edges,
+            model_params_override=representative.model_params or None,
         )
 
         exact_energy = ham_metadata.get("exact_ground_energy")
@@ -1122,6 +1232,8 @@ class SweepEngine:
                     experiment_id=f"{self._config.sweep_id}_{task.task_id}_{placement_id_str}_{twin_result.environment}",
                     noise_fingerprint=fingerprint,
                     per_edge_cz_fidelity=edge_fidelities,
+                    exact_ground_energy=exact_energy,
+                    model_params=representative.model_params,
                 )
 
                 try:
@@ -1151,6 +1263,7 @@ class SweepEngine:
         hamiltonian_name: str,
         num_qubits: int,
         edges: list[tuple[int, int]],
+        model_params_override: dict[str, float] | None = None,
     ) -> tuple[Any, Any, dict[str, Any]]:
         """Build a reference circuit and observable for evaluation.
 
@@ -1160,6 +1273,13 @@ class SweepEngine:
         The sweep YAML uses domain-language names ("tfim", "heisenberg",
         "fermi_hubbard") which map directly to plugin registry names.
         Shorthand aliases ("fh" → "fermi_hubbard") are resolved here.
+
+        Args:
+            hamiltonian_name: Plugin name or alias.
+            num_qubits: Number of qubits.
+            edges: Topology edges.
+            model_params_override: Optional dict of parameter overrides
+                from LHS sampling (v1.2.0 Item C). Merged over defaults.
 
         Returns:
             (circuit, observable, metadata_dict)
@@ -1174,8 +1294,10 @@ class SweepEngine:
         # Resolve aliases
         plugin_name = _SWEEP_TO_PLUGIN.get(hamiltonian_name, hamiltonian_name)
 
-        # Build default model_params per plugin
+        # Build default model_params per plugin, then apply overrides
         model_params = _default_model_params(plugin_name, num_qubits)
+        if model_params_override:
+            model_params.update(model_params_override)
 
         exp_config = ExperimentConfig(
             model=plugin_name,

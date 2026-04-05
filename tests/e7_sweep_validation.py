@@ -338,6 +338,16 @@ try:
         check("VE18: Leaf has framework_version attr",
               "framework_version" in sample_grp.attrs)
 
+        # v1.2.0 Item D: exact_ground_energy persisted as HDF5 attribute
+        check("VE18: Leaf has exact_ground_energy attr",
+              "exact_ground_energy" in sample_grp.attrs,
+              f"attrs: {list(sample_grp.attrs.keys())}")
+        if "exact_ground_energy" in sample_grp.attrs:
+            ege = float(sample_grp.attrs["exact_ground_energy"])
+            check("VE18: exact_ground_energy is finite",
+                  np.isfinite(ege),
+                  f"got {ege}")
+
     # Verify sweep-level attributes
     check("VE18: HDF5 has sweep_id attr",
           "sweep_id" in h5.attrs,
@@ -895,6 +905,131 @@ try:
 
 except Exception as e:
     check("E7.10 regression", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E7.11: LHS Sampling + Typed Parameter Columns (v1.2.0 Item C) ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    from lumi_hpc_qc.sweep.sweep_engine import SamplingConfig
+
+    # ── Test LHS grid expansion ──
+    # 10 LHS samples × 1 topology × 1 seed × 1 calibration = 10 tasks
+    lhs_yaml = {
+        "sweep": {
+            "experiments": [{
+                "type": "characterization",
+                "hamiltonians": ["tfim"],
+                "qubit_sizes": [4],
+                "topologies": ["4q_chain"],
+                "seeds": 1,
+                "noise_configs": ["noiseless"],
+                "placement": 1,  # single placement for speed
+                "sampling": {
+                    "method": "lhs",
+                    "n_samples": 10,
+                    "parameters": {
+                        "j": [0.5, 2.0],
+                        "g": [0.5, 2.0],
+                    },
+                    "seed": 42,
+                },
+            }],
+            "calibrations": [cal_path],
+            "execution": {"cpu_workers": 128},
+            "output_dir": tempfile.mkdtemp(prefix="e7_lhs_"),
+            "sweep_id": "lhs_test",
+        }
+    }
+
+    lhs_config = parse_sweep_config(lhs_yaml)
+    check("LHS: sampling config parsed",
+          lhs_config.experiments[0].sampling is not None)
+    check("LHS: method is lhs",
+          lhs_config.experiments[0].sampling.method == "lhs")
+    check("LHS: n_samples is 10",
+          lhs_config.experiments[0].sampling.n_samples == 10)
+
+    lhs_tasks = expand_grid(lhs_config)
+    check("LHS: 10 tasks generated",
+          len(lhs_tasks) == 10,
+          f"got {len(lhs_tasks)}")
+
+    # Verify all tasks have distinct model_params
+    param_sets = [tuple(sorted(t.model_params.items())) for t in lhs_tasks]
+    check("LHS: all 10 tasks have unique params",
+          len(set(param_sets)) == 10,
+          f"unique: {len(set(param_sets))}")
+
+    # Verify parameter ranges
+    j_vals = [t.model_params["j"] for t in lhs_tasks]
+    g_vals = [t.model_params["g"] for t in lhs_tasks]
+    check("LHS: j values in [0.5, 2.0]",
+          all(0.5 <= v <= 2.0 for v in j_vals),
+          f"range: [{min(j_vals):.3f}, {max(j_vals):.3f}]")
+    check("LHS: g values in [0.5, 2.0]",
+          all(0.5 <= v <= 2.0 for v in g_vals),
+          f"range: [{min(g_vals):.3f}, {max(g_vals):.3f}]")
+
+    # ── Run LHS sweep to verify end-to-end ──
+    print("  Running LHS sweep: 10 samples, TFIM 4q, noiseless only...")
+    t_lhs_start = time.time()
+    lhs_result = run_sweep_from_dict(lhs_yaml, device="CPU")
+    t_lhs_elapsed = time.time() - t_lhs_start
+    print(f"  LHS sweep completed in {t_lhs_elapsed:.1f}s")
+
+    check("LHS: sweep completed without errors",
+          lhs_result.total_errors == 0,
+          f"{lhs_result.total_errors} errors")
+    check("LHS: HDF5 writes > 0",
+          lhs_result.total_hdf5_writes > 0,
+          f"got {lhs_result.total_hdf5_writes}")
+
+    # ── Verify model_params and exact_ground_energy in HDF5 ──
+    h5_lhs = h5py.File(lhs_result.hdf5_path, "r")
+    lhs_leaves = []
+    h5_lhs.visititems(lambda n, o: lhs_leaves.append(n)
+                       if isinstance(o, h5py.Group) and "energy_trajectory" in o
+                       else None)
+
+    check("LHS: HDF5 has leaf groups",
+          len(lhs_leaves) > 0)
+
+    if lhs_leaves:
+        sample = h5_lhs[lhs_leaves[0]]
+        check("LHS: leaf has model_params attr",
+              "model_params" in sample.attrs,
+              f"attrs: {list(sample.attrs.keys())}")
+        check("LHS: leaf has exact_ground_energy attr",
+              "exact_ground_energy" in sample.attrs)
+
+        if "model_params" in sample.attrs:
+            mp = json.loads(sample.attrs["model_params"])
+            check("LHS: model_params has j",
+                  "j" in mp,
+                  f"keys: {list(mp.keys())}")
+            check("LHS: model_params has g",
+                  "g" in mp,
+                  f"keys: {list(mp.keys())}")
+            check("LHS: j is in range",
+                  0.5 <= mp["j"] <= 2.0,
+                  f"j={mp['j']}")
+
+    # Verify different groups have different exact_ground_energy values
+    # (different J, g → different Hamiltonian → different ground energy)
+    energies = set()
+    for leaf_path in lhs_leaves[:10]:
+        grp = h5_lhs[leaf_path]
+        if "exact_ground_energy" in grp.attrs:
+            energies.add(round(float(grp.attrs["exact_ground_energy"]), 8))
+    check("LHS: multiple distinct exact_ground_energies",
+          len(energies) >= 2,
+          f"unique: {len(energies)}")
+
+    h5_lhs.close()
+
+except Exception as e:
+    check("E7.11 LHS sampling", False, traceback.format_exc())
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
-"""E8 sweep export — HDF5 noise atlas → 61-column Parquet + summary CSV.
+"""E8 sweep export — HDF5 noise atlas → 67-column Parquet + summary CSV.
 
 Reads the HDF5 file produced by E7's sweep engine and flattens every
 result group into one row of the Parquet training table. This is the
@@ -11,12 +11,13 @@ datasets (energy_trajectory, placement_qubits). Never reads large arrays
 unless explicitly needed for derived features. This keeps the export
 O(N) in attributes, not O(N × T) in trajectory length.
 
-The 61-column schema is from RED-DIRECTIVE-E4-SCHEMA-v1.0 §4:
+The 67-column schema evolved from RED-DIRECTIVE-E4-SCHEMA-v1.0 §4:
   - Identity & provenance (4)
   - Experiment configuration (11)
-  - Hamiltonian properties (3)
+  - Hamiltonian properties (4) — +1 exact_ground_energy in v1.2.0
+  - Model parameters (3) — new in v1.2.0 (param_j, param_g, param_disorder_w)
   - Device & placement (7)
-  - Calibration (8)
+  - Calibration (10) — +2 placement CZ fidelity in v1.1.1
   - Noise & mitigation (4)
   - Circuit metrics (3)
   - Results (7)
@@ -30,6 +31,7 @@ Validation targets:
 
 RED-SPEC-002 §9
 RED-DIRECTIVE-E4-SCHEMA-v1.0 §4–§5
+RED-SPEC-003 (v1.2.0 Items C+D)
 """
 
 from __future__ import annotations
@@ -47,14 +49,19 @@ from lumi_hpc_qc import __version__ as _pkg_version
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Parquet schema definition — 61 columns
+# Parquet schema definition — 67 columns (v1.2.0)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _build_parquet_schema():
-    """Build the 61-column PyArrow schema.
+    """Build the 67-column PyArrow schema.
 
     Lazy import to avoid pyarrow dependency at module load time
     (pyarrow is heavy and not needed for HDF5-only operations).
+
+    v1.2.0 additions (RED-SPEC-003):
+      - exact_ground_energy (Item D) — float64, null for >24 qubits
+      - param_j, param_g, param_disorder_w (Item C) — typed float64,
+        Red rejected JSON column in favour of typed parameter columns
     """
     import pyarrow as pa
 
@@ -78,10 +85,19 @@ def _build_parquet_schema():
         pa.field("shots", pa.int32()),
         pa.field("seed", pa.int32()),
 
-        # ── Hamiltonian Properties (3) ──
+        # ── Hamiltonian Properties (4) ──
         pa.field("spectral_gap", pa.float64()),             # nullable (>24q)
         pa.field("hamiltonian_locality", pa.int32()),
         pa.field("num_pauli_terms", pa.int32()),
+        pa.field("exact_ground_energy", pa.float64()),      # v1.2.0 Item D — null >24q
+
+        # ── Model Parameters (3) — v1.2.0 Item C ──
+        # Typed columns per RED-SPEC-003 (Red rejected JSON column).
+        # Null when the Hamiltonian doesn't use this parameter or
+        # when running in grid mode without explicit parameter values.
+        pa.field("param_j", pa.float64()),
+        pa.field("param_g", pa.float64()),
+        pa.field("param_disorder_w", pa.float64()),
 
         # ── Device & Placement (7) ──
         pa.field("device", pa.string()),
@@ -92,7 +108,7 @@ def _build_parquet_schema():
         pa.field("submission_round", pa.int32()),
         pa.field("coupling_map_source", pa.string()),
 
-        # ── Calibration (8) ──
+        # ── Calibration (10) ──
         pa.field("calibration_source", pa.string()),
         pa.field("calibration_device", pa.string()),
         pa.field("calibration_date", pa.string()),
@@ -347,7 +363,7 @@ def export_sweep_to_parquet(
     exact_energies: dict[str, float] | None = None,
     include_csv: bool = True,
 ) -> dict[str, Any]:
-    """Export an E7 sweep HDF5 file to 61-column Parquet.
+    """Export an E7 sweep HDF5 file to 67-column Parquet.
 
     Walks every leaf group (those containing energy_trajectory),
     extracts attributes, computes derived features, and writes
@@ -544,12 +560,32 @@ def _extract_row(
     model_name = circuit_metrics.get("hamiltonian", "")
     num_qubits = int(circuit_metrics.get("num_qubits", 0))
 
-    exact_energy = None
+    # v1.2.0 Item D: prefer exact_ground_energy from HDF5 attribute
+    # (persisted during execution). Fall back to external dict for
+    # backward compat with v1.1.x HDF5 files that lack the attribute.
+    exact_ground_energy_val = None
+    ege_raw = attrs.get("exact_ground_energy")
+    if ege_raw is not None:
+        try:
+            exact_ground_energy_val = float(ege_raw)
+        except (ValueError, TypeError):
+            pass
+
+    exact_energy = exact_ground_energy_val
     relative_error = None
-    if exact_energies and model_name in exact_energies:
+    if exact_energy is None and exact_energies and model_name in exact_energies:
         exact_energy = exact_energies[model_name]
-        if exact_energy is not None and exact_energy != 0.0:
-            relative_error = abs((best_energy - exact_energy) / abs(exact_energy))
+    if exact_energy is not None and exact_energy != 0.0:
+        relative_error = abs((best_energy - exact_energy) / abs(exact_energy))
+
+    # v1.2.0 Item C: extract model parameters from HDF5 attribute
+    model_params = {}
+    mp_raw = attrs.get("model_params", None)
+    if isinstance(mp_raw, str):
+        try:
+            model_params = json.loads(mp_raw)
+        except json.JSONDecodeError:
+            pass
 
     conv_rate = _convergence_rate(energy_traj)
     e_var = _energy_variance(energy_traj)
@@ -579,6 +615,12 @@ def _extract_row(
         "spectral_gap": circuit_metrics.get("spectral_gap"),
         "hamiltonian_locality": circuit_metrics.get("hamiltonian_locality"),
         "num_pauli_terms": circuit_metrics.get("num_pauli_terms"),
+        "exact_ground_energy": exact_ground_energy_val,
+
+        # Model Parameters (v1.2.0 Item C — typed columns per RED-SPEC-003)
+        "param_j": model_params.get("j"),
+        "param_g": model_params.get("g"),
+        "param_disorder_w": model_params.get("disorder_w"),
 
         # Device & Placement
         "device": str(attrs.get("device_id", "")),

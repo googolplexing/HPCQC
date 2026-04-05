@@ -78,6 +78,8 @@ class SweepResultEntry:
         default_factory=dict
     )
     per_edge_cz_fidelity: list[float] | None = None
+    exact_ground_energy: float | None = None
+    model_params: dict[str, float] = field(default_factory=dict)
 
     @property
     def group_path(self) -> str:
@@ -126,6 +128,10 @@ class SweepResultEntry:
             d["noise_fingerprint"] = self.noise_fingerprint
         if self.per_edge_cz_fidelity is not None:
             d["per_edge_cz_fidelity"] = self.per_edge_cz_fidelity
+        if self.exact_ground_energy is not None:
+            d["exact_ground_energy"] = self.exact_ground_energy
+        if self.model_params:
+            d["model_params"] = self.model_params
         return d
 
 
@@ -332,6 +338,16 @@ class SweepHDF5Writer:
                 entry.per_edge_cz_fidelity
             )
 
+        # Exact ground energy (v1.2.0 Item D — RED-SPEC-003)
+        # float64 for ≤24 qubits, omitted for >24 qubits
+        if entry.exact_ground_energy is not None:
+            grp.attrs["exact_ground_energy"] = entry.exact_ground_energy
+
+        # Model parameters as JSON attribute (v1.2.0 Item C — RED-SPEC-003)
+        # Stores LHS-sampled or user-specified Hamiltonian params
+        if entry.model_params:
+            grp.attrs["model_params"] = json.dumps(entry.model_params)
+
     def create_soft_link(
         self, source_path: str, target_path: str
     ) -> None:
@@ -421,6 +437,8 @@ class SweepHDF5Writer:
             experiment_id=d.get("experiment_id", ""),
             noise_fingerprint=d.get("noise_fingerprint", {}),
             per_edge_cz_fidelity=d.get("per_edge_cz_fidelity"),
+            exact_ground_energy=d.get("exact_ground_energy"),
+            model_params=d.get("model_params", {}),
         )
 
     def verify_consistency(self) -> dict[str, Any]:
