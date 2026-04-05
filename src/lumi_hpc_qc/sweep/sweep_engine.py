@@ -449,6 +449,7 @@ def _run_pool_subprocess(
     work_items: list[tuple],
     n_workers: int,
     project_dir: str,
+    noiseless_cache: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Run _battery_worker pool in a clean subprocess.
 
@@ -465,6 +466,9 @@ def _run_pool_subprocess(
         work_items: list of tuples matching _battery_worker signature
         n_workers: number of parallel workers
         project_dir: project root for sys.path in subprocess
+        noiseless_cache: pre-computed noiseless results for dedup
+            (from _precompute_noiseless_subprocess). If provided,
+            injected into each worker's noiseless_cache argument.
 
     Returns:
         List of dicts with battery results (same as _battery_worker output)
@@ -481,8 +485,15 @@ def _run_pool_subprocess(
     with open(items_path, "wb") as f:
         pickle.dump(work_items, f)
 
+    # Serialize noiseless cache (if provided)
+    cache_path = os.path.join(tmp_dir, "noiseless_cache.pkl")
+    if noiseless_cache:
+        with open(cache_path, "wb") as f:
+            pickle.dump(noiseless_cache, f)
+
     # Write the subprocess runner script
     runner_path = os.path.join(tmp_dir, "pool_runner.py")
+    has_cache = "True" if noiseless_cache else "False"
     with open(runner_path, "w") as f:
         f.write(f'''import sys, os, pickle, time, multiprocessing as mp
 sys.path.insert(0, os.path.join("{project_dir}", "src"))
@@ -490,17 +501,26 @@ os.environ["OMP_NUM_THREADS"] = "1"
 
 from lumi_hpc_qc.sweep.twin_simulator import run_twin_battery
 
+# Load pre-computed noiseless cache (if available)
+noiseless_cache = {{}}
+if {has_cache}:
+    try:
+        with open("{cache_path}", "rb") as f:
+            noiseless_cache = pickle.load(f)
+    except Exception:
+        noiseless_cache = {{}}
+
 def battery_worker(args):
     (circuit, observable, qubit_names, cal_json, cal_id,
      placement_id_str, topology_hash, noise_envs, seed,
-     device, noiseless_cache) = args
+     device, _empty_cache) = args
     try:
         battery = run_twin_battery(
             circuit=circuit, observable=observable,
             qubit_names=qubit_names, calibration_data=cal_json,
             calibration_id=cal_id, placement_id=placement_id_str,
             topology_hash=topology_hash, environments=noise_envs,
-            seed=seed, device=device, noiseless_cache=noiseless_cache,
+            seed=seed, device=device, noiseless_cache=dict(noiseless_cache),
         )
         return {{"placement_id_str": placement_id_str, "battery": battery, "error": None}}
     except Exception as e:
@@ -538,6 +558,104 @@ with open("{results_path}", "wb") as f:
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return battery_results
+
+
+def _precompute_noiseless_subprocess(
+    representative_items: list[tuple],
+    project_dir: str,
+) -> dict[str, Any]:
+    """Pre-compute noiseless results in a clean subprocess.
+
+    Runs one representative work item per unique (observable, topology)
+    group, executing only noiseless-tier environments. Returns a cache
+    dict that can be passed to the main Pool subprocess so workers skip
+    redundant noiseless computations.
+
+    Noiseless energy depends on observable + topology (for routing) but
+    NOT on placement or seed. One computation per topology group serves
+    all placements × all seeds.
+
+    Args:
+        representative_items: list of tuples, one per topology group.
+            Same format as _battery_worker args but with noiseless-only
+            noise_envs.
+        project_dir: project root for sys.path in subprocess.
+
+    Returns:
+        Dict of cache_key → TwinResult for noiseless dedup.
+        Empty dict on failure (graceful fallback to v1.1.1 behavior).
+    """
+    if not representative_items:
+        return {}
+
+    import pickle
+    import subprocess
+    import tempfile
+
+    tmp_dir = tempfile.mkdtemp(prefix="hpcqc_noiseless_")
+    items_path = os.path.join(tmp_dir, "noiseless_items.pkl")
+    cache_path = os.path.join(tmp_dir, "noiseless_cache.pkl")
+
+    with open(items_path, "wb") as f:
+        pickle.dump(representative_items, f)
+
+    runner_path = os.path.join(tmp_dir, "noiseless_runner.py")
+    with open(runner_path, "w") as f:
+        f.write(f'''import sys, os, pickle, hashlib
+sys.path.insert(0, os.path.join("{project_dir}", "src"))
+os.environ["OMP_NUM_THREADS"] = "1"
+
+from lumi_hpc_qc.sweep.twin_simulator import run_twin_battery
+
+with open("{items_path}", "rb") as f:
+    items = pickle.load(f)
+
+cache = {{}}
+for item in items:
+    (circuit, observable, qubit_names, cal_json, cal_id,
+     placement_id_str, topology_hash, noise_envs, seed,
+     device, _empty_cache) = item
+    try:
+        battery = run_twin_battery(
+            circuit=circuit, observable=observable,
+            qubit_names=qubit_names, calibration_data=cal_json,
+            calibration_id=cal_id, placement_id=placement_id_str,
+            topology_hash=topology_hash, environments=noise_envs,
+            seed=seed, device=device, noiseless_cache={{}},
+        )
+        # Extract cache entries from the battery results
+        obs_hash = hashlib.sha256(str(observable).encode()).hexdigest()[:12]
+        for result in battery.results:
+            if result.error is None:
+                key = f"{{obs_hash}}:{{circuit.num_qubits}}:{{topology_hash}}:{{result.environment}}"
+                cache[key] = result
+    except Exception as e:
+        print(f"  Warning: noiseless precompute failed for {{topology_hash}}: {{e}}")
+
+with open("{cache_path}", "wb") as f:
+    pickle.dump(cache, f)
+''')
+
+    result = subprocess.run(
+        [sys.executable, runner_path],
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0:
+        # Graceful fallback — workers compute noiseless independently
+        print(f"    Warning: noiseless precompute subprocess failed "
+              f"(rc={result.returncode}). Falling back to per-worker compute.")
+        import shutil
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return {}
+
+    with open(cache_path, "rb") as f:
+        cache = pickle.load(f)
+
+    import shutil
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return cache
 
 
 class SweepEngine:
@@ -832,17 +950,44 @@ class SweepEngine:
 
         exact_energy = ham_metadata.get("exact_ground_energy")
 
-        # NOTE (v1.1.1): Noiseless cache pre-population removed.
-        # The old code ran run_twin_battery() in the parent process to
-        # populate the noiseless dedup cache before forking workers.
-        # This called AerSimulator in the parent, initializing C++ thread
-        # pools whose mutexes deadlock child processes after fork.
-        # See debug_e2_fork_order.py for proof.
+        # ── Pre-compute noiseless results (v1.2.0 — two-subprocess pattern) ──
+        # Noiseless energy depends on observable + topology but NOT on
+        # placement or seed. Compute once per unique topology_hash in a
+        # clean subprocess, then pass the cache to the main Pool subprocess.
+        # Workers find "noiseless already computed" → skip to noisy envs.
         #
-        # Workers now compute noiseless results independently. Cost:
-        # N_workers × 2 noiseless sims × ~5ms = negligible for 4q.
-        # The noiseless_cache is passed empty; each worker populates
-        # its own copy. Dedup still works WITHIN each battery.
+        # Fallback: if precompute fails, workers compute independently
+        # (v1.1.1 behavior). Dedup is a performance optimization, not
+        # a correctness dependency.
+        noiseless_envs = [e for e in tasks[0].noise_configs if e.tier == "noiseless"]
+        seen_topologies = set()
+        representative_items = []
+        if noiseless_envs and placements:
+            for placement in placements:
+                if placement.topology_hash not in seen_topologies:
+                    seen_topologies.add(placement.topology_hash)
+                    qubit_names = [
+                        placement.qubit_mapping[i] for i in range(qsize)
+                    ]
+                    representative_items.append((
+                        circuit, observable, qubit_names, cal_json, cal_id,
+                        "_".join(qubit_names), placement.topology_hash,
+                        noiseless_envs,  # only noiseless-tier environments
+                        0,  # seed irrelevant for noiseless
+                        self._device, {},
+                    ))
+
+        noiseless_cache = {}
+        if representative_items:
+            print(f"    E2: Pre-computing noiseless for {len(representative_items)} "
+                  f"topology group(s) ({len(noiseless_envs)} envs each)")
+            noiseless_cache = _precompute_noiseless_subprocess(
+                representative_items, self._project_dir,
+            )
+            if noiseless_cache:
+                print(f"    E2: Noiseless cache populated — {len(noiseless_cache)} entries")
+            else:
+                print(f"    E2: Noiseless cache empty — workers will compute independently")
 
         # ── Collect work items ──
         work_items = []
@@ -862,7 +1007,7 @@ class SweepEngine:
                     circuit, observable, qubit_names, cal_json, cal_id,
                     placement_id_str, placement.topology_hash, noise_envs,
                     seed * 1000 + placement.placement_id,
-                    self._device, {},  # empty cache — workers compute independently
+                    self._device, {},  # cache injected at subprocess level
                 ))
                 work_meta.append((task, placement, qubit_names, seed))
 
@@ -902,6 +1047,7 @@ class SweepEngine:
 
             battery_results = _run_pool_subprocess(
                 work_items, actual_workers, project_dir=self._project_dir,
+                noiseless_cache=noiseless_cache,
             )
 
             # Reopen HDF5 for result writing

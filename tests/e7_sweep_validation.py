@@ -77,6 +77,11 @@ try:
     assert os.path.exists(cal_path), f"No calibration file found in {project_dir}/examples/"
 
     # ── Parse minimal YAML config ──
+    # This config is used for parse/validate tests AND for E7.2 grid expansion.
+    # It must match the production config shape:
+    #   - Dual topology (chain + star) to test multi-topology grid expansion
+    #   - 50 placements per topology (caps runtime)
+    #   - 128 CPU workers (matches full LUMI-C node)
     yaml_dict = {
         "sweep": {
             "experiments": [
@@ -160,7 +165,7 @@ try:
                 "topologies": ["4q_chain", "4q_star"],
                 "seeds": 3,
                 "noise_configs": ["noiseless", "noise_full"],
-                "placement": 50,
+                "placement": "all_valid",
             }],
             "calibrations": [cal_path],
         }
@@ -201,13 +206,25 @@ try:
                 "type": "characterization",
                 "hamiltonians": ["tfim"],
                 "qubit_sizes": [4],
+                # Dual topology: tests both chain (3 edges, 379 valid placements)
+                # and star (3 edges, 108 valid placements) on Q50.
+                # This exercises the placement solver, DSatur packing, and
+                # topology-aware noiseless deduplication in a single sweep.
                 "topologies": ["4q_chain", "4q_star"],
                 "seeds": 2,
                 "noise_configs": "all",
+                # Cap at 50 placements per topology to keep test runtime
+                # reasonable (~50s). Still enough to test parallel dispatch
+                # (100 batteries per group = 200 total) and dedup.
                 "placement": 50,
             }],
             "calibrations": [cal_path],
-            "execution": {"cpu_workers": 128},
+            "execution": {
+                # Use all 128 cores on a LUMI-C node. This is the production
+                # configuration and also the one that triggers the fork
+                # deadlock if the subprocess fix is broken.
+                "cpu_workers": 128,
+            },
             "output_dir": tempfile.mkdtemp(prefix="e7_ve18_"),
             "sweep_id": "ve18_test",
         }
@@ -239,9 +256,51 @@ try:
           result.total_hdf5_writes > 0,
           f"got {result.total_hdf5_writes}")
 
-    check("VE18: Simulations completed (dedup disabled for subprocess)",
-          result.total_simulations > 0,
+    # ── Noiseless deduplication checks (v1.2.0) ──
+    # The two-subprocess pattern pre-computes noiseless results:
+    #   Subprocess A: runs 2 noiseless envs (noiseless + topology_noiseless)
+    #                 per unique topology group. For this test: 2 groups
+    #                 (chain + star) × 2 envs = 4 noiseless sims total.
+    #   Subprocess B: Pool(128) workers find noiseless in cache → skip.
+    #                 Each battery deduplicates 2 noiseless envs, runs 9 noisy.
+    #
+    # Expected with 2 seeds × 50 placements × 2 topologies = 200 batteries:
+    #   total_simulations ≈ 200 × 9 noisy envs = 1800
+    #   total_deduplicated ≈ 200 × 2 noiseless envs = 400
+    #   total_hdf5_writes = 200 × 11 envs = 2200
+    #
+    # If dedup is NOT working (v1.1.1 fallback behavior):
+    #   total_simulations = 2200, total_deduplicated = 0
+    check("VE18: Noiseless deduplication occurred",
+          result.total_deduplicated > 0,
           f"got {result.total_deduplicated}")
+
+    # RED-SPEC-003 requirement: noiseless computed at most once per topology group.
+    # Each placement beyond the first in a topology group should have its
+    # noiseless results deduplicated (found in cache, not recomputed).
+    #
+    # Math: total_placements = 200 (50 chain × 2 seeds + 50 star × 2 seeds)
+    #       n_topology_groups = 2 (chain, star — each has distinct topology_hash)
+    #       n_noiseless_envs = 2 (noiseless, topology_noiseless)
+    #       expected_dedup >= (200 - 2) × 2 = 396
+    #
+    # The 2 non-deduplicated are the representative placements that were
+    # pre-computed in Subprocess A (one per topology group).
+    n_noiseless_envs = 2  # noiseless + topology_noiseless
+    n_topology_groups = 2  # chain + star
+    check("VE18: Noiseless compute bounded by topology groups",
+          result.total_deduplicated >= (result.total_placements - n_topology_groups) * n_noiseless_envs,
+          f"deduplicated={result.total_deduplicated}, expected >= "
+          f"{(result.total_placements - n_topology_groups) * n_noiseless_envs}")
+
+    # Sanity check: at least 100 deduplications occurred.
+    # With 200 batteries × 2 noiseless envs, we expect ~400.
+    # The >= 100 threshold catches cases where dedup is partially broken
+    # but still produces some hits.
+    check("VE18: Dedup count matches expected noiseless savings",
+          result.total_deduplicated >= 100,
+          f"got {result.total_deduplicated}, expected >= 100 "
+          f"(simulated={result.total_simulations}, writes={result.total_hdf5_writes})")
 
     # ── HDF5 structure checks ──
     h5 = h5py.File(result.hdf5_path, "r")
@@ -435,10 +494,17 @@ try:
                 "topologies": ["4q_chain", "4q_star"],
                 "seeds": 1,
                 "noise_configs": ["noiseless", "noise_full"],
-                "placement": 50,
+                # all_valid here (unlike VE18's cap of 50) so we can verify
+                # that chain has MORE placements than star on Q50 — tests
+                # that the placement solver finds topology-dependent counts.
+                # Q50: 379 chain placements, 108 star placements.
+                "placement": "all_valid",
             }],
             "calibrations": [cal_path],
-            "execution": {"cpu_workers": 128},
+            "execution": {
+                # Match production config — full LUMI-C node.
+                "cpu_workers": 128,
+            },
             "output_dir": tempfile.mkdtemp(prefix="e7_ve22_"),
             "sweep_id": "ve22_test",
         }
@@ -508,8 +574,8 @@ try:
 
     # From E1 results: chain should have more placements than star on Q50
     # (379 chain vs 108 star), so even with 2 envs × 1 seed:
-    check("VE22: Chain and star both produced results",
-          chain_count > 0 and star_count > 0,
+    check("VE22: Chain has more results than star (expected on Q50)",
+          chain_count > star_count,
           f"chain={chain_count}, star={star_count}")
 
     h5.close()
@@ -538,10 +604,10 @@ try:
                 "type": "characterization",
                 "hamiltonians": ["tfim"],
                 "qubit_sizes": [4],
-                "topologies": ["4q_chain", "4q_star"],
+                "topologies": ["4q_chain"],
                 "seeds": 1,
                 "noise_configs": ["nonexistent_noise"],
-                "placement": 50,
+                "placement": "all_valid",
             }],
             "calibrations": [cal_path],
         }
@@ -573,6 +639,9 @@ try:
           f"errors: {bad_topo_errors}")
 
     # ── top_N placement strategy ──
+    # Test that "top_5" is parsed as placement_strategy="top_n", max_placements=5.
+    # Uses both topologies to verify top_n works across different placement counts.
+    # Grid: 1 hamiltonian × 2 topologies × 1 seed = 2 tasks, both with top_n strategy.
     top_n_tasks = expand_grid(parse_sweep_config({
         "sweep": {
             "experiments": [{
@@ -686,9 +755,14 @@ try:
                   all_consistent,
                   f"checked {len(noiseless_by_placement)} placements")
 
-            # Verify deduplication saved simulation time
-            check("Dedup: noiseless energies verified consistent",
-                  result.total_simulations > 0,
+            # This check confirms that the two-subprocess dedup pattern is
+            # working end-to-end: Subprocess A pre-computed the noiseless
+            # results, Subprocess B's workers found them in cache and used
+            # the cached values. If dedup had failed, total_deduplicated
+            # would be 0 and all noiseless sims would have been recomputed
+            # (still correct results, but wasted compute).
+            check("Dedup: some simulations were deduplicated",
+                  result.total_deduplicated > 0,
                   f"deduplicated: {result.total_deduplicated}")
 
         h5.close()
