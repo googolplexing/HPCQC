@@ -1,9 +1,9 @@
-# HPCQC MANIFEST — v1.2.1
-# Generated: 2026-04-05T23:38:02+00:00
+# HPCQC MANIFEST — v1.2.2
+# Generated: 2026-04-06T00:17:46+00:00
 # sha256 hashes for all tracked files
 
 81fb3d66be07a85ac18702f16c7e07e7bc0068c0accc92f5f960a7c10d7b9416  ./.gitignore
-8cf36ffd9f1e28dd84562560eb83046db403453ddfa908b6b4e8457537528b3e  ./CHANGELOG.md
+8e83f51af5d4f7f0a8b5458ba6244f43e0ae2b8cfa5ab0c25746bb0c1d28146d  ./CHANGELOG.md
 72dd4d9c3f449d2d4f54cc2662d3abf54d05e38f448107d6f03866c3154eec14  ./LICENSE
 d9f190830cdfb93a23e73c48b85b3a3d33095c1de6b2c7cb1bb5953d80e9c068  ./README.md
 3452b943bea2408f7751481003f5aa115a84bff243fd7311f79c13ec2c8f5dc5  ./configs/byo_tfim_8q.yaml
@@ -66,7 +66,7 @@ e4b1d46abce4b64a146fe5bd385010966dece67deb53541a7d7a6227ef014a7a  ./scripts/gene
 8ac23b273849bbc051f4eabdc03c9726a7a9aa147f98e818b523d8330e947e7c  ./scripts/run_vqe.py
 86ba9d9bbda893c9df4e9ab556438da8c2b9cc9e06d81ccd14f9c19671f36e7e  ./scripts/submit_sweep_tfim_2q.sh
 3e890539e6635db3dbdc96bf215f1c274f3a40e4f19279eb3d82df50a206c562  ./scripts/submit_sweep_tfim_4q.sh
-a2ee11c82dca6b05866997eb707471a5d84c1f3baa8a658292414645a73d4d42  ./src/lumi_hpc_qc/__init__.py
+75635d39ff2fb4118a4dd14fcb4d12711c93c81f170f60ab4445fb1b6e61dc43  ./src/lumi_hpc_qc/__init__.py
 00905ef0e6a6bb8daea6ca3cab90fb2bd7028d1e81d85658e3583b7cdfee442f  ./src/lumi_hpc_qc/backends/__init__.py
 4e37afede74e85145f603467c9af680e5c75ee8a205e06bce8816df509c073e6  ./src/lumi_hpc_qc/backends/aer_cpu.py
 cdfbee6afe2c729803f6944cb7dd068eecda18a99afc65a2bdfb4162db05ae13  ./src/lumi_hpc_qc/backends/aer_gpu.py
@@ -139,7 +139,7 @@ ead5a7461074e5cd555fe14a2abecd861c65e8a606b5ec1161c072c16afee1b6  ./src/lumi_hpc
 42ffc11a1d57a03a5b2d417b623ce0abc53e81d7085f123beb6a4b1127bee45e  ./src/lumi_hpc_qc/plugins/placement/__init__.py
 bce0bc863ad1ff8016124d6ef94881053cabac0c68c9fe64829790eec9cba5b8  ./src/lumi_hpc_qc/plugins/placement/multiplexer.py
 77ad3582ec410fb4954e50a1251ecb82f9fb0c00fba2d0187a2730318d43014b  ./src/lumi_hpc_qc/plugins/placement/solver.py
-1d53a985876afa172903d2d20b16ac49b6e73b7959372d645604c24e9c44ba0f  ./src/lumi_hpc_qc/plugins/registry.py
+c6c6d01428d3c27a52eab2d0dc88ae86c5596f204b0426dfb782040411478426  ./src/lumi_hpc_qc/plugins/registry.py
 a39903fdd1bfa0398698e7554a19e2b81c5e5acb9534b294e1cc721582127d53  ./src/lumi_hpc_qc/sweep/__init__.py
 70b4a696ffb9df1c875c3d741afb981f801f1eb142c34e3f6e4b3ffb20ce6b4c  ./src/lumi_hpc_qc/sweep/circuit_composer.py
 ed9d5fcd1cf0eb732079539a44b2de4a23cf2e470953c1d469f126ca1d8f7166  ./src/lumi_hpc_qc/sweep/circuit_loader.py

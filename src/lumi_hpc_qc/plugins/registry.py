@@ -16,6 +16,8 @@ Usage:
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import os
 import pkgutil
 import warnings
 from typing import Any
@@ -51,19 +53,20 @@ class PluginRegistry:
         }
 
     def discover(self) -> None:
-        """Scan built-in plugin directories, then entry points from installed packages.
+        """Scan built-in directories, entry points, and HPCQC_PLUGIN_PATH.
 
-        Phase 1: Walk each plugin sub-package for classes that subclass
-        the relevant ABC and register them by their .name attribute.
+        Phase 1: Walk each plugin sub-package for built-in classes.
+        Phase 2: Scan Python entry points from pip-installed packages.
+        Phase 3: Scan HPCQC_PLUGIN_PATH for loose .py plugin files.
 
-        Phase 2: Scan Python entry points in the hpcqc.plugins.* groups.
-        External packages (e.g., ANIMLL) can declare plugins via
-        pyproject.toml entry points without copying files into HPCQC.
+        Priority: built-in > entry points > plugin path. A plugin
+        registered in an earlier phase is never overridden.
 
-        v1.2.1 — RED-DIRECTIVE-V121, Items 1+2.
+        v1.2.1 — Items 1+2. v1.2.2 — HPCQC_PLUGIN_PATH.
         """
         self._discover_builtin()
         self._discover_entrypoints()
+        self._discover_plugin_path()
 
     def _discover_builtin(self) -> None:
         """Scan built-in plugin sub-packages and register found classes."""
@@ -149,6 +152,77 @@ class PluginRegistry:
                     warnings.warn(
                         f"Failed to load entry point '{ep.name}' ({group}): {e}"
                     )
+
+    def _discover_plugin_path(self) -> None:
+        """Scan HPCQC_PLUGIN_PATH for loose .py plugin files.
+
+        Reads the HPCQC_PLUGIN_PATH environment variable (colon-separated
+        list of directories). Each directory should contain subdirectories
+        matching _PLUGIN_TYPES keys (e.g., hamiltonians/, ansatze/).
+
+        Loads individual .py files via importlib.util — no __init__.py or
+        package structure required. This supports HPC deployment patterns
+        where plugins are loose files on a shared filesystem and the
+        container is read-only (no pip install).
+
+        Priority: built-in > entry points > plugin path (P2).
+        Files starting with '_' are skipped (convention for helpers).
+
+        v1.2.2 — RED-DIRECTIVE-V122.
+        """
+        plugin_path = os.environ.get("HPCQC_PLUGIN_PATH", "")
+        if not plugin_path:
+            return
+
+        for base_dir in plugin_path.split(":"):
+            base_dir = base_dir.strip()
+            if not base_dir or not os.path.isdir(base_dir):
+                continue
+
+            for type_name, (_, abc_class) in _PLUGIN_TYPES.items():
+                type_dir = os.path.join(base_dir, type_name)
+                if not os.path.isdir(type_dir):
+                    continue
+
+                for filename in sorted(os.listdir(type_dir)):
+                    if not filename.endswith(".py") or filename.startswith("_"):
+                        continue
+
+                    filepath = os.path.join(type_dir, filename)
+                    module_name = f"hpcqc_ext_{type_name}_{filename[:-3]}"
+
+                    try:
+                        spec = importlib.util.spec_from_file_location(
+                            module_name, filepath
+                        )
+                        if spec is None or spec.loader is None:
+                            continue
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+
+                        for attr_name in dir(module):
+                            attr = getattr(module, attr_name)
+                            if not (isinstance(attr, type)
+                                    and issubclass(attr, abc_class)
+                                    and attr is not abc_class
+                                    and getattr(attr, "name", "")):
+                                continue
+
+                            # P1: ABC validation (same as entry points)
+                            # P2: Priority — don't override built-in or entry point
+                            if attr.name in self._plugins[type_name]:
+                                continue
+
+                            # P3: Audit logging with file path
+                            print(f"  Plugin '{attr.name}' loaded via "
+                                  f"HPCQC_PLUGIN_PATH from {filepath}")
+
+                            self._plugins[type_name][attr.name] = attr
+
+                    except Exception as e:
+                        warnings.warn(
+                            f"Failed to load plugin from {filepath}: {e}"
+                        )
 
     def register(self, type_name: str, plugin_cls: type) -> None:
         """Manually register a plugin class."""

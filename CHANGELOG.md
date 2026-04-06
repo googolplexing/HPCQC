@@ -3,6 +3,26 @@
 
 # Changelog
 
+## 1.2.2 (2026-04-06)
+
+### HPCQC_PLUGIN_PATH for Read-Only Containers (RED-DIRECTIVE-V122)
+
+Single-item patch. Adds filesystem-based plugin discovery for HPC environments
+where containers are read-only and `pip install` is not available.
+
+**HPCQC_PLUGIN_PATH (`plugins/registry.py`)**
+- Third discovery phase: `_discover_plugin_path()` after built-in and entry point scans
+- Reads `HPCQC_PLUGIN_PATH` environment variable (colon-separated directory list)
+- Scans subdirectories matching `_PLUGIN_TYPES` keys (e.g., `hamiltonians/`, `ansatze/`)
+- Loads loose `.py` files via `importlib.util.spec_from_file_location()` — no package
+  structure or `__init__.py` required
+- P1: Same ABC validation as entry points
+- P2: Priority order: built-in > entry points > plugin path (never overrides)
+- P3: Audit logging with file path for provenance
+- P4: Files starting with `_` skipped (convention for non-plugin helpers)
+- Enables Orange's plugin deployment on LUMI without `pip install` or file copying:
+  `export HPCQC_PLUGIN_PATH="/path/to/animll/plugins"`
+
 ## 1.2.1 (2026-04-06)
 
 ### Plugin Architecture Completion (RED-DIRECTIVE-V121 v1.1)
