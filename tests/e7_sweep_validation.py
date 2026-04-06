@@ -1033,6 +1033,56 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# E7.12 — sweep_timing.json validation (v1.2.3)
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E7.12: Sweep Timing JSON ===")
+
+try:
+    # Check the main VE18 sweep output directory for sweep_timing.json
+    timing_path = os.path.join(os.path.dirname(result.hdf5_path), "sweep_timing.json")
+    check("Timing JSON exists", os.path.exists(timing_path), timing_path)
+
+    if os.path.exists(timing_path):
+        with open(timing_path) as f:
+            timing = json.load(f)
+
+        check("Timing JSON: valid JSON", isinstance(timing, dict))
+        check("Timing JSON: total_elapsed_s > 0",
+              timing.get("total_elapsed_s", 0) > 0,
+              f"total_elapsed_s={timing.get('total_elapsed_s')}")
+
+        phases = timing.get("phases", {})
+        check("Timing JSON: phases present", len(phases) > 0)
+
+        all_non_negative = all(v >= 0 for v in phases.values())
+        check("Timing JSON: all phases non-negative", all_non_negative,
+              f"phases={phases}")
+
+        phase_sum = sum(phases.values())
+        total = timing.get("total_elapsed_s", 0)
+        check("Timing JSON: sum(phases) <= total_elapsed_s",
+              phase_sum <= total + 0.01,  # small float tolerance
+              f"sum={phase_sum:.2f}, total={total:.2f}")
+
+        par = timing.get("parallelism", {})
+        check("Timing JSON: parallelism.workers > 0",
+              par.get("workers", 0) > 0,
+              f"workers={par.get('workers')}")
+
+        check("Timing JSON: parallelism.tasks > 0",
+              par.get("tasks", 0) > 0,
+              f"tasks={par.get('tasks')}")
+
+        env = timing.get("environment", {})
+        check("Timing JSON: environment.node present",
+              bool(env.get("node")),
+              f"node={env.get('node')}")
+
+except Exception as e:
+    check("E7.12 timing JSON", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════
 print(f"\n{'='*70}")

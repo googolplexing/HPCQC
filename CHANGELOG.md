@@ -3,6 +3,32 @@
 
 # Changelog
 
+## 1.2.3 (2026-04-06)
+
+### Sweep Timing JSON (RED-DIRECTIVE-V123)
+
+Single item. Lightweight timing harness captures per-phase wall time for
+every sweep, written as `sweep_timing.json` alongside `sweep.h5`.
+Establishes baseline for regression detection and cost modeling.
+
+**Sweep Timing Harness (`sweep/sweep_engine.py`)**
+- `time.perf_counter()` marks at every phase boundary in `run()` and `_execute_group()`
+- Per-group accumulation: placement_solving, circuit_build, noiseless_precompute,
+  parallel_execution, hdf5_writes — summed across groups
+- Top-level phases: config_parse, calibration_load, grid_expansion
+- `_write_timing_json()` writes structured JSON at sweep completion
+- `_get_stripe_info()` captures Lustre stripe count/size via `lfs getstripe`
+  (graceful fallback when lfs unavailable)
+- Sampling config block present for LHS sweeps, absent for grid mode
+- Storage context block present on Lustre, absent elsewhere
+- Environment metadata: SLURM node, partition, CPUs, job ID, container
+- Timing never fails a sweep — JSON write errors are silently caught
+
+**E7 Validation (`tests/e7_sweep_validation.py`)**
+- E7.12: 10 new checks — JSON exists, parseable, total_elapsed > 0,
+  all phases non-negative, sum(phases) ≤ total, workers > 0, tasks > 0,
+  environment node present
+
 ## 1.2.2 (2026-04-06)
 
 ### HPCQC_PLUGIN_PATH for Read-Only Containers (RED-DIRECTIVE-V122)

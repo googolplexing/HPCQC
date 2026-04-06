@@ -819,6 +819,15 @@ class SweepEngine:
         self._registry = PluginRegistry()
         self._registry.discover()
 
+        # Timing accumulators for sweep_timing.json (v1.2.3)
+        self._timing: dict[str, float] = {
+            "placement_solving_s": 0.0,
+            "circuit_build_s": 0.0,
+            "noiseless_precompute_s": 0.0,
+            "parallel_execution_s": 0.0,
+            "hdf5_writes_s": 0.0,
+        }
+
     def run(self) -> SweepResult:
         """Execute the complete sweep. Returns SweepResult.
 
@@ -837,6 +846,7 @@ class SweepEngine:
           6. Finalize HDF5, verify WAL consistency
         """
         t_start = time.time()
+        t_phase = time.perf_counter()  # v1.2.3 timing harness
         sweep_result = SweepResult(sweep_id=self._config.sweep_id)
         errors: list[str] = []
 
@@ -851,6 +861,8 @@ class SweepEngine:
                 print(f"  [CONFIG ERROR] {err}")
             sweep_result.errors = validation_errors
             return sweep_result
+
+        t_config = time.perf_counter()  # end config parse
 
         # ── Step 2: Load calibrations ──
         print("\n── Loading calibrations ──")
@@ -868,6 +880,8 @@ class SweepEngine:
             sweep_result.errors = errors
             return sweep_result
 
+        t_cal = time.perf_counter()  # end calibration load
+
         # ── Step 3: Expand grid ──
         print("\n── Expanding sweep grid ──")
         tasks = expand_grid(self._config)
@@ -880,6 +894,8 @@ class SweepEngine:
             errors.append("Grid expansion produced zero tasks")
             sweep_result.errors = errors
             return sweep_result
+
+        t_grid = time.perf_counter()  # end grid expansion
 
         # ── Step 4: Group tasks for cache locality ──
         groups = self._group_tasks(tasks)
@@ -962,9 +978,146 @@ class SweepEngine:
         print(f"  Output: {hdf5_path}")
         print(f"{'='*70}\n")
 
+        # ── Write sweep_timing.json (v1.2.3 — RED-DIRECTIVE-V123) ──
+        self._write_timing_json(
+            output_dir=str(output_dir),
+            hdf5_path=hdf5_path,
+            total_elapsed=elapsed,
+            t_phase=t_phase,
+            t_config=t_config,
+            t_cal=t_cal,
+            t_grid=t_grid,
+        )
+
         return sweep_result
 
     # ── Internal: calibration loading ──
+
+    def _write_timing_json(
+        self,
+        output_dir: str,
+        hdf5_path: str,
+        total_elapsed: float,
+        t_phase: float,
+        t_config: float,
+        t_cal: float,
+        t_grid: float,
+    ) -> None:
+        """Write sweep_timing.json alongside sweep.h5.
+
+        Captures per-phase timing, parallelism metrics, sampling config,
+        Lustre storage context, and environment metadata.
+
+        v1.2.3 — RED-DIRECTIVE-V123.
+        """
+        import subprocess as _sp
+
+        # Sampling config (absent for grid-mode)
+        sampling_info = None
+        for exp in self._config.experiments:
+            if hasattr(exp, "sampling") and exp.sampling and exp.sampling.method == "lhs":
+                sampling_info = {
+                    "method": "lhs",
+                    "n_samples": exp.sampling.n_samples,
+                    "n_parameters": len(exp.sampling.parameters),
+                }
+                break
+        if sampling_info is None and any(
+            hasattr(exp, "sampling") and exp.sampling
+            for exp in self._config.experiments
+        ):
+            sampling_info = {"method": "grid"}
+
+        # Parallelism
+        total_tasks = self._progress.total_tasks
+        workers = self._config.cpu_workers
+        tasks_per_worker = total_tasks / workers if workers > 0 else 0
+        par_exec = self._timing["parallel_execution_s"]
+        # Estimate sequential time from per-task median
+        total_sims = self._progress.total_simulations
+        if total_sims > 0 and par_exec > 0:
+            # Sequential estimate: if all tasks ran serially
+            # Using total_sims * (par_exec / total_sims * workers) as estimate
+            sequential_estimate = par_exec * workers
+            parallel_efficiency = round(sequential_estimate / par_exec / workers, 2) if par_exec > 0 else None
+        else:
+            parallel_efficiency = None
+
+        # Lustre storage context
+        storage = {}
+        container_path = os.environ.get("HPCQC_CPU_CONTAINER", "")
+        stripe = self._get_stripe_info(hdf5_path)
+        if stripe:
+            storage["hdf5_path"] = hdf5_path
+            storage.update({f"hdf5_{k}": v for k, v in stripe.items()})
+        if container_path:
+            container_stripe = self._get_stripe_info(container_path)
+            if container_stripe:
+                storage["container_path"] = container_path
+                storage.update({f"container_{k}": v for k, v in container_stripe.items()})
+
+        timing_data = {
+            "sweep_id": self._config.sweep_id,
+            "framework_version": self._config.framework_version,
+            "total_elapsed_s": round(total_elapsed, 2),
+            "phases": {
+                "config_parse_s": round(t_config - t_phase, 2),
+                "calibration_load_s": round(t_cal - t_config, 2),
+                "grid_expansion_s": round(t_grid - t_cal, 2),
+                "placement_solving_s": round(self._timing["placement_solving_s"], 2),
+                "noiseless_precompute_s": round(self._timing["noiseless_precompute_s"], 2),
+                "parallel_execution_s": round(self._timing["parallel_execution_s"], 2),
+                "hdf5_writes_s": round(self._timing["hdf5_writes_s"], 2),
+                "circuit_build_s": round(self._timing["circuit_build_s"], 2),
+            },
+            "parallelism": {
+                "workers": workers,
+                "tasks": total_tasks,
+                "tasks_per_worker": round(tasks_per_worker, 1),
+                "parallel_efficiency": parallel_efficiency,
+            },
+            "environment": {
+                "node": os.environ.get("SLURMD_NODENAME", os.environ.get("HOSTNAME", "unknown")),
+                "partition": os.environ.get("SLURM_JOB_PARTITION", "unknown"),
+                "cpus": int(os.environ.get("SLURM_CPUS_ON_NODE", os.environ.get("SLURM_CPUS_PER_TASK", "0"))),
+                "slurm_job_id": os.environ.get("SLURM_JOB_ID", ""),
+                "container": os.path.basename(container_path) if container_path else "",
+            },
+        }
+
+        if sampling_info:
+            timing_data["sampling"] = sampling_info
+        if storage:
+            timing_data["storage"] = storage
+
+        timing_path = os.path.join(output_dir, "sweep_timing.json")
+        try:
+            with open(timing_path, "w") as f:
+                json.dump(timing_data, f, indent=2)
+        except Exception:
+            pass  # timing is diagnostic — never fail a sweep
+
+    @staticmethod
+    def _get_stripe_info(path: str) -> dict:
+        """Get Lustre stripe info via lfs getstripe. Returns {} if unavailable."""
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                ["lfs", "getstripe", path],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return {}
+            info = {}
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if "lmm_stripe_count:" in line:
+                    info["stripe_count"] = int(line.split()[-1])
+                elif "lmm_stripe_size:" in line:
+                    info["stripe_size_bytes"] = int(line.split()[-1])
+            return info
+        except (FileNotFoundError, _sp.TimeoutExpired, ValueError):
+            return {}
 
     def _load_calibration(self, cal_path: str) -> None:
         """Load and cache a calibration file, register device with solver.
@@ -1040,6 +1193,7 @@ class SweepEngine:
         cal_id, cal_json, device_cal = self._cal_cache[cal_path]
 
         # ── E1: Find placements ──
+        t_place_start = time.perf_counter()
         cache_key = (topo_name, device_cal.device_id)
         if cache_key not in self._placement_cache:
             placements = self._solver.find_all_placements(
@@ -1063,14 +1217,17 @@ class SweepEngine:
             return
 
         self._progress.total_placements += len(placements) * len(tasks)
+        self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
 
         # ── Build circuit and observable ──
+        t_build_start = time.perf_counter()
         circuit, observable, ham_metadata = self._build_circuit_and_observable(
             ham_name, qsize, representative.topology_edges,
             model_params_override=representative.model_params or None,
         )
 
         exact_energy = ham_metadata.get("exact_ground_energy")
+        self._timing["circuit_build_s"] += time.perf_counter() - t_build_start
 
         # ── Pre-compute noiseless results (v1.2.0 — two-subprocess pattern) ──
         # Noiseless energy depends on observable + topology but NOT on
@@ -1100,6 +1257,7 @@ class SweepEngine:
                     ))
 
         noiseless_cache = {}
+        t_noiseless_start = time.perf_counter()
         if representative_items:
             print(f"    E2: Pre-computing noiseless for {len(representative_items)} "
                   f"topology group(s) ({len(noiseless_envs)} envs each)")
@@ -1110,6 +1268,8 @@ class SweepEngine:
                 print(f"    E2: Noiseless cache populated — {len(noiseless_cache)} entries")
             else:
                 print(f"    E2: Noiseless cache empty — workers will compute independently")
+
+        self._timing["noiseless_precompute_s"] += time.perf_counter() - t_noiseless_start
 
         # ── Collect work items ──
         work_items = []
@@ -1134,6 +1294,7 @@ class SweepEngine:
                 work_meta.append((task, placement, qubit_names, seed))
 
         # ── Execute batteries ──
+        t_exec_start = time.perf_counter()
         cpu_workers = self._config.cpu_workers
         n_items = len(work_items)
 
@@ -1180,6 +1341,8 @@ class SweepEngine:
             battery_results = [_battery_worker(item) for item in work_items]
 
         # ── Process results and write to HDF5 (serial — HDF5 not thread-safe) ──
+        self._timing["parallel_execution_s"] += time.perf_counter() - t_exec_start
+        t_hdf5_start = time.perf_counter()
         task_completion = set()
         for idx, br in enumerate(battery_results):
             task, placement, qubit_names, seed = work_meta[idx]
@@ -1267,6 +1430,7 @@ class SweepEngine:
         print(f"    Completed: {len(tasks)} seeds × {len(placements)} placements "
               f"= {self._progress.hdf5_writes} HDF5 writes "
               f"({self._progress.total_deduplicated} deduplicated)")
+        self._timing["hdf5_writes_s"] += time.perf_counter() - t_hdf5_start
 
     # ── Internal: circuit building ──
 
