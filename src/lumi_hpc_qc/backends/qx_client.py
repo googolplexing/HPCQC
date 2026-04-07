@@ -53,23 +53,34 @@ import requests
 class QPUJobTiming:
     """Complete timing breakdown for a single QPU batch submission.
 
-    Captures all 5 phases of QPU job execution:
+    Phase names and durations derived from actual VTT QX job timeline
+    (confirmed April 7, 2026 from Q50 timing benchmark jobs).
 
-        Phase 1 — SLURM queue:    Waiting for q_fiqci partition.
-                                  Captured from SLURM env vars externally.
-        Phase 2 — VTT QX queue:   Waiting in VTT's job queue.
-                                  From job timeline: submitted → compilation.
-        Phase 3 — QX compilation: Server-side transpilation/compilation.
-                                  From job timeline: compilation → execution.
-        Phase 4 — QPU execution:  Actual quantum processor time.
-                                  From runtime_estimates artifact.
-        Phase 5 — Retrieval:      Result transfer back to LUMI.
-                                  Local perf_counter around .result() call.
+    VTT QX timeline progression (15 states):
+        Created → Received → Validation Started →
+        Fetch Calibration Started → Fetch Calibration Ended →
+        Compilation Started → Compilation Ended →
+        Save Sweep Metadata Ended → Pending Execution →
+        Execution Started → Execution Ended →
+        Post Processing Pending → Post Processing Started →
+        Ready → Completed
 
-    Local fields (wall_total_s, local_submit_s, local_wait_s) are always
-    populated. QX server-side fields are populated when the API returns
-    data, None otherwise. This ensures timing capture never blocks or
-    crashes the main execution path.
+    We capture 6 server-side durations + 2 local durations:
+
+        LOCAL  submit_s:       perf_counter around backend.run() call
+        LOCAL  wait_s:         perf_counter around job.result() block
+        QX     overhead_s:     Created → Pending Execution (validation,
+                               cal fetch, compilation, metadata save)
+        QX     compile_s:      Compilation Started → Compilation Ended
+        QX     qpu_queue_s:    Pending Execution → Execution Started
+                               (waiting for QPU — THIS IS THE BIG ONE)
+        QX     qpu_execute_s:  Execution Started → Execution Ended
+                               (actual quantum processor time)
+        QX     postprocess_s:  Execution Ended → Ready
+        QX     delivery_s:     Ready → Completed
+
+    Local fields always populated. QX fields populated when timeline
+    data is available, None otherwise.
     """
     job_id: str
     n_circuits: int = 0
@@ -77,15 +88,17 @@ class QPUJobTiming:
 
     # ── Local timing (time.perf_counter on LUMI) ──
     wall_total_s: float = 0.0       # .run() call → .result() return
-    local_submit_s: float = 0.0     # .run() call duration (before block)
+    local_submit_s: float = 0.0     # .run() call duration
     local_wait_s: float = 0.0       # .result() blocking duration
 
-    # ── QX server-side timing (from job timeline / artifacts) ──
-    qx_queue_s: float | None = None       # submitted → compilation start
-    qx_compile_s: float | None = None     # compilation → execution start
-    qx_execute_s: float | None = None     # execution start → end
-    qx_retrieve_s: float | None = None    # execution end → result ready
-    qpu_seconds: float | None = None      # billed QPU seconds (usage API)
+    # ── QX server-side timing (from job timeline) ──
+    # Actual VTT QX field names confirmed from Q50 jobs April 7 2026
+    qx_overhead_s: float | None = None      # Created → Pending Execution
+    qx_compile_s: float | None = None       # Compilation Started → Ended
+    qpu_queue_s: float | None = None        # Pending Execution → Execution Started
+    qpu_execute_s: float | None = None      # Execution Started → Ended
+    qx_postprocess_s: float | None = None   # Execution Ended → Ready
+    qx_delivery_s: float | None = None      # Ready → Completed
 
     # ── Context at submission time ──
     queue_length_before: int | None = None
@@ -323,7 +336,9 @@ class QXClient:
         GET /api/v1/jobs/{job_id}
 
         The timeline field contains timestamps for each status change:
-        submitted, pending_compilation, pending_execution, executing, ready.
+        Created, Received, Validation Started, Fetch Calibration Started/Ended,
+        Compilation Started/Ended, Pending Execution, Execution Started/Ended,
+        Post Processing Pending/Started, Ready, Completed.
         """
         return self._get(f"/api/v1/jobs/{job_id}")
 
@@ -447,7 +462,7 @@ class QXClient:
         raises — timing capture must not break the execution path.
         """
         try:
-            # Job timeline
+            # Job status with timeline
             status = self.get_job_status(timing.job_id)
             if status is not None:
                 timing.job_status_raw = status
@@ -455,55 +470,106 @@ class QXClient:
                 timing.timeline_raw = timeline
                 self._parse_timeline(timing, timeline)
 
-            # Runtime estimates (actual QPU time)
+            # Runtime estimates artifact (may have additional QPU data)
             rt = self.get_runtime_estimates(timing.job_id)
             if rt is not None:
                 timing.runtime_estimates_raw = rt
-                if isinstance(rt, dict):
-                    for key in ("qpu_time_s", "execution_time_s",
-                                "qpu_seconds", "total_time", "duration"):
-                        if key in rt:
-                            timing.qpu_seconds = float(rt[key])
-                            break
         except Exception:
             pass  # timing enrichment must never crash
 
     def _parse_timeline(self, timing: QPUJobTiming, timeline: list) -> None:
-        """Extract phase durations from QX job timeline entries.
+        """Extract phase durations from QX job timeline.
 
-        Timeline entries are expected to have status/timestamp fields.
-        The exact field names depend on VTT's API version — this handles
-        known patterns and degrades gracefully on unknown ones.
+        VTT QX timeline format (confirmed from Q50 jobs April 7, 2026):
+
+            [
+                {"status": "Created", "timestamp": "2026-04-07T18:50:11.614128Z"},
+                {"status": "Received", "timestamp": "..."},
+                {"status": "Compilation Started", "timestamp": "..."},
+                {"status": "Compilation Ended", "timestamp": "..."},
+                {"status": "Pending Execution", "timestamp": "..."},
+                {"status": "Execution Started", "timestamp": "..."},
+                {"status": "Execution Ended", "timestamp": "..."},
+                {"status": "Ready", "timestamp": "..."},
+                {"status": "Completed", "timestamp": "..."},
+                ...
+            ]
+
+        Status names contain spaces and mixed case. We normalize to
+        lowercase with underscores for matching.
+
+        If the timeline comes as a flat dict {"Created": "timestamp", ...}
+        instead of a list, we handle that too.
         """
         if not timeline:
             return
 
         from datetime import datetime
 
+        # ── Parse timestamps into a normalized map ──
         timestamps: dict[str, datetime] = {}
-        for entry in timeline:
-            if not isinstance(entry, dict):
-                continue
-            status = entry.get("status", entry.get("state", ""))
-            ts_str = entry.get("timestamp", entry.get("time", ""))
-            if status and ts_str:
-                try:
-                    ts = datetime.fromisoformat(
-                        ts_str.replace("Z", "+00:00")
-                    )
-                    timestamps[status.lower().replace(" ", "_")] = ts
-                except (ValueError, TypeError):
-                    pass
 
-        def _delta(start, end):
-            s, e = timestamps.get(start), timestamps.get(end)
-            return (e - s).total_seconds() if s and e else None
+        if isinstance(timeline, list):
+            for entry in timeline:
+                if not isinstance(entry, dict):
+                    continue
+                # Try status/timestamp pair (expected format)
+                status = (entry.get("status") or
+                          entry.get("state") or
+                          entry.get("name") or "")
+                ts_str = (entry.get("timestamp") or
+                          entry.get("time") or
+                          entry.get("datetime") or "")
+                if status and ts_str:
+                    key = status.lower().strip().replace(" ", "_")
+                    try:
+                        ts = datetime.fromisoformat(
+                            ts_str.replace("Z", "+00:00")
+                        )
+                        timestamps[key] = ts
+                    except (ValueError, TypeError):
+                        pass
+        elif isinstance(timeline, dict):
+            # Flat dict format: {"Created": "timestamp", ...}
+            for status, ts_str in timeline.items():
+                if isinstance(ts_str, str):
+                    key = status.lower().strip().replace(" ", "_")
+                    try:
+                        ts = datetime.fromisoformat(
+                            ts_str.replace("Z", "+00:00")
+                        )
+                        timestamps[key] = ts
+                    except (ValueError, TypeError):
+                        pass
 
-        timing.qx_queue_s = _delta("submitted", "pending_compilation")
-        timing.qx_compile_s = _delta("pending_compilation",
-                                     "pending_execution")
-        timing.qx_execute_s = _delta("pending_execution", "ready") or \
-                              _delta("executing", "ready")
+        if not timestamps:
+            return
+
+        # ── Compute phase durations ──
+        def _delta(start_key: str, end_key: str) -> float | None:
+            s, e = timestamps.get(start_key), timestamps.get(end_key)
+            if s is not None and e is not None:
+                return (e - s).total_seconds()
+            return None
+
+        # VTT QX status names (normalized to lowercase + underscores):
+        #   created, received, validation_started,
+        #   fetch_calibration_started, fetch_calibration_ended,
+        #   compilation_started, compilation_ended,
+        #   save_sweep_metadata_ended, pending_execution,
+        #   execution_started, execution_ended,
+        #   post_processing_pending, post_processing_started,
+        #   ready, completed
+
+        timing.qx_overhead_s = _delta("created", "pending_execution")
+        timing.qx_compile_s = _delta("compilation_started",
+                                     "compilation_ended")
+        timing.qpu_queue_s = _delta("pending_execution",
+                                    "execution_started")
+        timing.qpu_execute_s = _delta("execution_started",
+                                      "execution_ended")
+        timing.qx_postprocess_s = _delta("execution_ended", "ready")
+        timing.qx_delivery_s = _delta("ready", "completed")
 
     # ───────────────────────────────────────────────────────────────
     # Utilities
@@ -557,11 +623,12 @@ class QXClient:
                 "wait_s": round(timing.local_wait_s, 4),
             },
             "qx_server": {
-                "queue_s": timing.qx_queue_s,
+                "overhead_s": timing.qx_overhead_s,
                 "compile_s": timing.qx_compile_s,
-                "execute_s": timing.qx_execute_s,
-                "retrieve_s": timing.qx_retrieve_s,
-                "qpu_seconds": timing.qpu_seconds,
+                "qpu_queue_s": timing.qpu_queue_s,
+                "qpu_execute_s": timing.qpu_execute_s,
+                "postprocess_s": timing.qx_postprocess_s,
+                "delivery_s": timing.qx_delivery_s,
             },
             "context": {
                 "queue_length_before": timing.queue_length_before,
