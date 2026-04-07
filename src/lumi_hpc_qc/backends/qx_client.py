@@ -310,7 +310,7 @@ class QXClient:
         if not isinstance(device_list, list):
             return None
         for dev in device_list:
-            slug = dev.get("slug", dev.get("id", ""))
+            slug = str(dev.get("slug", dev.get("id", "")))
             if slug.lower() == self._device.lower():
                 return dev.get("job_policy")
         return None
@@ -322,8 +322,8 @@ class QXClient:
             return False
         devices = health if isinstance(health, list) else [health]
         for dev in devices:
-            if dev.get("id", "").lower() == self._device.lower():
-                return dev.get("health", "").lower() == "online"
+            if str(dev.get("id", "")).lower() == self._device.lower():
+                return str(dev.get("health", "")).lower() == "online"
         return False
 
     # ───────────────────────────────────────────────────────────────
@@ -583,7 +583,7 @@ class QXClient:
         if health:
             devices = health if isinstance(health, list) else [health]
             for dev in devices:
-                if dev.get("id", "").lower() == self._device.lower():
+                if str(dev.get("id", "")).lower() == self._device.lower():
                     print(f"  Health: {dev.get('health', 'unknown')}")
                     for svc in dev.get("services", []):
                         print(f"    Service {svc.get('name')}: "
