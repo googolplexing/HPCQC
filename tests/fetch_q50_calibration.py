@@ -65,21 +65,23 @@ def convert_to_hpcqc_format(raw_data, device_name="Q50"):
         {
             "metrics": {
                 "t1_time": {
-                    "QB1": {"unit": "s", "value": 3.87e-05, "timestamp": ..., "uncertainty": ...},
+                    "QB1": {"unit": "s", "value": 3.87e-05, ...},
                     "QB2": {"unit": "s", "value": 2.86e-05, ...},
+                    "statistics": {...},  # aggregate — skip
                     ...
                 },
-                "t2_time": {"QB1": {...}, "QB2": {...}, ...},
-                "cz_irb_crf_crf_fidelity": {"QB1-QB2": {...}, ...},
+                "cz_irb_crf_crf_fidelity": {
+                    "QB1__QB2": {"value": 0.976, ...},  # double underscore
+                    ...
+                },
                 ...
-            },
-            "calibration_set_id": str,
-            "calibration_set_end_timestamp": str,
-            ...
+            }
         }
 
     Structure is: metric_type → qubit_name → {unit, value, timestamp, uncertainty}
+    CZ gate keys use double underscore: QB1__QB2 (not dash)
     We pivot to:  qubit_name → {metric_type: value}
+    We normalize: QB1__QB2 → QB1-QB2 for HPCQC format
 
     HPCQC output format (used by IQMv2Adapter):
         {
@@ -118,6 +120,10 @@ def convert_to_hpcqc_format(raw_data, device_name="Q50"):
         if not isinstance(qubit_values, dict):
             continue
         for qubit_key, entry in qubit_values.items():
+            # Skip aggregate statistics entries
+            if qubit_key == "statistics":
+                continue
+
             # Each entry is either a dict with "value" key, or a bare number
             if isinstance(entry, dict):
                 val = entry.get("value")
@@ -126,11 +132,12 @@ def convert_to_hpcqc_format(raw_data, device_name="Q50"):
             else:
                 val = None
 
-            if "-" in qubit_key and qubit_key.split("-")[0].startswith("QB"):
-                # Two-qubit gate metric (e.g., "QB1-QB2")
-                gates_raw.setdefault(qubit_key, {})[metric_name] = val
+            # Two-qubit gate: QB1__QB2 (double underscore in VTT API)
+            # Normalize to QB1-QB2 (single dash) for HPCQC format
+            if "__" in qubit_key:
+                normalized = qubit_key.replace("__", "-")
+                gates_raw.setdefault(normalized, {})[metric_name] = val
             elif qubit_key.startswith("QB"):
-                # Single-qubit metric (e.g., "QB1")
                 qubits_raw.setdefault(qubit_key, {})[metric_name] = val
 
     # ── Map VTT metric names → HPCQC fields ──
@@ -138,6 +145,7 @@ def convert_to_hpcqc_format(raw_data, device_name="Q50"):
     # VTT metric name                        → HPCQC field
     # t1_time (seconds)                      → t1_us (microseconds)
     # t2_time (seconds)                      → t2_us (microseconds)
+    # t2_echo_time (seconds)                 → t2_echo_us (microseconds)
     # measure_ssro_constant_fidelity         → readout_fidelity
     # prx_rb_drag_crf_sx_fidelity            → 1.0 - single_gate_error
     # cz_irb_crf_crf_fidelity                → cz_fidelity
