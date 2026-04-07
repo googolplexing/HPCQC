@@ -117,6 +117,7 @@ class QXClient:
         root_url: str,
         device: str,
         auth_headers: dict[str, str],
+        auth_callback=None,
     ) -> None:
         """Direct construction. Prefer QXClient.from_backend().
 
@@ -125,19 +126,23 @@ class QXClient:
             device: Device slug (e.g. "q50").
             auth_headers: Opaque headers from iqm-client. Passed through
                           as-is — contents are proxy-managed.
+            auth_callback: Optional callable that returns a fresh bearer
+                           token string. If provided, refreshes auth on
+                           each request (handles token expiry in long sweeps).
         """
         self._root_url = root_url.rstrip("/")
         self._device = device
-        self._headers = dict(auth_headers)
-        self._timeout = 30
+        self._static_headers = dict(auth_headers)
+        self._auth_callback = auth_callback
+        self._timeout = 10  # metadata calls should be fast
 
     @classmethod
     def from_backend(cls, backend) -> QXClient:
         """Create QXClient from an existing IQM backend connection.
 
         Extracts the proxy URL and opaque auth headers from iqm-client
-        internals. The bearer token is proxy-managed — we never see the
-        real IQM credential.
+        internals. Stores the auth callback reference so tokens are
+        refreshed on each request (handles expiry in long sweeps).
 
         Args:
             backend: IQMBackend from IQMProvider.get_backend().
@@ -153,14 +158,25 @@ class QXClient:
             root_url=sc.root_url,
             device=sc.quantum_computer,
             auth_headers=headers,
+            auth_callback=sc._auth_header_callback,
         )
+
+    def _get_headers(self) -> dict[str, str]:
+        """Get current auth headers, refreshing token if callback available."""
+        if self._auth_callback is not None:
+            try:
+                fresh_bearer = self._auth_callback()
+                self._static_headers["Authorization"] = fresh_bearer
+            except Exception:
+                pass  # fall back to last known headers
+        return self._static_headers
 
     def _get(self, path: str) -> dict | None:
         """GET request through the proxy. Returns None on any failure."""
         url = f"{self._root_url}{path}"
         try:
             resp = requests.get(
-                url, headers=self._headers, timeout=self._timeout,
+                url, headers=self._get_headers(), timeout=self._timeout,
             )
             resp.raise_for_status()
             return resp.json()
@@ -374,6 +390,7 @@ class QXClient:
         backend,
         circuits,
         shots: int,
+        queue_length_before: int | None = None,
     ) -> tuple[Any, QPUJobTiming]:
         """Submit circuits via iqm-client and capture full timing breakdown.
 
@@ -385,15 +402,17 @@ class QXClient:
             backend: IQM backend (IqmQpuBackend._sim).
             circuits: Single QuantumCircuit or list of circuits.
             shots: Number of measurement shots.
+            queue_length_before: Queue depth at time of submission.
+                Caller should capture this ONCE before a batch of
+                submissions via qx.get_queue_length(), not per-batch.
+                Avoids 10s timeout penalty on every batch when the
+                endpoint is unreachable.
 
         Returns:
             (qiskit_result, timing_record) tuple.
         """
         is_list = isinstance(circuits, list)
         n = len(circuits) if is_list else 1
-
-        # Pre-submission context
-        queue_len = self.get_queue_length()
 
         # Submit through iqm-client (proxy handles auth)
         t0 = time.perf_counter()
@@ -413,7 +432,7 @@ class QXClient:
             wall_total_s=t_done - t0,
             local_submit_s=t_submitted - t0,
             local_wait_s=t_done - t_submitted,
-            queue_length_before=queue_len,
+            queue_length_before=queue_length_before,
         )
 
         # Enrich with server-side timing (best-effort, never blocks)

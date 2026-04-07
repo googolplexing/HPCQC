@@ -298,10 +298,7 @@ def main():
     os.makedirs("results", exist_ok=True)
     os.makedirs("examples", exist_ok=True)
 
-    # ── 1. Device health check ──
-    qx.print_device_summary()
-
-    # ── 2. Calibration metrics ──
+    # ── 1. Calibration metrics (critical path — do this first) ──
     print(f"\n-- Fetching calibration metrics --")
     metrics = qx.get_calibration_metrics(cal_set_id)
     if metrics is None:
@@ -315,7 +312,7 @@ def main():
         json.dump(metrics, f, indent=2, default=str)
     print(f"  Saved: {raw_path}")
 
-    # ── 3. Static quantum architecture ──
+    # ── 2. Static quantum architecture ──
     print(f"\n-- Fetching static quantum architecture --")
     architecture = qx.get_quantum_architecture()
     if architecture:
@@ -326,7 +323,7 @@ def main():
     else:
         print(f"  WARNING: Static architecture unavailable")
 
-    # ── 4. Dynamic quantum architecture (per calibration set) ──
+    # ── 3. Dynamic quantum architecture (per calibration set) ──
     dynamic = None
     if cal_id != "unknown":
         print(f"\n-- Fetching dynamic architecture (cal {cal_id_short}...) --")
@@ -339,7 +336,7 @@ def main():
         else:
             print(f"  WARNING: Dynamic architecture unavailable")
 
-    # ── 5. Convert to HPCQC format (metrics + architecture combined) ──
+    # ── 4. Convert to HPCQC format (metrics + architecture combined) ──
     print(f"\n-- Converting to HPCQC format --")
     hpcqc_cal = convert_to_hpcqc_format(
         metrics,
@@ -352,10 +349,10 @@ def main():
         json.dump(hpcqc_cal, f, indent=2)
     print(f"  Saved: {hpcqc_path}")
 
-    # ── 6. Summary ──
+    # ── 5. Summary ──
     print_summary(hpcqc_cal)
 
-    # ── 7. Recent calibration runs ──
+    # ── 6. Recent calibration runs ──
     print(f"\n-- Recent calibration runs --")
     runs = qx.get_calibration_runs(limit=5)
     if runs and "results" in runs:
@@ -365,13 +362,16 @@ def main():
                   f"-> {run.get('status', '?')} "
                   f"(cal: {str(run.get('calibration_set_id', ''))[:8]}...)")
 
-    # ── 8. Backend info (from iqm-client, for cross-reference) ──
+    # ── 7. Backend info (from iqm-client, for cross-reference) ──
     try:
         edges = backend.coupling_map.get_edges()
         print(f"\n  Backend coupling map: {len(edges)} edges")
     except Exception:
         print(f"\n  Backend coupling map: available (could not count edges)")
     print(f"  Native ops: {backend.operation_names}")
+
+    # ── 8. Device health summary (non-critical — last, after all data saved) ──
+    qx.print_device_summary()
 
 
 if __name__ == "__main__":

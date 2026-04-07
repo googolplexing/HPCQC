@@ -157,20 +157,12 @@ class IQMv2Adapter(AbstractCalibrationAdapter):
                 i, j = name_to_idx[q1_name], name_to_idx[q2_name]
                 adjacency[i].add(j)
                 adjacency[j].add(i)
-
-                # If this edge exists in topology but has no calibration
-                # data, create a gate entry with default fidelity so the
-                # placement solver can still route through it.
-                edge_key = f"{q1_name}-{q2_name}"
-                edge_key_rev = f"{q2_name}-{q1_name}"
-                if edge_key not in gates and edge_key_rev not in gates:
-                    gates[edge_key] = GateCalibration(
-                        qubit_pair=(q1_name, q2_name),
-                        index_pair=(i, j),
-                        fidelity=0.99,  # default for uncalibrated edge
-                        error=0.01,
-                        gate_type="cz",
-                    )
+                # NOTE: We do NOT create GateCalibration entries for edges
+                # that lack calibration data. Adjacency is for topology
+                # (does this edge physically exist?). Gates are for quality
+                # (how good is this edge?). Assigning fake fidelity to
+                # uncalibrated edges would bias the placement solver toward
+                # unknown edges over measured-but-mediocre ones.
         else:
             # Backward compat: infer adjacency from calibrated gate keys
             for gate_key in gates:
