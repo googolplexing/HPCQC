@@ -47,8 +47,8 @@ class IqmQpuBackend(Backend):
 
     name = "iqm_qpu"
 
-    # VTT enforces max 200 circuits per batch (QX FAQ)
-    VTT_BATCH_LIMIT = 200
+    # VTT enforces max 100 circuits per batch (QX FAQ)
+    VTT_BATCH_LIMIT = 100
 
     def __init__(self, config: ExperimentConfig | None = None) -> None:
         self._config = config
@@ -160,7 +160,7 @@ class IqmQpuBackend(Backend):
 
                     # ── Batch submission to QPU ──
                     # IQM .run() accepts list[QuantumCircuit] as single batch.
-                    # VTT caps at 200 circuits/batch — auto-chunk if needed.
+                    # VTT caps at 100 circuits/batch — auto-chunk if needed.
                     counts_list = self._submit_batch(
                         meas_circuits, shots=shots,
                     )
@@ -197,11 +197,11 @@ class IqmQpuBackend(Backend):
 
         IQM's IQMBackend.run() accepts list[QuantumCircuit] as a single
         batch job — one queue entry for the entire list. VTT enforces a
-        hard cap of 200 circuits per batch (QX FAQ). This method:
+        hard cap of 100 circuits per batch (QX FAQ). This method:
 
         1. If len(circuits) <= VTT_BATCH_LIMIT: single .run() call
         2. If len(circuits) > VTT_BATCH_LIMIT: chunk into sequential
-           batches of <=200, submit each, reassemble in original order
+           batches of <=100, submit each, reassemble in original order
 
         Returns:
             List of count dicts in the same order as input circuits.

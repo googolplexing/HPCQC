@@ -124,7 +124,7 @@ def main():
 
     # Characterization mode (all circuits independent)
     total_circuits = 12800  # 108 placements × 2 groups × ~59 (some dedup)
-    n_batches = (total_circuits + 199) // 200
+    n_batches = (total_circuits + 99) // 100  # VTT batch limit = 100
     char_time_s = total_circuits * per_circuit_s + n_batches * per_batch_overhead_s
     print(f"  Full characterization: {total_circuits} circuits in {n_batches} batches")
     print(f"    Estimated: {char_time_s:.1f}s ({char_time_s/60:.1f} min)")

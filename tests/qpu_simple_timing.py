@@ -87,8 +87,8 @@ Submits 6 batches designed to isolate 4 independent variables:
 
   Characterization mode (all circuits independent):
     composites = dsatur_rounds × pauli_groups × seeds
-    batches = ceil(composites / 200)
-    wall_time = batches × (overhead_wide + min(200, composites) × per_circuit_wide)
+    batches = ceil(composites / BATCH_LIMIT)
+    wall_time = batches × (overhead_wide + min(BATCH_LIMIT, composites) × per_circuit_wide)
 
   VQE mode, single seed (iteration-bound):
     composites_per_iter = dsatur_rounds × pauli_groups
@@ -96,8 +96,8 @@ Submits 6 batches designed to isolate 4 independent variables:
 
   VQE mode, multi-seed cross-pool (v1.2.0):
     composites_per_iter = dsatur_rounds × pauli_groups × concurrent_seeds
-    batches_per_iter = ceil(composites_per_iter / 200)
-    wall_time = iterations × batches_per_iter × (overhead_wide + 200 × per_circuit_wide)
+    batches_per_iter = ceil(composites_per_iter / BATCH_LIMIT)
+    wall_time = iterations × batches_per_iter × (overhead_wide + BATCH_LIMIT × per_circuit_wide)
 
   Note: These assume Q50 is idle (no queue wait). In practice, jobs
   sit in the FiQCI queue until Q50 is available. The queue wait is
@@ -148,6 +148,7 @@ print(f"  Coupling map: {n_edges} edges")
 print()
 
 SHOTS = 4096
+BATCH_LIMIT = 100  # VTT QX max_number_circuits_per_batch (confirmed April 7, 2026)
 rng = np.random.default_rng(42)
 
 # ═══════════════════════════════════════════════════════
@@ -337,9 +338,9 @@ depth_effect = t_b - t_c
 # Characterization mode: all circuits independent
 def project_characterization(seeds, rounds=16, groups=2):
     composites = rounds * groups * seeds
-    batches = -(-composites // 200)  # ceil division
-    circuits_last = composites % 200 or 200
-    wall = (batches - 1) * (overhead_wide + 200 * per_circuit_wide) + \
+    batches = -(-composites // BATCH_LIMIT)  # ceil division
+    circuits_last = composites % BATCH_LIMIT or BATCH_LIMIT
+    wall = (batches - 1) * (overhead_wide + BATCH_LIMIT * per_circuit_wide) + \
            (overhead_wide + circuits_last * per_circuit_wide)
     return composites, batches, wall
 
@@ -352,8 +353,8 @@ def project_vqe_single(iterations=400, rounds=16, groups=2):
 # VQE mode: cross-seed pool, N seeds sharing batches
 def project_vqe_pool(seeds, iterations=400, rounds=16, groups=2):
     composites_per_iter = rounds * groups * seeds
-    batches_per_iter = -(-composites_per_iter // 200)
-    wall_per_iter = batches_per_iter * (overhead_wide + min(200, composites_per_iter) * per_circuit_wide)
+    batches_per_iter = -(-composites_per_iter // BATCH_LIMIT)
+    wall_per_iter = batches_per_iter * (overhead_wide + min(BATCH_LIMIT, composites_per_iter) * per_circuit_wide)
     return composites_per_iter, batches_per_iter, iterations * wall_per_iter
 
 
@@ -495,9 +496,9 @@ output = {
         "overhead_wide": "t_F - per_circuit_wide",
         "width_scaling": "per_circuit_wide / per_circuit_narrow",
         "depth_effect": "t_B - t_C",
-        "characterization_wall": "ceil(composites/200) × (overhead_wide + min(200,N) × per_circuit_wide)",
+        "characterization_wall": "ceil(composites/100) × (overhead_wide + min(100,N) × per_circuit_wide)",
         "vqe_single_wall": "iterations × (overhead_wide + composites_per_iter × per_circuit_wide)",
-        "vqe_pool_wall": "iterations × ceil(composites_per_iter/200) × (overhead_wide + 200 × per_circuit_wide)",
+        "vqe_pool_wall": "iterations × ceil(composites_per_iter/100) × (overhead_wide + 100 × per_circuit_wide)",
     },
 }
 

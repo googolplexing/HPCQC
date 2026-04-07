@@ -287,7 +287,7 @@ class QXClient:
         GET /api/devices/list
 
         The job_policy field contains max_number_circuits_per_batch,
-        which should replace the hardcoded VTT_BATCH_LIMIT = 200 in
+        which should replace the hardcoded VTT_BATCH_LIMIT = 100 in
         iqm_qpu.py when available.
         """
         return self._get("/api/devices/list")
@@ -296,7 +296,7 @@ class QXClient:
         """Extract job policy for this device from device list.
 
         Returns e.g.:
-            {"max_number_circuits_per_batch": 200,
+            {"max_number_circuits_per_batch": 100,
              "max_number_shots_per_job": 100000,
              "max_queue_length": 500}
         """

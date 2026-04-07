@@ -5,7 +5,7 @@
 
 RED-RESP-PACKING-v1.0 §3 — Mandatory blocking tests:
   Test A: Single batch ordering (result[i] == circuit[i])
-  Test B: Multi-batch reassembly (correct across 200-circuit boundaries)
+  Test B: Multi-batch reassembly (correct across 100-circuit boundaries)
   Test C: DSatur produces <= greedy rounds (optimality)
   Test D: DSatur round placements are non-overlapping (correctness)
 
@@ -108,8 +108,8 @@ except Exception as e:
 # ══════════════════════════════════════════════════════════════════════
 # TEST B — Multi-batch reassembly across chunk boundary
 # ══════════════════════════════════════════════════════════════════════
-print("\n═══ TEST B: Multi-batch reassembly (>200 circuits) ═══")
-print("  Verifies ordering across VTT 200-circuit chunk boundaries")
+print("\n═══ TEST B: Multi-batch reassembly (>100 circuits) ═══")
+print("  Verifies ordering across VTT 100-circuit chunk boundaries")
 
 try:
     from lumi_hpc_qc.backends.iqm_qpu import IqmQpuBackend
@@ -156,31 +156,31 @@ try:
     backend = IqmQpuBackend.__new__(IqmQpuBackend)
     mock = MockIQMBackend()
     backend._sim = mock
-    backend.VTT_BATCH_LIMIT = 200  # Use real limit
+    backend.VTT_BATCH_LIMIT = 100  # VTT QX confirmed limit (April 7, 2026)
 
-    # Submit 205 circuits — should split into [200, 5]
-    dummy_circuits = [QuantumCircuit(2) for _ in range(205)]
+    # Submit 105 circuits — should split into [100, 5]
+    dummy_circuits = [QuantumCircuit(2) for _ in range(105)]
     for qc in dummy_circuits:
         qc.measure_all()
 
     counts_list = backend._submit_batch(dummy_circuits, shots=1000)
 
     check(
-        "B.1: Auto-chunking splits at 200",
-        mock.batch_calls == [200, 5],
-        f"expected [200, 5], got {mock.batch_calls}"
+        "B.1: Auto-chunking splits at 100",
+        mock.batch_calls == [100, 5],
+        f"expected [100, 5], got {mock.batch_calls}"
     )
 
     check(
         "B.2: Total results match total circuits",
-        len(counts_list) == 205,
-        f"expected 205, got {len(counts_list)}"
+        len(counts_list) == 105,
+        f"expected 105, got {len(counts_list)}"
     )
 
     # Verify ordering: result[i] should encode global index i
     ordering_correct = True
     first_mismatch = None
-    for i in range(205):
+    for i in range(105):
         expected_bits = format(i, '010b')
         if expected_bits not in counts_list[i]:
             ordering_correct = False
@@ -193,44 +193,44 @@ try:
         f"first mismatch at index {first_mismatch}" if not ordering_correct else ""
     )
 
-    # Specifically check the boundary: index 199 (last in chunk 1)
-    # and index 200 (first in chunk 2)
+    # Specifically check the boundary: index 99 (last in chunk 1)
+    # and index 100 (first in chunk 2)
     check(
-        "B.4: Boundary circuit 199 (last in chunk 1) correct",
-        format(199, '010b') in counts_list[199],
-        f"got {counts_list[199]}"
+        "B.4: Boundary circuit 99 (last in chunk 1) correct",
+        format(99, '010b') in counts_list[99],
+        f"got {counts_list[99]}"
     )
 
     check(
-        "B.5: Boundary circuit 200 (first in chunk 2) correct",
-        format(200, '010b') in counts_list[200],
-        f"got {counts_list[200]}"
+        "B.5: Boundary circuit 100 (first in chunk 2) correct",
+        format(100, '010b') in counts_list[100],
+        f"got {counts_list[100]}"
     )
 
-    # Test exact batch limit: 200 circuits should NOT chunk
+    # Test exact batch limit: 100 circuits should NOT chunk
     mock2 = MockIQMBackend()
     backend._sim = mock2
-    dummy_200 = [QuantumCircuit(2) for _ in range(200)]
-    for qc in dummy_200:
+    dummy_100 = [QuantumCircuit(2) for _ in range(100)]
+    for qc in dummy_100:
         qc.measure_all()
-    backend._submit_batch(dummy_200, shots=1000)
+    backend._submit_batch(dummy_100, shots=1000)
     check(
-        "B.6: Exactly 200 circuits → single batch (no chunking)",
-        mock2.batch_calls == [200],
-        f"expected [200], got {mock2.batch_calls}"
+        "B.6: Exactly 100 circuits → single batch (no chunking)",
+        mock2.batch_calls == [100],
+        f"expected [100], got {mock2.batch_calls}"
     )
 
-    # Test 201 circuits — should chunk to [200, 1]
+    # Test 101 circuits — should chunk to [100, 1]
     mock3 = MockIQMBackend()
     backend._sim = mock3
-    dummy_201 = [QuantumCircuit(2) for _ in range(201)]
-    for qc in dummy_201:
+    dummy_101 = [QuantumCircuit(2) for _ in range(101)]
+    for qc in dummy_101:
         qc.measure_all()
-    backend._submit_batch(dummy_201, shots=1000)
+    backend._submit_batch(dummy_101, shots=1000)
     check(
-        "B.7: 201 circuits → [200, 1] chunks",
-        mock3.batch_calls == [200, 1],
-        f"expected [200, 1], got {mock3.batch_calls}"
+        "B.7: 101 circuits → [100, 1] chunks",
+        mock3.batch_calls == [100, 1],
+        f"expected [100, 1], got {mock3.batch_calls}"
     )
 
 except Exception as e:
