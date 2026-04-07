@@ -147,20 +147,77 @@ def evaluate_circuit(
             result.num_shots = 0
 
         else:
-            # Shot-based evaluation
-            qc_exec = qc.copy()
-            # Remove any save_* instructions
-            qc_exec.measure_all()
-
-            job = sim.run(qc_exec, shots=shots, seed_simulator=seed)
-            sim_result = job.result()
-            result.counts = sim_result.get_counts()
+            # Shot-based evaluation with proper basis rotation.
+            #
+            # F1 FIX (eval_runner path): X and Y Pauli terms require
+            # measurement in the X/Y basis (H or S†H rotation before
+            # Z-basis measurement). build_measurement_circuits() creates
+            # one circuit per qubit-wise-commuting Pauli group, each
+            # with the correct basis rotations applied.
+            #
+            # Previously, a single Z-basis measurement was used and
+            # _energy_from_counts() silently treated X as identity,
+            # producing wrong energies (e.g. -7.0 instead of -3.0
+            # for TFIM 4q).
             result.num_shots = shots
 
             if observable is not None:
-                result.energy = _energy_from_counts(
-                    result.counts, observable, loaded.num_qubits
+                from lumi_hpc_qc.backends.pauli_measurement import (
+                    build_measurement_circuits,
+                    expectation_from_grouped_counts,
                 )
+                from qiskit import transpile
+
+                # Build basis-rotated measurement circuits from the
+                # ORIGINAL circuit (before transpilation). The transpiler
+                # handles routing for both the original gates AND the
+                # added basis rotation gates together.
+                meas_circuits, meas_groups, identity_e = (
+                    build_measurement_circuits(
+                        loaded.circuit, observable, shots
+                    )
+                )
+
+                # Transpile each measurement circuit individually.
+                # qiskit.transpile(list) spawns child processes internally,
+                # which fails inside sweep engine's daemonic Pool workers
+                # ("daemonic processes are not allowed to have children").
+                # Transpiling one-at-a-time avoids this.
+                if coupling_map is not None or initial_layout is not None:
+                    transpile_kwargs = dict(optimization_level=1)
+                    if coupling_map is not None:
+                        transpile_kwargs["coupling_map"] = coupling_map
+                    if initial_layout is not None:
+                        transpile_kwargs["initial_layout"] = initial_layout
+                    meas_circuits = [
+                        transpile(mc, **transpile_kwargs)
+                        for mc in meas_circuits
+                    ]
+
+                # Run all measurement circuits
+                sim_result = sim.run(
+                    meas_circuits, shots=shots, seed_simulator=seed,
+                ).result()
+                counts_list = [
+                    sim_result.get_counts(ci)
+                    for ci in range(len(meas_circuits))
+                ]
+
+                result.energy = expectation_from_grouped_counts(
+                    counts_list, meas_groups, identity_e, shots
+                )
+
+                # Preserve aggregate counts from first circuit for
+                # metadata compatibility (raw Z-basis counts)
+                result.counts = counts_list[0] if counts_list else {}
+
+            else:
+                # No observable — just run with Z-basis measurement
+                qc_exec = qc.copy()
+                qc_exec.measure_all()
+                job = sim.run(qc_exec, shots=shots, seed_simulator=seed)
+                sim_result = job.result()
+                result.counts = sim_result.get_counts()
 
     except Exception as e:
         result.error = str(e)
@@ -216,13 +273,29 @@ def _energy_from_counts(
     observable: Any,
     num_qubits: int,
 ) -> float:
-    """Estimate ⟨H⟩ from measurement counts.
+    """Estimate ⟨H⟩ from Z-basis measurement counts — Z/I terms ONLY.
 
-    Simple implementation: for each Pauli term, compute the expectation
-    from the measurement counts by evaluating the parity of the relevant
-    qubits. This is a simplified version — the full implementation in
-    pauli_measurement.py handles grouped measurements.
+    DEPRECATED: This function only handles Z and I Pauli terms correctly.
+    X and Y terms are silently treated as identity, producing wrong results.
+    Use pauli_measurement.build_measurement_circuits() +
+    expectation_from_grouped_counts() for correct handling of all Pauli terms.
+
+    Retained for backward compatibility with pure-Z observables (classical
+    Ising without transverse field). Raises ValueError if any X or Y terms
+    are present.
     """
+    # Guard: reject observables with non-Z/I terms
+    for pauli_label in observable.paulis.to_labels():
+        non_iz = set(pauli_label) - {"I", "Z"}
+        if non_iz:
+            raise ValueError(
+                f"_energy_from_counts cannot estimate Pauli terms containing "
+                f"{non_iz} from Z-basis measurements alone. X and Y terms "
+                f"require basis rotation before measurement. Use "
+                f"pauli_measurement.build_measurement_circuits() + "
+                f"expectation_from_grouped_counts() instead."
+            )
+
     total_shots = sum(counts.values())
     if total_shots == 0:
         return 0.0
@@ -237,7 +310,7 @@ def _energy_from_counts(
             bits = bitstring[::-1]
             parity = 0
             for i, p in enumerate(pauli_label[::-1]):
-                if p in ("Z", "Y") and i < len(bits):
+                if p in ("Z",) and i < len(bits):
                     if bits[i] == "1":
                         parity ^= 1
             sign = 1 - 2 * parity  # +1 for even parity, -1 for odd

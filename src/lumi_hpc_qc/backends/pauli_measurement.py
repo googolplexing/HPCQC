@@ -237,16 +237,16 @@ def expectation_from_counts_direct(
             i for i, c in enumerate(reversed(pauli)) if c != 'I'
         ]
 
-        # Check for non-Z terms — warn if present
+        # Reject non-Z terms — Z-basis counts carry no information
+        # about X or Y expectations without basis rotation
         has_non_z = any(c not in ('I', 'Z') for c in pauli)
         if has_non_z:
-            import warnings
-            warnings.warn(
+            raise ValueError(
                 f"expectation_from_counts_direct called with non-Z Pauli "
-                f"term '{pauli}'. Results will be wrong unless basis rotation "
-                f"was applied externally. Use build_measurement_circuits() "
-                f"for correct handling of X/Y terms.",
-                stacklevel=2,
+                f"term '{pauli}'. Z-basis counts cannot estimate X/Y "
+                f"expectations without basis rotation. Use "
+                f"build_measurement_circuits() + "
+                f"expectation_from_grouped_counts() instead."
             )
 
         expectation = 0.0

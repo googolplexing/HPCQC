@@ -361,6 +361,11 @@ def compute_mixed_energies(
 ) -> list[float | None]:
     """Compute per-experiment energies from mixed submission counts.
 
+    DEPRECATED parity path: This function uses Z-basis parity only.
+    For QPU mixed submissions with X/Y Hamiltonians, basis rotation
+    must be applied at circuit construction time. Raises ValueError
+    if any observable contains X or Y terms.
+
     Args:
         raw_counts: Device-width bitstring counts.
         entries: MixedEntry objects with observables.
@@ -369,6 +374,19 @@ def compute_mixed_energies(
     Returns:
         List of energies, one per entry. None if no observable.
     """
+    # Guard: reject observables with non-Z/I terms
+    for entry in entries:
+        if entry.observable is not None:
+            for pauli_label in entry.observable.paulis.to_labels():
+                non_iz = set(pauli_label) - {"I", "Z"}
+                if non_iz:
+                    raise ValueError(
+                        f"compute_mixed_energies cannot estimate Pauli terms "
+                        f"containing {non_iz} from Z-basis measurements alone. "
+                        f"For QPU results, basis rotation must be applied at "
+                        f"circuit construction time."
+                    )
+
     per_entry_counts = demux_mixed_counts(raw_counts, entries, device_qubits)
     energies: list[float | None] = []
 
@@ -393,7 +411,7 @@ def compute_mixed_energies(
                 bits = bitstring[::-1]
                 parity = 0
                 for i, p in enumerate(pauli_label[::-1]):
-                    if p in ("Z", "Y") and i < len(bits):
+                    if p in ("Z",) and i < len(bits):
                         if bits[i] == "1":
                             parity ^= 1
                 sign = 1 - 2 * parity

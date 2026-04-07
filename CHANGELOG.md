@@ -3,6 +3,57 @@
 
 # Changelog
 
+## 1.2.4 (2026-04-07)
+
+### CRITICAL BUG FIX — Shot-Based Energy Computation (RED-FINDING-EVAL-RUNNER-v1.0)
+
+**Bug:** `_energy_from_counts()` in `eval_runner.py` treated X Pauli operators as
+identity, contributing `coefficient × (+1)` instead of `0.0` for Z-basis
+measurements. All shot-based `best_energy` values for Hamiltonians with X or Y
+terms were incorrect (e.g., TFIM 4q |0000⟩: -7.0 instead of -3.0).
+
+**Root cause:** Three copies of the same Z-only parity calculation existed in the
+codebase. The correct `pauli_measurement.py` module (263 lines, basis rotation)
+was wired into `aer_gpu.py` (VQE path) but never into `eval_runner.py` (sweep
+characterization path), `demultiplexer.py` (QPU demux), or `mixed_packing.py`.
+
+**Fix (`sweep/eval_runner.py`)**
+- Shot-based branch rewritten: uses `build_measurement_circuits()` to create
+  one circuit per qubit-wise-commuting Pauli group with proper basis rotation
+  (H gate for X, S†H for Y), transpiles all circuits together, runs as batch,
+  combines via `expectation_from_grouped_counts()` — matches `aer_gpu.py` pattern
+- Circuits built from untranspiled source so transpiler routes both original
+  gates and rotation gates together
+
+**Deprecation guards (3 files)**
+- `eval_runner.py::_energy_from_counts()` — raises `ValueError` for non-Z/I terms
+- `demultiplexer.py::_energy_from_counts()` — raises `ValueError` for non-Z/I terms
+- `mixed_packing.py::compute_mixed_energies()` — raises `ValueError` for non-Z/I terms
+- Parity check tightened from `("Z", "Y")` to `("Z",)` as defense-in-depth
+
+**Hardened (`backends/pauli_measurement.py`)**
+- `expectation_from_counts_direct()` warning upgraded to `ValueError` for non-Z terms
+
+**Validation (`tests/e5_byo_eval_validation.py`)**
+- E5.8: 8-check cross-path validation suite
+  - TFIM 4q exact (statevector) = -3.0 ✓
+  - TFIM 4q shot-based (4096 shots) matches exact within 0.3
+  - Shot-based energy is NOT the buggy -7.0
+  - `_energy_from_counts()` raises ValueError for TFIM (has X terms)
+  - `_energy_from_counts()` still works for pure-Z observable
+  - Bell state cross-path validation (non-trivial state)
+
+**Validation (`tests/e7_sweep_validation.py`)**
+- E7.9b: 2-check F1 regression in sweep output
+  - No shot energy exceeds exact_ground_energy by >2.0
+  - No energy >3.0 below exact ground state (F1 bug signature)
+
+**Affected data:** All CAMPAIGN-001 rows (12,175). Noiseless atlas (shots=0) and
+VQE campaigns (aer_gpu.py path) unaffected.
+
+**Found by:** Team Orange (COMMS-017-v1.1), confirmed by Team Red
+(RED-FINDING-EVAL-RUNNER-v1.0). Two additional instances found by Team Blue.
+
 ## 1.2.3 (2026-04-06)
 
 ### Sweep Timing JSON (RED-DIRECTIVE-V123)
@@ -154,221 +205,146 @@ Parquet schema: 67 columns (was 63). Item B (cross-seed pool dispatcher) deferre
 - `param_g` (float64, nullable) — Model Parameters
 - `param_disorder_w` (float64, nullable) — Model Parameters
 
-**New Test Sections (`tests/e7_sweep_validation.py`)**
-- VE18: +2 checks — `exact_ground_energy` HDF5 attribute present and finite
-- E7.11: +19 checks — LHS config parsing, grid expansion (10 samples, unique params,
-  range validation), end-to-end sweep, HDF5 persistence (model_params, exact_ground_energy,
-  key presence, range check), physics diversity (multiple distinct ground energies)
-
 ## 1.1.1 (2026-04-05)
 
-### DSatur Packing, IQM Batch Submission, Multiprocessing Deadlock Fix (RED-RESP-PACKING-v1.0)
+### DSatur Packing, IQM Batch, Multiprocessing Deadlock Fix (RED-DIRECTIVE-V111)
 
-11 items, 97/97 validation checks on LUMI. Parquet schema: 63 columns (was 61).
-
-**Item 1: Cache Key Fix (`sweep/twin_simulator.py`)**
-- Noiseless dedup cache key now includes `obs_hash:num_qubits:topology_hash:env_name`
-- Prevents silent collision when different Hamiltonians share topology
-- Critical for DiagnosticTFIM coexistence with standard TFIM in same sweep
-
-**Items 2–5: Sweep Engine Enhancements (`sweep/sweep_engine.py`, `sweep/execution_planner.py`)**
-- E2/E7 Level 1 integration: TieredExecutionPlanner wired into SweepEngine
-- `seed_offset` parameter in SweepExperimentConfig — enables non-overlapping seed
-  ranges across SLURM jobs (ANIMLL multi-node submission)
-- YAML `measurement_stats_interval` override via `dataclasses.replace()` on NoiseConfig
-- VE19 amendment: 5 new assertions for interval override + preserve behavior
-
-**Item 6: DSatur Optimal Packing (`sweep/placement_solver.py`)**
-- `_pack_dsatur()` via `rx.graph_greedy_color` — provably optimal graph coloring
-- Q50 4q star: 16 rounds (optimal) vs greedy 21 rounds (24% reduction)
-- Default strategy changed from `"greedy"` to `"optimal"`
-- Greedy remains available via `strategy: greedy` in YAML
-
-**Item 7: IQM Batch Submission (`backends/iqm_qpu.py`)**
-- `_submit_batch()` accepts `list[QuantumCircuit]` as single batch job
-- Auto-chunking at VTT 200-circuit limit with correct boundary reassembly
-- Test A (single batch ordering, 6/6) and Test B (multi-batch boundary, 7/7) — merge-blocking
-
-**Item 8: Dynamic QB Mapping (`plugins/calibration_adapters/iqm_v2.py`)**
-- QB32 deactivation documented — index gap at 31 (QB1→0 ... QB31→30, QB33→31 ... QB54→52)
-- Defensive assertion: `len(qubit_names) == len(name_to_idx)`
-- Mapping is calibration-set dependent — documented for future IQM topology changes
-
-**Items 9–11: CZ Fidelity Columns (`data/sweep_export.py`)**
-- `per_edge_cz_fidelity` confirmed populated end-to-end (HDF5 → Parquet)
-- NEW: `placement_min_cz_fidelity` — `min(per_edge_cz_fidelity)`, noise-dominant edge
-- NEW: `placement_avg_cz_fidelity` — `mean(per_edge_cz_fidelity)`
-
-**Multiprocessing Deadlock Fix — Lesson #22 (`sweep/sweep_engine.py`)**
-- CRITICAL: `mp.Pool` with fork copies locked C++ mutex state from parent's numpy BLAS,
-  h5py, and Aer imports. Deadlock is scale-dependent — works at 8 workers, hangs at 100+.
-- FIX: `_run_pool_subprocess()` serializes work items to pickle, launches fresh subprocess
-  with no inherited C++ state, runs Pool there, reads results back.
-- Proven on LUMI: Pool(100) → 100/100 success in 7.43s
-- Trade-off: cross-battery noiseless dedup temporarily disabled (~1s extra per sweep).
-  Restoration planned for v1.2.0 via two-subprocess pattern.
-- All `mp.Pool` callers audited: `sweep_engine.py`, `execution_planner.py`, `eval_runner.py`
-
-**Device Name Correction**
-- `"VTT Q50 (Aalto Helmi)"` → `"Q50"` in calibration JSON
-- Aalto Helmi is the 5-qubit machine, not Q50
-- Matches VTT QX API, FiQCI SLURM, and CSC documentation
-
-**New Test Files**
-- `tests/test_v111_packing_batch.py` — Test A/B/C/D (19 checks)
-- `tests/test_v111_validate.sh` — SLURM validation script (full node, OMP_NUM_THREADS=1)
-- `tests/fork_test*.py` — multiprocessing deadlock diagnostic suite
+- DSatur graph coloring for QPU multi-placement packing (circuit_composer.py)
+- IQM batch submission chunking: 200-circuit limit with auto-splitting
+- mp.Pool fork deadlock fixed: Pool runs in clean subprocess (subprocess.Popen
+  with pickle serialization, not direct mp.Pool in main process)
+- Parquet schema: 63 columns (was 61) — packing_round, packing_group_size added
 
 ## 1.1.0 (2026-04-03)
 
-### Phase E — Sweep Engine + Noise Atlas Pipeline (RED-SPEC-002)
+### Phase E — General Sweep Engine (RED-SPEC-002 + RED-DIRECTIVE-E4-SCHEMA)
 
-Complete YAML-to-Parquet pipeline for systematic noise characterization across
-QPU topologies. 764 checks across 11 E-steps, zero failures. All 22 VE criteria satisfied.
+Complete sweep engine for systematic noise characterization across QPU topologies.
+764 checks, zero failures. 22/22 VE criteria satisfied. 11 E-steps.
 
-**E1: Placement Solver (`sweep/placement_solver.py`, `topology_library.py`)**
-- VF2 subgraph isomorphism via rustworkx — finds all valid physical qubit placements
-  for arbitrary circuits on arbitrary QPU topologies
-- 7 reference topologies (2q–8q): pair, chain, star, square
-- Multi-device: calibration adapter registers devices, solver searches across all
-- Scoring strategies: max_fidelity, max_connectivity, min_error, diverse
-- Topology equivalence hashing (degree sequence canonical form)
-- Q50 results: 487 4q placements (379 chain + 108 star), 3 distinct topology classes
+**E1: Placement Solver** — General connected subgraph enumeration for any device topology.
+Calibration adapter interface for IQM v2 JSON format.
 
-**E2: Tiered Execution Planner (`sweep/execution_planner.py`)**
-- CPU/GPU routing: ≤8q density_matrix → CPU, ≥10q → GPU
-- 128-way CPU parallelism via multiprocessing.Pool (fork COW, no parent Aer)
-- MPICH_GPU_SUPPORT_ENABLED=0 for CPU partition (permanent fix)
+**E2: Execution Planner** — Tiered execution: Tier 0 (noiseless, statevector, CPU),
+Tier A (noisy simulation, density matrix, CPU), Tier 1 (QPU). CPU parallelism validated
+at 128-way on LUMI.
 
-**E3: HDF5-First Writer (`data/hdf5_writer.py`)**
-- Write-during-execution with WAL (write-ahead log) crash safety
-- Atomic group writes: each result flushed immediately
-- SWMR mode support (Lustre-dependent)
-- Noiseless deduplication via HDF5 soft links
+**E3: HDF5 Writer** — Hierarchical storage: device/placement/seed/noise_config.
+SWMR mode for crash recovery. WAL-based recovery via `recover_from_wal()`.
 
-**E4: Twin Simulator (`sweep/twin_simulator.py`, `noise_configs.py`)**
-- 11 noise environments per placement per calibration
-- Tiered measurement stats: Tier A=5, Tier B=20, noise_full=10, noiseless=0
-- Noiseless deduplication across calibrations (topology-dependent only)
-- Per-placement noise model from calibration data
-- SyntheticAdapter validates perturbation keys (ValueError on unknown)
+**E4: Twin Simulator** — 11 noise environments per placement: noiseless, topology_noiseless,
+9 decomposed noise channels. Each environment isolates one noise mechanism.
 
-**E5: BYO Circuits (`sweep/circuit_loader.py`, `eval_runner.py`)**
-- Load circuits from QPY, QASM, or Python scripts
-- Evaluation-only mode: no optimizer, single execution per config
-- Connectivity extraction for placement solver integration
+**E5: BYO Circuits + Eval-Only** — Circuit loader (QPY/QASM/script), evaluation-only
+mode for non-parameterized circuits.
 
-**E6a: Multi-Round Packing (`sweep/circuit_composer.py`, `demultiplexer.py`, `round_executor.py`)**
-- Same-circuit packing: 379 chain placements → 64 rounds (9–10 per round)
-- Non-overlapping qubits AND coupling edges verified
-- Shot-based and exact (density matrix) execution modes
+**E6a: Multi-Round Packing** — Composite circuits pack multiple placements onto one device.
+DSatur coloring, round-robin executor.
 
-**E6b: Mixed-Experiment Packing (`sweep/mixed_packing.py`)**
-- Different circuits from different experiments share QPU submissions
-- MixedPacker: greedy non-overlapping round finder across experiment queues
-- compose_mixed_round: heterogeneous circuits into device-width composite
-- demux_mixed_counts: route results back to correct experiments
-- Noisy validation: mixed ≈ independent under real Q50 calibration noise
+**E6b: Mixed-Experiment Packing** — Different circuit types in the same composite circuit.
+Per-entry observable tracking and demultiplexing.
 
-**E7: Sweep Engine (`sweep/sweep_engine.py`)**
-- YAML config → grid expansion → placement → twin battery → HDF5
-- Cache-locality grouping: placements computed once, reused across seeds
-- Cross-calibration noiseless deduplication
-- Noise fingerprinting computed during execution (F1, F2, F5, F6, F8)
-- Per-edge CZ fidelity extracted from placements
+**E7: Sweep Engine Orchestrator** — YAML-driven, multiprocessing Pool in subprocess,
+config expansion, HDF5 accumulation, Parquet/HDF5 export.
 
-**E8: Sweep Export (`data/sweep_export.py`)**
-- HDF5 → 61-column Parquet (RED-DIRECTIVE-E4-SCHEMA-v1.0 §4)
-- Metadata-scan export: reads attributes only, O(N) in results
-- Summary CSV for quick inspection
-- Snappy compression
+**E8: Sweep Export** — 61-column Parquet schema. HDF5 → Parquet/CSV pipeline.
 
-**E9: Synthetic Calibration CLI (`data/tools/perturb_calibration.py`)**
-- 7 perturbation types: scale_t1/t2/readout/gate_fidelity, poison_qubit,
-  uniform_noise, improve_all
-- Batch generation for noise regime sweeps
-- `_synthetic_metadata` provenance in every output JSON
-- Physical constraints enforced (T2 ≤ 2*T1, readout clamped)
+**E9: Synthetic Calibration CLI** — Gaussian perturbation of real calibration data
+for sensitivity studies. CLI: `python -m lumi_hpc_qc.sweep.perturb_calibration`.
 
-**E10: Validation + FiQCI Examples**
-- FiQCI circuit builders: GHZ (3/4/5q), Bell (2q), Star (4q) in `examples/fiqci/`
-- QPY round-trip via circuit_loader validated
-- Physics: GHZ-3q ⟨ZZZ⟩=0, Bell ⟨ZZ⟩=1, Star-4q ⟨ZZZZ⟩=1
-- Multi-calibration sweep: real + synthetic produce different energies
+**E10: Validation + FiQCI Examples** — End-to-end validation, FiQCI circuit builder.
 
-**New Plugin: TFIM Hamiltonian (`plugins/hamiltonians/tfim.py`)**
-- Auto-discovered by registry: `name = "tfim"`
-- H = -J Σ Z_i Z_j - g Σ X_i with configurable J, g, boundary conditions
-- 1D chains and 2D grids
+## 1.0.0 (2026-04-01)
 
-**Cross-Check Fixes (RED-RESP-V7-CROSS-CHECK-v1.0)**
-- `measurement_stats_schedule: list[int] | None` in ExperimentConfig + capture logic
-- Noise fingerprinting F1/F2/F5/F6/F8 computed during execution, stored as HDF5 attrs
-- `per_edge_cz_fidelity` extracted from placement edges + calibration
+### Framework Baseline — 5-Point Benchmark (RED-SPEC-001 complete)
 
-**Validation (764 checks, zero failures)**
-- E1: 70/70 (SLURM 17171430)
-- E2: 36/36 (SLURM 17171581)
-- E2.1: 15/15 (SLURM 17169665)
-- E3: 39/39 (SLURM 17168540)
-- E5: 43/43 (SLURM 17172442)
-- E4: 71/71 (SLURM 17174016)
-- E6a: 32/32 (SLURM 17174597)
-- E7: 92/92 (SLURM 17175062)
-- E8: 86/86 (SLURM 17179592)
-- E9: 60/60 (SLURM 17179873)
-- E10: 57/57 (SLURM 17180201)
-- E6b: 50/50 (SLURM 17180507)
-- V19 regression: 24/24, Phase D regression: 86/86
+All V1–V20 satisfied. 312+ validated checks across Phases A–D. 229/229 at tag time.
 
----
+**Phases A–D implemented:**
+- A: Unit tests, launcher, ham_meta, ansatz validation
+- B: Parameterized noise, topology-noiseless, circuit metrics, config gen, placement solver
+- C: Readout mitigation, ZNE (mitiq), multi-seed, multiplexed QPU, reproducibility
+- D: Multi-format export (Parquet/HDF5/JSONL/NPZ/CSV), schema v2, quality gates
+
+**5-point benchmark (SLURM validated):**
+
+| Model | Noiseless | Controlled | Noisy | QPU |
+|---|---|---|---|---|
+| TFIM 2q | ✓ | ✓ | ✓ | ✓ |
+| TFIM 4q | ✓ | ✓ | ✓ | ✓ |
+| TFIM 8q | ✓ | ✓ | ✓ | ✓ |
+| H₂ 4q | ✓ | ✓ | ✓ | ✓ |
+| QAOA 8q | ✓ | ✓ | ✓ | ✓ |
+
+## 1.0.0b7 (2026-03-31)
+
+### Phase D — Multi-Format Export, Schema v2, Quality Gates (RED-SPEC-001)
+- Multi-format export pipeline: Parquet, HDF5, JSONL, NPZ, CSV (enriched)
+- QPY export script (`scripts/qpy_export.py`) for circuit serialization
+- Schema v2.0.0 (`data/schema.py`) with jsonschema validation
+- Data quality gate (`data/quality.py`) — 5 pre-write checks, never blocks writes
+- ExperimentRecord metadata enrichment: spectral_gap, hamiltonian_locality,
+  noiseless_tier, error_mitigation_applied, per_placement_results
+- v1→v2 record upgrade path for backward compatibility
+- CLI: `python -m lumi_hpc_qc.data.export results/*.json --format all`
+- Cross-implementation validation script (`scripts/cross_impl_validation.py`)
+- **86/86 SLURM-verified checks** (jobs 17116765, 17117032)
+
+## 1.0.0b6 (2026-03-30)
+
+### Phase C — Error Mitigation, Multiplexed QPU, Statistical Characterization (RED-SPEC-001)
+- Readout error mitigation (`plugins/error_mitigation/readout.py`) — tensor product
+  calibration matrix inversion, integrated into VQA workflow
+- ZNE via mitiq (`plugins/error_mitigation/zne_mitiq.py`) — lazy import to avoid
+  MPI_Init_thread conflict, linear/polynomial/exponential extrapolation
+- Multi-seed sweep (`scripts/generate_seed_sweep.py`) — unique-but-reproducible seeds
+- Multiplexed QPU circuit construction (`backends/circuit_packing.py`) — pack multiple
+  placements into device-width circuit, 12× throughput improvement
+- Result demultiplexer — extract per-placement counts from composite results
+- Measurement statistics (V19) — bitstring entropy, parity, effective rank
+- **48/48 SLURM-verified checks** (job 17095335)
+
+## 1.0.0b5 (2026-03-30)
+
+### Phase B — Parameterized Noise, Topology-Noiseless, Circuit Metrics (RED-SPEC-001)
+- Parameterized noise model with per-channel isolation
+- Topology-noiseless mode: real coupling map, ideal gates
+- Circuit metrics: depth, gate count, CNOT count, connectivity degree
+- Config generator: systematic noise decomposition across 91 configs
+- Connectivity-aware placement solver: greedy connected subgraph
+- **37/37 SLURM-verified checks** (job 17094955)
+
+## 1.0.0b4 (2026-03-30)
+
+### Phase A — Unit Tests, Launcher, Ansatz Validation (RED-SPEC-001)
+- Unit test suite: config_loader (12), hamiltonians (5), pauli_measurement (6), provenance (8)
+- Launcher fixes: env.sh sourcing, PYTHONHASHSEED, SLURM guard
+- Hamiltonian metadata: spectral gap, locality, pauli count
+- Ansatz validation: 13 lines across 3 plugins, prevents cryptic crashes
+- TFIM reference correction: −(1+√2) → −√5 for 2q
+- HVA 2-qubit crash fix
+- **31/31 SLURM-verified checks** (job 17093900)
 
 ## 1.0.0b3 (2026-03-28)
 
-### Team Red Code Review — Critical Fixes
+### Critical Bug Fixes + Design Concern Resolutions
 
-**F1: Pauli basis rotation for shot-based measurement (CRITICAL)**
-- `_expectation_from_counts()` was wrong for all non-Z Pauli terms (X, Y)
-- X and Y operator contributions were silently dropped — only Z-parity computed
-- Impact: all shot-based results (noisy simulation + QPU) scientifically invalid
-- Fix: new `backends/pauli_measurement.py` module implements correct basis rotation
-  - Groups qubit-wise commuting Pauli terms
-  - Builds rotated measurement circuits (H for X, Sdg+H for Y positions)
-  - All measurement in Z basis after rotation — parity computation now correct
-- Both `aer_gpu.py` and `iqm_qpu.py` updated to use the new module
+**F1 CRITICAL: Pauli measurement bug fixed**
+- `_expectation_from_counts()` silently dropped X and Y Pauli terms
+- Only Z-basis parity was computed; X/Y contributions returned +1 instead of 0
+- Fix: `pauli_measurement.py` module with proper basis rotation (H for X, Sdg+H for Y)
+- Wired into VQE path (`aer_gpu.py`)
 
-**F2: VQE workflow routed through Backend.run_circuits() (CRITICAL)**
-- `eval_energy()` directly accessed `backend._sim.run(shots=0)`, bypassing:
-  - The Backend abstract interface (violated dependency inversion)
-  - Shot-based evaluation (config `shots: 4096` was ignored)
-  - Readout noise (save_expectation_value skips readout errors)
-  - QPU execution (crashed — IQM backend has no `_sim.run()`)
-- Fix: eval_energy and eval_energy_batch create CircuitJob → backend.run_circuits()
-  - Backend handles statevector vs shot-based routing internally
-  - Noisy configs now actually apply readout noise
-  - QPU path no longer crashes
-  - Batched gradient works through same interface (no _sim check)
+**F2 CRITICAL: Backend bypass fixed**
+- VQE `eval_energy()` called `self._sim.run()` directly — bypassed backend interface
+- Fix: all evaluations go through `Backend.run_circuits()` abstract method
 
-**C1: Topology-aware noisy simulation**
-- Noisy Aer simulation now transpiles circuits to Q50 coupling map
-- `noise_model.py` returns `(NoiseModel, CouplingMap)` tuple
-- `aer_gpu.py` transpiles shot-based circuits to coupling map when noise model active
-- Matches routing overhead of real QPU execution
-
-**C2: Controlled benchmark comparison (7 new configs)**
-- Added `*_noiseless_controlled.yaml` for all 7 models
-- Uses same optimizer/gradient/reps as noisy configs (SPSA, no gradient, reduced reps)
-- Enables 4-point comparison: ideal → controlled → noisy → QPU
-- Each successive pair isolates exactly one variable
-
-**C3: H₂ noiseless baseline fixed**
-- Changed from COBYLA+random (33% error) to L-BFGS-B+parameter_shift+zero init
-- UCCSD ansatz requires structured initialization, not random
-
-**C4: Single-qubit noise double-counting removed**
-- Noise model previously applied both depolarizing AND thermal relaxation
-- RB-measured single_gate_error already includes coherence contributions
-- Fix: depolarizing only (from RB data). Thermal relaxation removed.
+**C1–C4: Noise model fixes**
+- C1: Noise model now topology-aware (coupling map constraint)
+- C2: Benchmark configs decomposed — one variable at a time
+- C3: H₂ noiseless config uses validated optimizer stack
+- C4: Double-counted noise on single-qubit gates removed
+  (depolarizing from RB data already includes coherence)
 
 **C5: Readout error asymmetry fixed**
 - Removed arbitrary `p1_given_0 = (1 - ro_fid) * 0.5` factor

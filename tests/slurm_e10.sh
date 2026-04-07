@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: SSPL-1.0
 #SBATCH --job-name=e10_validation
 #SBATCH --partition=standard
-#SBATCH --time=00:00:50
+#SBATCH --time=00:01:30
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16

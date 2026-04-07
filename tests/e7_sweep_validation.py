@@ -830,6 +830,59 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+print("\n=== E7.9b: Cross-Path Validation — Shot vs Exact (F1 Regression) ===")
+# ═══════════════════════════════════════════════════════════════════════
+# RED-FINDING-EVAL-RUNNER-v1.0: Shot-based energy must agree with exact
+# energy for the same circuit. The F1 bug in _energy_from_counts()
+# caused X terms to be treated as identity, producing e.g. -7.0 instead
+# of -3.0 for TFIM 4q |0000⟩.
+try:
+    if os.path.exists(result.hdf5_path):
+        h5 = h5py.File(result.hdf5_path, "r")
+
+        shot_energies = []
+        exact_energies = []
+
+        for grp_path in leaf_groups[:200]:
+            grp = h5[grp_path]
+            nc = grp.attrs.get("noise_config", "")
+            be = grp.attrs.get("best_energy", None)
+            ege = grp.attrs.get("exact_ground_energy", None)
+
+            if be is not None and ege is not None and nc not in ("noiseless", "topology_noiseless"):
+                shot_energies.append(float(be))
+                exact_energies.append(float(ege))
+
+        if shot_energies and exact_energies:
+            # F1 bug signature: shot_energy far more negative than exact
+            # (X terms contribute -coeff instead of ~0). For TFIM 4q with
+            # 4 X terms at coeff=-1.0, the bug adds -4.0 extra.
+            max_excess = max(
+                exact - shot for shot, exact in zip(shot_energies, exact_energies)
+            )
+            check("F1 regression: no shot energy exceeds exact by >2.0",
+                  max_excess < 2.0,
+                  f"max excess below exact: {max_excess:.4f} "
+                  f"(F1 bug signature: ~4.0 for TFIM 4q)")
+
+            # Specific -7.0 check: if exact ≈ -5.226 and shot ≈ -7.0,
+            # that's the F1 bug fingerprint
+            bug_count = sum(
+                1 for s, e in zip(shot_energies, exact_energies)
+                if s < e - 3.0  # more than 3.0 below exact ground state
+            )
+            check("F1 regression: no energy values show -7.0 bug pattern",
+                  bug_count == 0,
+                  f"{bug_count}/{len(shot_energies)} values more than 3.0 "
+                  f"below exact ground state")
+
+        h5.close()
+
+except Exception as e:
+    check("E7.9b F1 cross-path", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
 print("\n=== E7.10: Regression — E1 through E6a Still Work ===")
 # ═══════════════════════════════════════════════════════════════════════
 try:

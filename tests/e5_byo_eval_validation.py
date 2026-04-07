@@ -495,6 +495,130 @@ except Exception:
 
 
 # ══════════════════════════════════════════════════════════════════════
+print("\n=== E5.8: Cross-Path Validation — Shot-Based vs Exact (F1 Fix) ===")
+# ══════════════════════════════════════════════════════════════════════
+# RED-FINDING-EVAL-RUNNER-v1.0: Every energy computation path must be
+# validated against the exact path for the same circuit.
+try:
+    from qiskit import QuantumCircuit
+    from qiskit.quantum_info import SparsePauliOp
+    from lumi_hpc_qc.sweep.circuit_loader import LoadedCircuit
+    from lumi_hpc_qc.sweep.eval_runner import evaluate_circuit, _energy_from_counts
+
+    # ── TFIM 4q Hamiltonian: H = -ZZ₁₂ - ZZ₂₃ - ZZ₃₄ - X₁ - X₂ - X₃ - X₄ ──
+    tfim_terms = [
+        ("IIZZ", -1.0), ("IZZI", -1.0), ("ZZII", -1.0),
+        ("IIIX", -1.0), ("IIXI", -1.0), ("IXII", -1.0), ("XIII", -1.0),
+    ]
+    tfim_labels = [t[0] for t in tfim_terms]
+    tfim_coeffs = [t[1] for t in tfim_terms]
+    tfim_obs = SparsePauliOp(tfim_labels, tfim_coeffs)
+
+    # Simple circuit: identity (produces |0000⟩)
+    qc_id = QuantumCircuit(4)
+    loaded_id = LoadedCircuit(
+        circuit=qc_id,
+        source="inline",
+        num_qubits=4,
+        num_parameters=0,
+        is_parameterized=False,
+        connectivity=[],
+    )
+
+    # ── Exact evaluation (shots=0, statevector) ──
+    exact_result = evaluate_circuit(
+        loaded_id, observable=tfim_obs,
+        method="statevector", shots=0, seed=42,
+    )
+    check("E5.8a: Exact evaluation succeeds",
+          exact_result.error is None,
+          f"Error: {exact_result.error}")
+    check("E5.8b: Exact energy for |0000⟩ is -3.0",
+          exact_result.energy is not None and abs(exact_result.energy - (-3.0)) < 1e-10,
+          f"Got {exact_result.energy}, expected -3.0")
+
+    # ── Shot-based evaluation (shots=4096, density_matrix) ──
+    shot_result = evaluate_circuit(
+        loaded_id, observable=tfim_obs,
+        method="density_matrix", shots=4096, seed=42,
+    )
+    check("E5.8c: Shot-based evaluation succeeds",
+          shot_result.error is None,
+          f"Error: {shot_result.error}")
+
+    # |0000⟩ is deterministic: X terms contribute exactly 0.0, ZZ terms
+    # contribute exactly -1.0 each. With proper basis rotation, shot noise
+    # only affects X-group circuits. Tolerance: 0.3 (generous for 4096 shots).
+    if shot_result.energy is not None and exact_result.energy is not None:
+        delta = abs(shot_result.energy - exact_result.energy)
+        check("E5.8d: Shot-based energy matches exact within tolerance",
+              delta < 0.3,
+              f"|{shot_result.energy:.4f} - {exact_result.energy:.4f}| = {delta:.4f} > 0.3")
+        # The OLD bug produced -7.0 for |0000⟩. Verify we're NOT getting that.
+        check("E5.8e: Shot-based energy is NOT the buggy -7.0",
+              abs(shot_result.energy - (-7.0)) > 1.0,
+              f"Got {shot_result.energy:.4f} — still hitting the F1 bug!")
+    else:
+        check("E5.8d: Shot-based energy matches exact within tolerance",
+              False, "Energy is None")
+        check("E5.8e: Shot-based energy is NOT the buggy -7.0",
+              False, "Energy is None")
+
+    # ── Deprecation guard: _energy_from_counts must reject X/Y terms ──
+    dummy_counts = {"0000": 1024, "0001": 1024, "0010": 1024, "0011": 1024}
+    try:
+        _energy_from_counts(dummy_counts, tfim_obs, 4)
+        check("E5.8f: _energy_from_counts rejects TFIM (has X terms)",
+              False, "Did not raise ValueError")
+    except ValueError as ve:
+        check("E5.8f: _energy_from_counts rejects TFIM (has X terms)",
+              "X" in str(ve),
+              f"Wrong error: {ve}")
+
+    # ── Pure-Z observable: _energy_from_counts should still work ──
+    zz_obs = SparsePauliOp(["IIZZ", "IZZI", "ZZII"], [-1.0, -1.0, -1.0])
+    try:
+        zz_energy = _energy_from_counts({"0000": 4096}, zz_obs, 4)
+        check("E5.8g: _energy_from_counts accepts pure-Z observable",
+              abs(zz_energy - (-3.0)) < 1e-10,
+              f"Got {zz_energy}, expected -3.0")
+    except ValueError as ve:
+        check("E5.8g: _energy_from_counts accepts pure-Z observable",
+              False, f"Unexpected rejection: {ve}")
+
+    # ── Cross-check with a non-trivial state ──
+    # Bell-like state: H on q0, CX q0→q1 → (|00⟩+|11⟩)/√2 on first 2 qubits
+    qc_bell = QuantumCircuit(4)
+    qc_bell.h(0)
+    qc_bell.cx(0, 1)
+    loaded_bell = LoadedCircuit(
+        circuit=qc_bell, source="inline", num_qubits=4,
+        num_parameters=0, is_parameterized=False,
+        connectivity=[(0, 1)],
+    )
+    exact_bell = evaluate_circuit(
+        loaded_bell, observable=tfim_obs,
+        method="statevector", shots=0, seed=42,
+    )
+    shot_bell = evaluate_circuit(
+        loaded_bell, observable=tfim_obs,
+        method="density_matrix", shots=8192, seed=42,
+    )
+    if shot_bell.energy is not None and exact_bell.energy is not None:
+        delta_bell = abs(shot_bell.energy - exact_bell.energy)
+        check("E5.8h: Bell state cross-path within tolerance",
+              delta_bell < 0.3,
+              f"|{shot_bell.energy:.4f} - {exact_bell.energy:.4f}| = {delta_bell:.4f}")
+    else:
+        check("E5.8h: Bell state cross-path within tolerance",
+              False, f"Energy None: exact={exact_bell.energy}, shot={shot_bell.energy}")
+
+except Exception as e:
+    traceback.print_exc()
+    check("E5.8: Cross-path validation block", False, str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 60)

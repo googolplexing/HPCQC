@@ -199,7 +199,28 @@ def _energy_from_counts(
     observable: Any,
     num_qubits: int,
 ) -> float:
-    """Estimate ⟨H⟩ from measurement counts using Pauli Z-parity."""
+    """Estimate ⟨H⟩ from Z-basis measurement counts — Z/I terms ONLY.
+
+    DEPRECATED: This function only handles Z and I Pauli terms correctly.
+    For QPU demultiplexed results with X/Y Hamiltonians, basis rotation
+    must be applied at circuit construction time (in circuit_composer)
+    before measurement. Use pauli_measurement module for correct handling.
+
+    Raises ValueError if any X or Y terms are present to prevent silent
+    wrong results.
+    """
+    # Guard: reject observables with non-Z/I terms
+    for pauli_label in observable.paulis.to_labels():
+        non_iz = set(pauli_label) - {"I", "Z"}
+        if non_iz:
+            raise ValueError(
+                f"_energy_from_counts cannot estimate Pauli terms containing "
+                f"{non_iz} from Z-basis measurements alone. For QPU results, "
+                f"basis rotation must be applied at circuit construction time. "
+                f"Use pauli_measurement.build_measurement_circuits() for "
+                f"correct handling of X/Y terms."
+            )
+
     total_shots = sum(counts.values())
     if total_shots == 0:
         return 0.0
@@ -212,7 +233,7 @@ def _energy_from_counts(
             bits = bitstring[::-1]  # reverse for qiskit convention
             parity = 0
             for i, p in enumerate(pauli_label[::-1]):
-                if p in ("Z", "Y") and i < len(bits):
+                if p in ("Z",) and i < len(bits):
                     if bits[i] == "1":
                         parity ^= 1
             sign = 1 - 2 * parity
