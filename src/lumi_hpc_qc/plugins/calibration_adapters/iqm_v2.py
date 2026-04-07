@@ -115,9 +115,16 @@ class IQMv2Adapter(AbstractCalibrationAdapter):
             )
 
         # Build normalized gates + adjacency
+        #
+        # Connectivity source priority:
+        # 1. Explicit qubit_connectivity from QX API architecture endpoint
+        #    (authoritative — includes edges that may lack calibration data)
+        # 2. Inferred from two_qubit_gates keys
+        #    (backward compat with calibration files that lack the field)
         gates: dict[str, GateCalibration] = {}
         adjacency: dict[int, set[int]] = {i: set() for i in range(len(qubit_names))}
 
+        # Step 1: Build gate calibrations from two_qubit_gates (fidelity data)
         for gate_key, gd in gate_data.items():
             parts = gate_key.split("-")
             if len(parts) != 2:
@@ -126,20 +133,55 @@ class IQMv2Adapter(AbstractCalibrationAdapter):
             if q1_name not in name_to_idx or q2_name not in name_to_idx:
                 continue
 
-            i, j = name_to_idx[q1_name], name_to_idx[q2_name]
-            adjacency[i].add(j)
-            adjacency[j].add(i)
-
             fidelity = gd.get("cz_fidelity", 1.0 - gd.get("cz_error", 0.005))
             error = gd.get("cz_error", 1.0 - fidelity)
 
             gates[gate_key] = GateCalibration(
                 qubit_pair=(q1_name, q2_name),
-                index_pair=(i, j),
+                index_pair=(name_to_idx[q1_name], name_to_idx[q2_name]),
                 fidelity=fidelity,
                 error=error,
                 gate_type="cz",
             )
+
+        # Step 2: Build adjacency from explicit connectivity (preferred)
+        # or fall back to gate keys (backward compat)
+        explicit_connectivity = raw.get("qubit_connectivity")
+        if explicit_connectivity:
+            for pair in explicit_connectivity:
+                if len(pair) != 2:
+                    continue
+                q1_name, q2_name = pair[0], pair[1]
+                if q1_name not in name_to_idx or q2_name not in name_to_idx:
+                    continue
+                i, j = name_to_idx[q1_name], name_to_idx[q2_name]
+                adjacency[i].add(j)
+                adjacency[j].add(i)
+
+                # If this edge exists in topology but has no calibration
+                # data, create a gate entry with default fidelity so the
+                # placement solver can still route through it.
+                edge_key = f"{q1_name}-{q2_name}"
+                edge_key_rev = f"{q2_name}-{q1_name}"
+                if edge_key not in gates and edge_key_rev not in gates:
+                    gates[edge_key] = GateCalibration(
+                        qubit_pair=(q1_name, q2_name),
+                        index_pair=(i, j),
+                        fidelity=0.99,  # default for uncalibrated edge
+                        error=0.01,
+                        gate_type="cz",
+                    )
+        else:
+            # Backward compat: infer adjacency from calibrated gate keys
+            for gate_key in gates:
+                parts = gate_key.split("-")
+                if len(parts) != 2:
+                    continue
+                q1_name, q2_name = parts
+                if q1_name in name_to_idx and q2_name in name_to_idx:
+                    i, j = name_to_idx[q1_name], name_to_idx[q2_name]
+                    adjacency[i].add(j)
+                    adjacency[j].add(i)
 
         # Determine topology name from structure
         topology = self._classify_topology(len(qubit_names), adjacency)
