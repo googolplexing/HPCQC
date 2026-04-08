@@ -1136,6 +1136,74 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+print("\n=== E7.13: Campaign Manifest + Benchmark Parquet (v1.3.0) ===")
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    sweep_dir = os.path.dirname(result.hdf5_path)
+
+    # ── Item 5: Campaign manifest ──
+    manifest_path = os.path.join(sweep_dir, "campaign_manifest.json")
+    check("Manifest JSON exists", os.path.exists(manifest_path), manifest_path)
+
+    if os.path.exists(manifest_path):
+        with open(manifest_path) as f:
+            manifest_data = json.load(f)
+
+        check("Manifest: valid JSON dict", isinstance(manifest_data, dict))
+        check("Manifest: campaign_id matches sweep_id",
+              manifest_data.get("campaign_id") == "ve18_test",
+              f"got {manifest_data.get('campaign_id')}")
+
+        tasks_map = manifest_data.get("tasks", {})
+        check("Manifest: tasks present", len(tasks_map) > 0,
+              f"got {len(tasks_map)} tasks")
+
+        # All tasks should be completed after a successful sweep
+        all_completed = all(s == "completed" for s in tasks_map.values())
+        check("Manifest: all tasks completed", all_completed,
+              f"statuses: {set(tasks_map.values())}")
+
+        check("Manifest: total_tasks matches tasks count",
+              manifest_data.get("total_tasks") == len(tasks_map),
+              f"total_tasks={manifest_data.get('total_tasks')}, "
+              f"tasks={len(tasks_map)}")
+
+    # ── Item 1: Benchmark Parquet ──
+    benchmark_path = os.path.join(sweep_dir, "sweep_benchmark.parquet")
+    check("Benchmark Parquet exists", os.path.exists(benchmark_path),
+          benchmark_path)
+
+    if os.path.exists(benchmark_path):
+        import pyarrow.parquet as pq
+        bench_table = pq.read_table(benchmark_path)
+
+        check("Benchmark Parquet: has rows", bench_table.num_rows > 0,
+              f"got {bench_table.num_rows} rows")
+        check("Benchmark Parquet: 35 columns", bench_table.num_columns == 35,
+              f"got {bench_table.num_columns} columns")
+
+        col_names = bench_table.column_names
+        check("Benchmark Parquet: sweep_id column",
+              "sweep_id" in col_names)
+        check("Benchmark Parquet: mode column",
+              "mode" in col_names)
+        check("Benchmark Parquet: wall_total_s column",
+              "wall_total_s" in col_names)
+        check("Benchmark Parquet: qpu_execute_s column",
+              "qpu_execute_s" in col_names)
+
+        # Simulator sweep: mode should be "simulator"
+        modes = bench_table.column("mode").to_pylist()
+        check("Benchmark Parquet: mode is simulator",
+              all(m == "simulator" for m in modes),
+              f"modes: {set(modes)}")
+
+except Exception as e:
+    check("E7.13 manifest + benchmark", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════
 print(f"\n{'='*70}")

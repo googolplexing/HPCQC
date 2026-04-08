@@ -356,6 +356,76 @@ except Exception as e:
 
 
 # ══════════════════════════════════════════════════════════════════════
+print("\n=== E6a.7: Bug Fix A — Mixed Qubit Count Demultiplexing ===")
+# ══════════════════════════════════════════════════════════════════════
+
+try:
+    from lumi_hpc_qc.sweep.demultiplexer import demultiplex_counts
+    from lumi_hpc_qc.sweep.placement_solver import Placement
+
+    # Two placements with DIFFERENT qubit counts:
+    # p_4q uses 4 physical qubits, p_2q uses 2 physical qubits
+    p_4q = Placement(
+        placement_id=0, device_id="test", device_prefix="test",
+        physical_indices=[0, 1, 2, 3],
+        qubit_mapping={0: "Q0", 1: "Q1", 2: "Q2", 3: "Q3"},
+        topology_hash="4q", score=1.0, per_qubit_calibration={},
+    )
+    p_2q = Placement(
+        placement_id=1, device_id="test", device_prefix="test",
+        physical_indices=[6, 7],
+        qubit_mapping={0: "Q6", 1: "Q7"},
+        topology_hash="2q", score=1.0, per_qubit_calibration={},
+    )
+
+    device_qubits = 10
+
+    # Construct a synthetic bitstring where we know the answer.
+    # Device bitstring: positions 0,1,2,3 = "1010", positions 6,7 = "11"
+    # Qiskit convention: bitstring[i] = qubit[N-1-i]
+    # For 10 qubits: bit_pos(qubit_k) = 9 - k
+    # qubit 0 → pos 9, qubit 1 → pos 8, qubit 2 → pos 7, qubit 3 → pos 6
+    # qubit 6 → pos 3, qubit 7 → pos 2
+    #
+    # So for 4q result "1010": q0=1, q1=0, q2=1, q3=0
+    #   pos9=1, pos8=0, pos7=1, pos6=0 → bits "...0101........."
+    # For 2q result "11": q6=1, q7=1
+    #   pos3=1, pos2=1 → bits "........11......"
+    #
+    # Full 10-bit string (pos 9..0): 1 0 1 0 _ _ 1 1 _ _
+    # =                              1 0 1 0 0 0 1 1 0 0 → "1010001100"
+    raw_counts = {"1010001100": 100}
+
+    per_counts = demultiplex_counts(raw_counts, [p_4q, p_2q], device_qubits)
+
+    check("Bug Fix A: two placement results returned",
+          len(per_counts) == 2,
+          f"got {len(per_counts)}")
+
+    # p_4q should extract 4-bit string
+    check("Bug Fix A: 4q placement has 4-bit keys",
+          all(len(k) == 4 for k in per_counts[0].keys()),
+          f"keys: {list(per_counts[0].keys())}")
+
+    # p_2q should extract 2-bit string
+    check("Bug Fix A: 2q placement has 2-bit keys",
+          all(len(k) == 2 for k in per_counts[1].keys()),
+          f"keys: {list(per_counts[1].keys())}")
+
+    # Verify extracted values
+    check("Bug Fix A: 4q extracted '1010' with count 100",
+          per_counts[0].get("1010") == 100,
+          f"got {per_counts[0]}")
+    check("Bug Fix A: 2q extracted '11' with count 100",
+          per_counts[1].get("11") == 100,
+          f"got {per_counts[1]}")
+
+except Exception as e:
+    check("E6a.7 Bug Fix A", False, f"Exception: {e}")
+    traceback.print_exc()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ══════════════════════════════════════════════════════════════════════
 print("\n" + "=" * 60)

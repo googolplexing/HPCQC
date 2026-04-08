@@ -557,6 +557,44 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.10: v1.3.0 — MixedPacker device_cal Guard + Retry Constants ===")
+# ═══════════════════════════════════════════════════════════════════════
+
+try:
+    # ── Item 8: MixedPacker(device_cal=None) must raise ValueError ──
+    raised = False
+    try:
+        bad_packer = MixedPacker(device_qubits=53, device_cal=None)
+    except ValueError as ve:
+        raised = True
+        check("Item 8: ValueError mentions edge-overlap",
+              "edge-overlap" in str(ve).lower() or "device_cal" in str(ve),
+              str(ve))
+    check("Item 8: MixedPacker(device_cal=None) raises ValueError", raised)
+
+    # ── Item 7: Verify retry constants on IqmQpuBackend ──
+    from lumi_hpc_qc.backends.iqm_qpu import IqmQpuBackend
+    check("Item 7: MAX_RETRIES = 3",
+          IqmQpuBackend.MAX_RETRIES == 3,
+          f"got {IqmQpuBackend.MAX_RETRIES}")
+    check("Item 7: RETRY_BASE_WAIT_S = 1",
+          IqmQpuBackend.RETRY_BASE_WAIT_S == 1,
+          f"got {IqmQpuBackend.RETRY_BASE_WAIT_S}")
+    check("Item 7: VTT_BATCH_LIMIT = 100",
+          IqmQpuBackend.VTT_BATCH_LIMIT == 100,
+          f"got {IqmQpuBackend.VTT_BATCH_LIMIT}")
+
+    # ── Item 7: Verify batch_timings accessor exists ──
+    backend = IqmQpuBackend()
+    check("Item 7: get_batch_timings() returns empty list",
+          backend.get_batch_timings() == [],
+          f"got {backend.get_batch_timings()}")
+
+except Exception as e:
+    check("E6b.10 v1.3.0 guards", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════
 print(f"\n{'='*70}")
