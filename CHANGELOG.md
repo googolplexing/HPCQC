@@ -3,6 +3,74 @@
 
 # Changelog
 
+## 1.3.0 (2026-04-09)
+
+### VTT QX API Integration, Campaign Reliability, Benchmark Parquet (RED-DIRECTIVE-V130-v1.0)
+
+8 items + 2 bug fixes + version alignment. 712 new/modified lines across 9 files.
+All code validated live on Q50 (April 7–8). 13/13 SLURM regression suites passing
+(809 checks across E1–E10, V111). Branch `v1.3.0-qx-integration` merged to main.
+
+**Governing documents:** RED-DIRECTIVE-V130-v1.0, RED-DIRECTIVE-BENCHMARK-PARQUET-v1.0,
+RED-RESP-ORANGE-COMMS-019-v2.0, ORANGE-TO-RED-COMMS-019-v2.1
+
+#### Item 1 — Benchmark Parquet Export (`data/benchmark_export.py` NEW, 266 lines)
+- 35-column PyArrow schema per RED-DIRECTIVE-BENCHMARK-PARQUET-v1.0 Appendix A
+- `export_benchmark_to_parquet()`: one row per QPU batch, server-side timing from
+  QX API timeline, packing metrics from DSatur round data
+- `make_simulator_timing_records()`: converts `sweep_timing.json` for simulator sweeps
+- QPU-specific columns (server timing, context) nullable — null for simulator mode
+- `sweep_benchmark.parquet` written alongside `sweep.h5` at sweep completion
+
+#### Item 2 — QXClient Wired into iqm_qpu.py (`backends/iqm_qpu.py`)
+- `QXClient.from_backend()` created in `_ensure_sim()` after QPU connection
+- `capture_job_timing()` replaces raw `.run()` in `_submit_batch()`
+- `QPUJobTiming` records accumulated in `_batch_timings` — one per batch
+- `get_batch_timings()` accessor for benchmark Parquet pipeline
+- Queue length fetched once before sweep via `get_queue_length()`
+
+#### Item 3 — Dynamic Batch Limit (`backends/iqm_qpu.py`)
+- `get_job_policy()` queried at connection time in `_ensure_sim()`
+- `VTT_BATCH_LIMIT` overridden from `max_number_circuits_per_batch`
+- Fallback: 100 if endpoint unreachable. Source logged.
+
+#### Item 4 — Version Alignment (MERGE GATE)
+- `pyproject.toml`: `"1.1.0"` → `"1.3.0"`
+- `__init__.py`: `"1.2.4"` → `"1.3.0"`
+
+#### Item 5 — Campaign Manifest (`sweep/campaign_manifest.py` NEW, 225 lines)
+- `CampaignManifest`: tracks task completion across QPU batch submissions
+- Atomic persistence: temp file + `os.rename()` — crash-safe
+- `pending_tasks()` returns PENDING + FAILED tasks for resume
+- `campaign_manifest.json` alongside `sweep.h5` in output directory
+
+#### Item 6 — Sweep Resume (`sweep/sweep_engine.py`)
+- Load existing manifest at sweep start, filter completed tasks
+- After each group: mark completed/failed + atomic save
+- Resume is idempotent
+
+#### Item 7 — Batch Retry with Exponential Backoff (`backends/iqm_qpu.py`)
+- 3 retries, 1s/2s/4s backoff around `_submit_batch()` calls
+- Transient failures retried; permanent failures propagate
+
+#### Item 8 — Edge-Overlap Fix (`sweep/mixed_packing.py`, MANDATORY)
+- `device_cal` required in `MixedPacker.__init__()` — `ValueError` if None
+- Prevents packing placements sharing CZ edge without qubit overlap
+
+#### Bug Fix A — E6a Demux Uniform Qubit Count (`sweep/demultiplexer.py`)
+- `num_logical` moved inside per-placement loop (lines 39, 116)
+- Was taking `placements[0]` length — wrong for mixed qubit counts
+
+#### Bug Fix B — Edge Direction Normalization (`tests/fetch_q50_calibration.py`)
+- `_normalize_edge()`: sorts pair to canonical form (`QB3-QB4`)
+- Eliminated ~40 false warnings in topology completeness check
+
+### Validation
+- 13/13 SLURM suites: 809 checks (784 existing + 25 new)
+- E6a.7: Mixed qubit count demux (5 checks)
+- E6b.10: device_cal guard + retry constants (6 checks)
+- E7.13: Campaign manifest + benchmark Parquet (14 checks)
+
 ## 1.2.4 (2026-04-07)
 
 ### CRITICAL BUG FIX — Shot-Based Energy Computation (RED-FINDING-EVAL-RUNNER-v1.0)
