@@ -370,12 +370,14 @@ try:
         physical_indices=[0, 1, 2, 3],
         qubit_mapping={0: "Q0", 1: "Q1", 2: "Q2", 3: "Q3"},
         topology_hash="4q", score=1.0, per_qubit_calibration={},
+        internal_edges=3, avg_readout_fidelity=0.99, avg_gate_fidelity=0.98,
     )
     p_2q = Placement(
         placement_id=1, device_id="test", device_prefix="test",
         physical_indices=[6, 7],
         qubit_mapping={0: "Q6", 1: "Q7"},
         topology_hash="2q", score=1.0, per_qubit_calibration={},
+        internal_edges=1, avg_readout_fidelity=0.99, avg_gate_fidelity=0.98,
     )
 
     device_qubits = 10
