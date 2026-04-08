@@ -236,15 +236,26 @@ def print_summary(cal):
         print(f"  CZ fidelity:   min={min(czs):.4f}  median={np.median(czs):.4f}  max={max(czs):.4f}")
 
     # ── Topology completeness check ──
-    gate_edges = set(gates.keys())
-    conn_edges = {f"{p[0]}-{p[1]}" for p in connectivity}
+    # VTT CZ keys use QB4__QB3 → QB4-QB3, architecture returns ["QB3","QB4"]
+    # → QB3-QB4.  Normalize both to sorted pair so same physical edge matches.
+    def _normalize_edge(e):
+        """Normalize edge to sorted pair: 'QB4-QB3' → 'QB3-QB4'."""
+        parts = e.split("-") if isinstance(e, str) else list(e)
+        return f"{min(parts)}-{max(parts)}"
+
+    gate_edges = {_normalize_edge(k) for k in gates.keys()}
+    conn_edges = {_normalize_edge(p) for p in connectivity}
     if conn_edges and gate_edges:
         uncalibrated = conn_edges - gate_edges
         if uncalibrated:
             print(f"\n  WARNING: {len(uncalibrated)} edges in topology but no calibration data")
+            for e in sorted(uncalibrated):
+                print(f"    {e}")
         orphan = gate_edges - conn_edges
         if orphan:
             print(f"\n  WARNING: {len(orphan)} calibrated gates not in topology")
+            for e in sorted(orphan):
+                print(f"    {e}")
 
     # ── Problem qubits ──
     bad_ro = [(n, q["readout_fidelity"]) for n, q in qubits.items()

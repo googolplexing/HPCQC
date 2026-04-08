@@ -36,7 +36,6 @@ def demultiplex_counts(
         List of per-placement count dicts. Each maps N-qubit bitstrings
         to counts, where N = len(placement.physical_indices).
     """
-    num_logical = len(placements[0].physical_indices) if placements else 0
     per_placement: list[dict[str, int]] = [{} for _ in placements]
 
     for bitstring, count in raw_counts.items():
@@ -44,6 +43,7 @@ def demultiplex_counts(
 
         for p_idx, placement in enumerate(placements):
             phys = placement.physical_indices
+            num_logical = len(phys)
             # Extract bits for this placement's physical qubits
             sub_bits = ""
             for logical_q in range(num_logical):
@@ -113,10 +113,10 @@ def compute_placement_energies(
         List of energy values, one per placement.
     """
     per_counts = demultiplex_counts(raw_counts, placements, device_qubits)
-    num_logical = len(placements[0].physical_indices) if placements else 0
 
     energies = []
-    for counts in per_counts:
+    for p_idx, (counts, placement) in enumerate(zip(per_counts, placements)):
+        num_logical = len(placement.physical_indices)
         energy = _energy_from_counts(counts, observable, num_logical)
         energies.append(energy)
 

@@ -106,13 +106,19 @@ class MixedPacker:
     non-overlappingly on the device.
 
     Usage:
-        packer = MixedPacker(device_qubits=53)
+        packer = MixedPacker(device_qubits=53, device_cal=device_cal)
         packer.add_experiment("tfim_4q", tfim_circuit, tfim_placements)
         packer.add_experiment("ghz_3q", ghz_circuit, ghz_placements)
         rounds = packer.pack(max_rounds=10)
     """
 
-    def __init__(self, device_qubits: int, device_cal: Any = None):
+    def __init__(self, device_qubits: int, device_cal):
+        if device_cal is None:
+            raise ValueError(
+                "device_cal is required for correct edge-overlap checking. "
+                "Without it, placements sharing a CZ coupling edge but no "
+                "qubits could be packed into the same round, causing crosstalk."
+            )
         self._device_qubits = device_qubits
         self._device_cal = device_cal
         self._experiments: list[tuple[str, QuantumCircuit, list[Placement], Any]] = []

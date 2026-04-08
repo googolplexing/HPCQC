@@ -897,14 +897,43 @@ class SweepEngine:
 
         t_grid = time.perf_counter()  # end grid expansion
 
+        # ── Step 3b: Campaign manifest — resume or create (Item 6) ──
+        output_dir = Path(self._config.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = output_dir / "campaign_manifest.json"
+
+        from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
+        from lumi_hpc_qc import __version__ as _fw_version
+
+        if manifest_path.exists():
+            self._manifest = CampaignManifest.load(manifest_path)
+            completed = set(self._manifest.completed_tasks())
+            original_count = len(tasks)
+            tasks = [t for t in tasks if t.task_id not in completed]
+            self._progress.total_tasks = len(tasks)
+            print(f"  Resuming: {len(completed)} tasks completed, "
+                  f"{len(tasks)} remaining (of {original_count})")
+        else:
+            task_ids = [t.task_id for t in tasks]
+            self._manifest = CampaignManifest.create(
+                campaign_id=self._config.sweep_id,
+                task_ids=task_ids,
+                framework_version=_fw_version,
+            )
+            self._manifest.save(manifest_path)
+            print(f"  Manifest created: {len(task_ids)} tasks")
+
+        if not tasks:
+            print("  All tasks already completed — nothing to do")
+            sweep_result.errors = errors
+            return sweep_result
+
         # ── Step 4: Group tasks for cache locality ──
         groups = self._group_tasks(tasks)
         print(f"  Task groups: {len(groups)} "
               f"(hamiltonian × topology × calibration)")
 
         # ── Step 5: Open HDF5 and execute ──
-        output_dir = Path(self._config.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
         hdf5_path = str(output_dir / self._config.hdf5_filename)
 
         sweep_attrs = {
@@ -934,10 +963,25 @@ class SweepEngine:
                     self._execute_group(
                         group_tasks, writer, errors,
                     )
+                    # Item 6: Mark group tasks completed in manifest
+                    for t in group_tasks:
+                        self._manifest.mark_batch_completed(
+                            batch_id=f"group_{group_idx}",
+                            task_ids=[t.task_id],
+                        )
+                    self._manifest.save(manifest_path)
                 except Exception as e:
                     msg = f"Group {group_key} failed: {e}"
                     print(f"    [ERROR] {msg}")
                     errors.append(msg)
+                    # Item 6: Mark group tasks failed in manifest
+                    for t in group_tasks:
+                        self._manifest.mark_batch_failed(
+                            batch_id=f"group_{group_idx}",
+                            task_ids=[t.task_id],
+                            error=str(e),
+                        )
+                    self._manifest.save(manifest_path)
 
         # ── Step 6: Verify WAL consistency ──
         print("\n── Verifying WAL consistency ──")
@@ -988,6 +1032,48 @@ class SweepEngine:
             t_cal=t_cal,
             t_grid=t_grid,
         )
+
+        # ── Write sweep_benchmark.parquet (v1.3.0 — RED-DIRECTIVE-V130 Item 1) ──
+        try:
+            from lumi_hpc_qc.data.benchmark_export import (
+                export_benchmark_to_parquet,
+                make_simulator_timing_records,
+            )
+
+            benchmark_path = output_dir / "sweep_benchmark.parquet"
+            mode = "simulator"
+            timing_records = []
+
+            # Check if QPU backend has timing records
+            backend = getattr(self, "_backend", None)
+            if backend is not None and hasattr(backend, "get_batch_timings"):
+                timing_records = backend.get_batch_timings()
+                if timing_records:
+                    mode = "qpu"
+
+            # Fallback: simulator timing from sweep_timing.json
+            if not timing_records:
+                timing_json_path = Path(str(output_dir)) / "sweep_timing.json"
+                if timing_json_path.exists():
+                    with open(timing_json_path) as f:
+                        timing_json = json.load(f)
+                    timing_records = make_simulator_timing_records(timing_json)
+
+            if timing_records:
+                n_rows = export_benchmark_to_parquet(
+                    timing_records=timing_records,
+                    sweep_metadata={
+                        "sweep_id": self._config.sweep_id,
+                        "framework_version": self._config.framework_version,
+                        "mode": mode,
+                        "device": self._device,
+                        "partition": os.getenv("SLURM_JOB_PARTITION", "unknown"),
+                    },
+                    output_path=benchmark_path,
+                )
+                print(f"  Benchmark Parquet: {n_rows} rows → {benchmark_path}")
+        except Exception as e:
+            print(f"  Benchmark Parquet: skipped ({e})")
 
         return sweep_result
 
