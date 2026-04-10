@@ -3,6 +3,93 @@
 
 # Changelog
 
+## 1.4.0 (2026-04-10)
+
+### Global Pool Packing, Seed Lists, Parquet 67→71 (RED-RESP-V140-DESIGN-v1.0 REVISED)
+
+Cross-experiment QPU packing for maximum throughput.  ~608 new source lines
+across 6 files + ~429 test lines.  All 7 acceptance tests pass.  13/13 SLURM
+regression suites passing (LUMI jobs 17406427–17406439).
+
+**Governing documents:** RED-RESP-V140-DESIGN-v1.0 (REVISED),
+ORANGE-TO-RED-COMMS-023, BLUE-DESIGN-V140-v1_0
+
+#### Item 1 — GlobalPoolPacker (`sweep/mixed_packing.py`, ~250 lines)
+- `PoolTask` dataclass: atomic packing unit (circuit + qubits + edges + metadata)
+- `PackedBatch` dataclass: one QPU submission (tasks + utilization)
+- `GlobalPoolPacker`: first-fit-decreasing bin packing across all experiment groups
+  - O(N × B) greedy backfill, deterministic with packing seed
+  - Constraint: no qubit overlap AND no CZ edge overlap
+  - `objective` parameter: `max_throughput` implemented, `capped_utilization` and
+    `single_topology` accepted but raise ValueError (deferred to v1.4.1+)
+- `validate_packed_batch()`: per-batch 3-invariant check (qubits, edges, task IDs)
+- `validate_packing()`: campaign-level validation (every task exactly once)
+- Device qubits derived from `DeviceCalibration.num_qubits` (no hardcoded constants)
+
+#### Item 2 — Pre-build Helper (`backends/pauli_measurement.py`, ~77 lines)
+- `prebuild_pool_tasks()`: builds PoolTasks from (seed, placement, observable)
+- Corrected signature per RED-RESP-V140 §4a: `device_cal`, `hamiltonian_name`,
+  `topology_name` parameters added alongside existing circuit/observable/shots
+- Edge tuples derived from `device_cal.adjacency` (not `Placement.internal_edges`
+  which is an int count, not a set)
+- 7 metadata fields per task: seed, placement_id, pauli_group_index,
+  pauli_group_labels, identity_energy, hamiltonian, topology_name
+
+#### Item 3 — Packing Manifest (`sweep/mixed_packing.py`, ~80 lines)
+- `PackingManifest`: static record of task→batch assignment
+- Written atomically (temp file + rename) after `pack()`, before QPU submission
+- Schema per ORANGE-TO-RED-COMMS-023 §4: strategy, objective, packing_seed,
+  device_qubits, per-batch task list with full provenance
+- `save()` / `load()` round-trip with crash-safe atomic writes
+- `completed_batch_ids()`: cross-reference with CampaignManifest for resume
+- Resume flow: replay original packing + skip completed batches
+
+#### Item 4 — `seed_list` Support (`sweep/sweep_engine.py`, ~40 lines)
+- `SweepExperimentConfig.seed_list: list[int] | None` field
+- Three YAML formats: explicit list `[0, 5, 42]`, range string `"0-4,10-14,42"`,
+  single integer `42`
+- `_parse_seed_range()`: comma-separated tokens, dash ranges inclusive both ends
+- When `seed_list` present, `seeds`/`seed_offset` are ignored
+- Validation: empty list, negative values, duplicates all caught
+- Both LHS and standard grid expansion paths use resolved `seed_values`
+
+#### Item 5 — Packing Config (`sweep/sweep_engine.py`, ~30 lines)
+- `PackingConfig` dataclass: strategy (`dsatur`|`global_pool`), objective, seed
+- Top-level in `SweepConfig` (not per-experiment — RED-RESP-V140 §2 Q1)
+- `parse_sweep_config()` reads `sweep.packing` YAML section
+- `validate_sweep_config()` checks strategy against known values
+
+#### Item 6 — Science Parquet 67→71 (`data/sweep_export.py` + `data/hdf5_writer.py`)
+- Column 68: `calibration_set_id` (string, nullable) — VTT QX calibration UUID
+- Column 69: `packing_co_placements` (int32) — tasks in batch
+- Column 70: `packing_qubit_utilization` (float64) — batch utilization
+- Column 71: `packing_algorithm` (string) — `"dsatur"` | `"global_pool"` | `"none"`
+- Defaults for unpacked runs: 1, 0.0, `"none"`
+- `SweepResultEntry`: 4 new fields with defaults
+- HDF5 attrs: all 4 persisted, WAL round-trip (serialize + deserialize)
+- Section comments corrected: Device & Placement (7→10), Calibration (10→11)
+
+#### Item 7 — Public API Exports (`sweep/__init__.py`)
+- Exports: PoolTask, PackedBatch, GlobalPoolPacker, PackingManifest,
+  validate_packed_batch, validate_packing, PackingConfig
+- Docstring updated: 67→71 columns, added mixed_packing + campaign_manifest
+
+### Validation
+- E6b: 10 new test sections (E6b.11–E6b.20)
+  - AT1: No qubit overlap in any packed batch
+  - AT2: No CZ edge overlap in any packed batch
+  - AT3: Every task from pool appears exactly once in packing
+  - AT4: Deterministic — same pool + same seed = identical assignment
+  - AT5: PackingManifest save/load round-trip + provenance preservation
+  - AT6: Mixed-topology batches (4q chain + 2q Bell in one composite)
+  - AT7: Objective validation (unknown raises ValueError, unimplemented raises ValueError)
+  - E6b.19: seed_list parsing, expand_grid, validation, PackingConfig
+  - E6b.20: 71-column schema verification (count, names, insertion order)
+- E8: 67→71 column count, 4 new column names in expected list
+- E10: 67→71 column count in end-to-end pipeline
+- SLURM e6b time limit: 15s → 30s (doubled test count)
+- 13/13 regression: LUMI SLURM jobs 17406427–17406439, all PASS
+
 ## 1.3.1 (2026-04-10)
 
 ### QPU Behavior Audit — Configurable Defaults (RED-DIRECTIVE-QPU-CONFIG-v1.0)
