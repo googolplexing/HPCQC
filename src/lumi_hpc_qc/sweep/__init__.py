@@ -14,7 +14,21 @@ This package orchestrates the complete sweep pipeline:
   - circuit_composer: compose placements into device-width circuits (E6a)
   - demultiplexer: extract per-placement counts from composites (E6a)
   - round_executor: multi-round packed circuit orchestrator (E6a)
+  - mixed_packing: E6b mixed-experiment + v1.4.0 global pool packing
+  - campaign_manifest: task completion tracking for QPU campaigns
   - sweep_engine: top-level orchestrator — YAML to HDF5 noise atlas (E7)
-  - (future) sweep_export: HDF5 → Parquet 61-column export (E8)
-  - (future) circuit_composer mixed-experiment packing (E6b)
+  - sweep_export: HDF5 → 71-column Parquet export (E8)
 """
+
+# v1.4.0 — global pool packing public API
+from lumi_hpc_qc.sweep.mixed_packing import (  # noqa: F401
+    PoolTask,
+    PackedBatch,
+    GlobalPoolPacker,
+    PackingManifest,
+    validate_packed_batch,
+    validate_packing,
+)
+from lumi_hpc_qc.sweep.sweep_engine import (  # noqa: F401
+    PackingConfig,
+)

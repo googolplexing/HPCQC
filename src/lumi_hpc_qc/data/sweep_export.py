@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
-"""E8 sweep export — HDF5 noise atlas → 67-column Parquet + summary CSV.
+"""E8 sweep export — HDF5 noise atlas → 71-column Parquet + summary CSV.
 
 Reads the HDF5 file produced by E7's sweep engine and flattens every
 result group into one row of the Parquet training table. This is the
@@ -11,13 +11,13 @@ datasets (energy_trajectory, placement_qubits). Never reads large arrays
 unless explicitly needed for derived features. This keeps the export
 O(N) in attributes, not O(N × T) in trajectory length.
 
-The 67-column schema evolved from RED-DIRECTIVE-E4-SCHEMA-v1.0 §4:
+The 71-column schema evolved from RED-DIRECTIVE-E4-SCHEMA-v1.0 §4:
   - Identity & provenance (4)
   - Experiment configuration (11)
   - Hamiltonian properties (4) — +1 exact_ground_energy in v1.2.0
   - Model parameters (3) — new in v1.2.0 (param_j, param_g, param_disorder_w)
-  - Device & placement (7)
-  - Calibration (10) — +2 placement CZ fidelity in v1.1.1
+  - Device & placement (10) — +3 packing provenance in v1.4.0
+  - Calibration (11) — +1 calibration_set_id in v1.4.0
   - Noise & mitigation (4)
   - Circuit metrics (3)
   - Results (7)
@@ -49,11 +49,11 @@ from lumi_hpc_qc import __version__ as _pkg_version
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Parquet schema definition — 67 columns (v1.2.0)
+# Parquet schema definition — 71 columns (v1.2.0)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _build_parquet_schema():
-    """Build the 67-column PyArrow schema.
+    """Build the 71-column PyArrow schema.
 
     Lazy import to avoid pyarrow dependency at module load time
     (pyarrow is heavy and not needed for HDF5-only operations).
@@ -99,19 +99,23 @@ def _build_parquet_schema():
         pa.field("param_g", pa.float64()),
         pa.field("param_disorder_w", pa.float64()),
 
-        # ── Device & Placement (7) ──
+        # ── Device & Placement (10) ──
         pa.field("device", pa.string()),
         pa.field("placement_qubits", pa.string()),
         pa.field("circuit_topology", pa.string()),
         pa.field("topology_equivalence_class", pa.string()),
         pa.field("placement_fidelity_score", pa.float64()),
         pa.field("submission_round", pa.int32()),
+        pa.field("packing_co_placements", pa.int32()),       # v1.4.0 — tasks in batch
+        pa.field("packing_qubit_utilization", pa.float64()),  # v1.4.0 — batch utilization
+        pa.field("packing_algorithm", pa.string()),           # v1.4.0 — "dsatur"|"global_pool"|"none"
         pa.field("coupling_map_source", pa.string()),
 
-        # ── Calibration (10) ──
+        # ── Calibration (11) ──
         pa.field("calibration_source", pa.string()),
         pa.field("calibration_device", pa.string()),
         pa.field("calibration_date", pa.string()),
+        pa.field("calibration_set_id", pa.string()),         # v1.4.0 — VTT QX calibration UUID
         pa.field("calibration_is_synthetic", pa.bool_()),
         pa.field("per_qubit_t1_us", pa.list_(pa.float64())),
         pa.field("per_qubit_t2_us", pa.list_(pa.float64())),
@@ -363,7 +367,7 @@ def export_sweep_to_parquet(
     exact_energies: dict[str, float] | None = None,
     include_csv: bool = True,
 ) -> dict[str, Any]:
-    """Export an E7 sweep HDF5 file to 67-column Parquet.
+    """Export an E7 sweep HDF5 file to 71-column Parquet.
 
     Walks every leaf group (those containing energy_trajectory),
     extracts attributes, computes derived features, and writes
@@ -632,12 +636,16 @@ def _extract_row(
         "topology_equivalence_class": str(attrs.get("topology_hash", "")),
         "placement_fidelity_score": float(attrs.get("placement_score", 0.0)),
         "submission_round": 0,
+        "packing_co_placements": int(attrs.get("packing_co_placements", 1)),
+        "packing_qubit_utilization": float(attrs.get("packing_qubit_utilization", 0.0)),
+        "packing_algorithm": str(attrs.get("packing_algorithm", "none")),
         "coupling_map_source": env_meta["coupling_map_source"],
 
         # Calibration
         "calibration_source": cal_id,
         "calibration_device": str(attrs.get("device_id", "")),
         "calibration_date": cal_date,
+        "calibration_set_id": attrs.get("calibration_set_id"),
         "calibration_is_synthetic": False,
         "per_qubit_t1_us": cal_lists["per_qubit_t1_us"] or None,
         "per_qubit_t2_us": cal_lists["per_qubit_t2_us"] or None,

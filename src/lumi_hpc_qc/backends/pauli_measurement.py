@@ -261,3 +261,80 @@ def expectation_from_counts_direct(
         energy += float(np.real(coeff)) * expectation / total_shots
 
     return energy
+
+
+def prebuild_pool_tasks(
+    bound_circuit,
+    observable,
+    placement,
+    shots: int,
+    *,
+    seed: int,
+    task_id_prefix: str,
+    device_cal: Any,
+    hamiltonian_name: str,
+    topology_name: str,
+) -> list:
+    """Build PoolTasks for global pool packing from one (seed, placement).
+
+    Calls ``build_measurement_circuits()`` to get one circuit per QWC
+    Pauli group, then wraps each into a ``PoolTask`` with full provenance
+    metadata for the packing manifest and ML pipeline.
+
+    v1.4.0 — RED-RESP-V140-DESIGN-v1.0 (REVISED) §4a.
+    Signature: RED-RESP-V140 §4a corrected (device_cal, hamiltonian_name,
+    topology_name added per Orange COMMS-023 §2c).
+
+    Args:
+        bound_circuit: Parameter-bound ansatz (no measurements).
+        observable: SparsePauliOp Hamiltonian.
+        placement: Placement object with physical_indices and internal_edges.
+        shots: Shots per circuit.
+        seed: Random seed for this task.
+        task_id_prefix: e.g. ``"s0_p7"`` — group index appended as ``_g{i}``.
+        device_cal: DeviceCalibration for edge information.
+        hamiltonian_name: e.g. ``"tfim"``, ``"heisenberg"``.
+        topology_name: e.g. ``"4q_star"``, ``"8q_ladder"``.
+
+    Returns:
+        List of PoolTask (one per non-identity Pauli measurement group).
+        Import PoolTask from ``lumi_hpc_qc.sweep.mixed_packing``.
+    """
+    from lumi_hpc_qc.sweep.mixed_packing import PoolTask
+
+    circuits, meas_groups, identity_e = build_measurement_circuits(
+        bound_circuit, observable, shots,
+    )
+
+    physical_indices = list(placement.physical_indices)
+
+    # Derive actual edge tuples from device calibration adjacency.
+    # Placement.internal_edges is an int (count), not a set of tuples.
+    phys_set = set(physical_indices)
+    internal_edges: set[tuple[int, int]] = set()
+    if hasattr(device_cal, "adjacency"):
+        for qi in physical_indices:
+            for qj in device_cal.adjacency.get(qi, set()):
+                if qj in phys_set and qj > qi:
+                    internal_edges.add((qi, qj))
+
+    tasks: list[PoolTask] = []
+    for g_idx, (circuit, group) in enumerate(zip(circuits, meas_groups)):
+        task_id = f"{task_id_prefix}_g{g_idx}"
+        tasks.append(PoolTask(
+            task_id=task_id,
+            circuit=circuit,
+            physical_indices=physical_indices,
+            internal_edges=internal_edges,
+            metadata={
+                "seed": seed,
+                "placement_id": placement.placement_id,
+                "pauli_group_index": g_idx,
+                "pauli_group_labels": [str(p) for p in group["labels"]],
+                "identity_energy": identity_e,
+                "hamiltonian": hamiltonian_name,
+                "topology_name": topology_name,
+            },
+        ))
+
+    return tasks

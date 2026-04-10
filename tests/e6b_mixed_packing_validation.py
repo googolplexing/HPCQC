@@ -606,6 +606,435 @@ except Exception as e:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.11: v1.4.0 — GlobalPoolPacker Setup ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    from lumi_hpc_qc.sweep.mixed_packing import (
+        PoolTask, PackedBatch, GlobalPoolPacker,
+        validate_packed_batch, validate_packing,
+        PackingManifest,
+    )
+
+    # Build synthetic PoolTasks from real placements.
+    # Use TFIM 4q chain placements + Bell 2q placements + GHZ 3q.
+    # We need PoolTasks with real physical_indices and edge sets.
+
+    def _edges_for_placement(placement, dev_cal):
+        """Derive actual CZ edge tuples from device adjacency."""
+        phys = set(placement.physical_indices)
+        edges = set()
+        for qi in placement.physical_indices:
+            for qj in dev_cal.adjacency.get(qi, set()):
+                if qj in phys and qj > qi:
+                    edges.add((qi, qj))
+        return edges
+
+    pool_tasks = []
+    # 5 seeds × 4 TFIM placements × 1 group = 20 tasks
+    for seed in range(5):
+        for pi, pl in enumerate(tfim_placements[:4]):
+            qc = QuantumCircuit(4, name=f"tfim_s{seed}_p{pi}")
+            qc.h(0)
+            for i in range(3):
+                qc.cx(i, i + 1)
+            qc.measure_all()
+            pool_tasks.append(PoolTask(
+                task_id=f"s{seed}_p{pi}_g0",
+                circuit=qc,
+                physical_indices=list(pl.physical_indices),
+                internal_edges=_edges_for_placement(pl, device_cal),
+                metadata={
+                    "seed": seed, "placement_id": pl.placement_id,
+                    "pauli_group_index": 0,
+                    "pauli_group_labels": ["ZZZZ"],
+                    "identity_energy": 0.0,
+                    "hamiltonian": "tfim",
+                    "topology_name": "4q_chain",
+                },
+            ))
+    # 5 seeds × 4 Bell placements × 1 group = 20 tasks
+    for seed in range(5):
+        for pi, pl in enumerate(bell_placements[:4]):
+            qc = QuantumCircuit(2, name=f"bell_s{seed}_p{pi}")
+            qc.h(0)
+            qc.cx(0, 1)
+            qc.measure_all()
+            pool_tasks.append(PoolTask(
+                task_id=f"s{seed}_bell_p{pi}_g0",
+                circuit=qc,
+                physical_indices=list(pl.physical_indices),
+                internal_edges=_edges_for_placement(pl, device_cal),
+                metadata={
+                    "seed": seed, "placement_id": pl.placement_id,
+                    "pauli_group_index": 0,
+                    "pauli_group_labels": ["ZZ"],
+                    "identity_energy": 0.0,
+                    "hamiltonian": "bell",
+                    "topology_name": "2q_bell",
+                },
+            ))
+
+    pool_size = len(pool_tasks)
+    check("v1.4.0 setup: pool tasks built", pool_size == 40,
+          f"got {pool_size}")
+
+    packer_gp = GlobalPoolPacker(
+        device_qubits=53, device_cal=device_cal,
+        objective="max_throughput",
+    )
+    check("v1.4.0 setup: GlobalPoolPacker created", True)
+
+except Exception as e:
+    check("E6b.11 v1.4.0 setup", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.12: Acceptance Test 1 — No Qubit Overlap ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    batches = packer_gp.pack(pool_tasks, packing_seed=42)
+    check("Pack produced batches", len(batches) > 0, f"got {len(batches)}")
+
+    qubit_errors = []
+    for batch in batches:
+        errs = validate_packed_batch(batch)
+        qubit_errors.extend(e for e in errs if "Qubit overlap" in e)
+    check("AT1: No qubit overlap in any batch", len(qubit_errors) == 0,
+          f"{len(qubit_errors)} violations: {qubit_errors[:3]}")
+
+except Exception as e:
+    check("E6b.12 AT1", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.13: Acceptance Test 2 — No Edge Overlap ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    edge_errors = []
+    for batch in batches:
+        errs = validate_packed_batch(batch)
+        edge_errors.extend(e for e in errs if "Edge overlap" in e)
+    check("AT2: No edge overlap in any batch", len(edge_errors) == 0,
+          f"{len(edge_errors)} violations: {edge_errors[:3]}")
+
+except Exception as e:
+    check("E6b.13 AT2", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.14: Acceptance Test 3 — Every Task Exactly Once ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    all_task_ids = []
+    for batch in batches:
+        all_task_ids.extend(t.task_id for t in batch.tasks)
+
+    check("AT3: task count matches pool",
+          len(all_task_ids) == pool_size,
+          f"pool={pool_size}, packed={len(all_task_ids)}")
+    check("AT3: no duplicates",
+          len(all_task_ids) == len(set(all_task_ids)),
+          f"unique={len(set(all_task_ids))}")
+
+    # Also test via validate_packing
+    global_errs = validate_packing(batches, pool_size)
+    check("AT3: validate_packing passes", len(global_errs) == 0,
+          f"{global_errs[:3]}")
+
+except Exception as e:
+    check("E6b.14 AT3", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.15: Acceptance Test 4 — Deterministic Packing ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    batches_a = packer_gp.pack(pool_tasks, packing_seed=42)
+    batches_b = packer_gp.pack(pool_tasks, packing_seed=42)
+
+    check("AT4: same number of batches",
+          len(batches_a) == len(batches_b))
+
+    ids_match = True
+    for ba, bb in zip(batches_a, batches_b):
+        a_ids = [t.task_id for t in ba.tasks]
+        b_ids = [t.task_id for t in bb.tasks]
+        if a_ids != b_ids:
+            ids_match = False
+            break
+    check("AT4: identical task assignments", ids_match)
+
+    # Different seed → different assignment
+    batches_c = packer_gp.pack(pool_tasks, packing_seed=99)
+    c_ids = [t.task_id for b in batches_c for t in b.tasks]
+    a_ids = [t.task_id for b in batches_a for t in b.tasks]
+    # Same set of tasks, potentially different order
+    check("AT4: different seed → same tasks (set)",
+          set(c_ids) == set(a_ids))
+    check("AT4: different seed → different ordering",
+          c_ids != a_ids,
+          "ordering was identical — shuffle didn't change anything")
+
+except Exception as e:
+    check("E6b.15 AT4", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.16: Acceptance Test 5 — Packing Manifest + Resume ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    import tempfile, os
+
+    manifest = PackingManifest.from_packed_batches(
+        batches,
+        strategy="global_pool",
+        objective="max_throughput",
+        packing_seed=42,
+        device_qubits=53,
+    )
+
+    check("AT5: manifest total_tasks matches pool",
+          manifest.total_tasks == pool_size)
+    check("AT5: manifest total_batches matches",
+          manifest.total_batches == len(batches))
+    check("AT5: manifest has batch records",
+          len(manifest.batches) == len(batches))
+
+    # Verify round-trip save/load
+    with tempfile.TemporaryDirectory() as tmpdir:
+        mpath = os.path.join(tmpdir, "packing_manifest.json")
+        manifest.save(mpath)
+        loaded = PackingManifest.load(mpath)
+
+        check("AT5: round-trip total_tasks",
+              loaded.total_tasks == manifest.total_tasks)
+        check("AT5: round-trip total_batches",
+              loaded.total_batches == manifest.total_batches)
+        check("AT5: round-trip strategy",
+              loaded.strategy == "global_pool")
+        check("AT5: round-trip packing_seed",
+              loaded.packing_seed == 42)
+
+        # Verify batch task provenance preserved
+        b0 = loaded.batches[0]
+        check("AT5: batch 0 has task records",
+              len(b0["tasks"]) > 0)
+        t0 = b0["tasks"][0]
+        check("AT5: task record has hamiltonian",
+              "hamiltonian" in t0 and t0["hamiltonian"] is not None)
+        check("AT5: task record has topology_name",
+              "topology_name" in t0 and t0["topology_name"] is not None)
+
+except Exception as e:
+    check("E6b.16 AT5", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.17: Acceptance Test 6 — Mixed Topology in One Composite ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    # Find a batch that has both TFIM (4q) and Bell (2q) tasks
+    mixed_batch = None
+    for batch in batches:
+        topos = set(t.metadata["topology_name"] for t in batch.tasks)
+        if len(topos) > 1:
+            mixed_batch = batch
+            break
+
+    check("AT6: found a batch with mixed topologies",
+          mixed_batch is not None,
+          "all batches have single topology")
+
+    if mixed_batch is not None:
+        # Verify the batch is valid
+        errs = validate_packed_batch(mixed_batch)
+        check("AT6: mixed-topology batch passes validation",
+              len(errs) == 0, f"{errs}")
+
+        # Verify utilization is higher than single-topology would give
+        check("AT6: mixed batch has >1 task",
+              len(mixed_batch.tasks) > 1,
+              f"got {len(mixed_batch.tasks)}")
+
+except Exception as e:
+    check("E6b.17 AT6", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.18: Acceptance Test 7 — Objective Validation ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    # max_throughput is the only implemented objective
+    check("AT7: max_throughput accepted",
+          packer_gp.objective == "max_throughput")
+
+    # Unknown objective → ValueError
+    try:
+        GlobalPoolPacker(device_qubits=53, device_cal=device_cal,
+                         objective="unknown_objective")
+        check("AT7: unknown objective raises ValueError", False,
+              "no exception raised")
+    except ValueError:
+        check("AT7: unknown objective raises ValueError", True)
+
+    # Known but unimplemented → ValueError
+    try:
+        GlobalPoolPacker(device_qubits=53, device_cal=device_cal,
+                         objective="capped_utilization")
+        check("AT7: unimplemented objective raises ValueError", False,
+              "no exception raised")
+    except ValueError:
+        check("AT7: unimplemented objective raises ValueError", True)
+
+    # device_cal=None → ValueError
+    try:
+        GlobalPoolPacker(device_qubits=53, device_cal=None)
+        check("AT7: device_cal=None raises ValueError", False,
+              "no exception raised")
+    except ValueError:
+        check("AT7: device_cal=None raises ValueError", True)
+
+except Exception as e:
+    check("E6b.18 AT7", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.19: v1.4.0 — seed_list + PackingConfig ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    from lumi_hpc_qc.sweep.sweep_engine import (
+        SweepExperimentConfig, SweepConfig, PackingConfig,
+        parse_sweep_config, validate_sweep_config,
+        expand_grid, _parse_seed_range,
+    )
+
+    # Test _parse_seed_range
+    check("seed_list: range parse basic",
+          _parse_seed_range("0-4,10-14,42") == [0,1,2,3,4,10,11,12,13,14,42])
+    check("seed_list: single int string",
+          _parse_seed_range("5") == [5])
+    check("seed_list: empty string",
+          _parse_seed_range("") == [])
+
+    # Test parse_sweep_config with seed_list
+    yaml_dict = {
+        "sweep": {
+            "experiments": [{
+                "hamiltonians": ["tfim"],
+                "qubit_sizes": [4],
+                "seeds": 20,
+                "seed_list": [0, 5, 42],
+            }],
+            "calibrations": [cal_path],
+        }
+    }
+    cfg = parse_sweep_config(yaml_dict)
+    exp0 = cfg.experiments[0]
+    check("seed_list: parsed from YAML list",
+          exp0.seed_list == [0, 5, 42])
+
+    # Test with range string
+    yaml_dict["sweep"]["experiments"][0]["seed_list"] = "0-2,10"
+    cfg2 = parse_sweep_config(yaml_dict)
+    check("seed_list: parsed from range string",
+          cfg2.experiments[0].seed_list == [0, 1, 2, 10])
+
+    # Test with single int
+    yaml_dict["sweep"]["experiments"][0]["seed_list"] = 42
+    cfg3 = parse_sweep_config(yaml_dict)
+    check("seed_list: parsed from single int",
+          cfg3.experiments[0].seed_list == [42])
+
+    # Test expand_grid uses seed_list
+    yaml_dict["sweep"]["experiments"][0]["seed_list"] = [0, 5, 42]
+    cfg4 = parse_sweep_config(yaml_dict)
+    tasks = expand_grid(cfg4)
+    task_seeds = sorted(set(t.seed for t in tasks))
+    check("seed_list: expand_grid uses seed_list seeds",
+          task_seeds == [0, 5, 42],
+          f"got {task_seeds}")
+    # 3 seeds × 1 topology (auto for 4q) × 1 hamiltonian × 1 cal
+    # auto for 4q gives star + chain = 2 topologies typically
+    check("seed_list: correct task count",
+          len(tasks) == 3 * len(set(t.topology_name for t in tasks)),
+          f"got {len(tasks)} tasks across {len(set(t.topology_name for t in tasks))} topos")
+
+    # Test validation catches bad seed_list
+    bad_exp = SweepExperimentConfig(
+        hamiltonians=["tfim"], qubit_sizes=[4], seed_list=[],
+    )
+    bad_cfg = SweepConfig(experiments=[bad_exp], calibrations=[cal_path])
+    errs = validate_sweep_config(bad_cfg)
+    check("seed_list: empty list caught",
+          any("seed_list is empty" in e for e in errs), f"{errs}")
+
+    bad_exp2 = SweepExperimentConfig(
+        hamiltonians=["tfim"], qubit_sizes=[4], seed_list=[0, 0, 1],
+    )
+    bad_cfg2 = SweepConfig(experiments=[bad_exp2], calibrations=[cal_path])
+    errs2 = validate_sweep_config(bad_cfg2)
+    check("seed_list: duplicates caught",
+          any("duplicates" in e for e in errs2), f"{errs2}")
+
+    # Test PackingConfig parsing
+    yaml_dict["sweep"]["packing"] = {
+        "strategy": "global_pool",
+        "objective": "max_throughput",
+        "seed": 99,
+    }
+    cfg5 = parse_sweep_config(yaml_dict)
+    check("PackingConfig: strategy parsed",
+          cfg5.packing.strategy == "global_pool")
+    check("PackingConfig: objective parsed",
+          cfg5.packing.objective == "max_throughput")
+    check("PackingConfig: seed parsed",
+          cfg5.packing.seed == 99)
+
+    # Default packing config
+    del yaml_dict["sweep"]["packing"]
+    cfg6 = parse_sweep_config(yaml_dict)
+    check("PackingConfig: default strategy is dsatur",
+          cfg6.packing.strategy == "dsatur")
+
+except Exception as e:
+    check("E6b.19 seed_list + PackingConfig", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
+print("\n=== E6b.20: v1.4.0 — 71-Column Schema ===")
+# ═══════════════════════════════════════════════════════════════════════
+try:
+    from lumi_hpc_qc.data.sweep_export import _build_parquet_schema
+    schema = _build_parquet_schema()
+    check("Schema: 71 columns", len(schema) == 71,
+          f"got {len(schema)}")
+
+    col_names = [f.name for f in schema]
+    check("Schema: calibration_set_id present",
+          "calibration_set_id" in col_names)
+    check("Schema: packing_co_placements present",
+          "packing_co_placements" in col_names)
+    check("Schema: packing_qubit_utilization present",
+          "packing_qubit_utilization" in col_names)
+    check("Schema: packing_algorithm present",
+          "packing_algorithm" in col_names)
+
+    # Verify insertion order
+    cal_date_idx = col_names.index("calibration_date")
+    cal_set_idx = col_names.index("calibration_set_id")
+    check("Schema: calibration_set_id after calibration_date",
+          cal_set_idx == cal_date_idx + 1)
+
+    sub_round_idx = col_names.index("submission_round")
+    co_place_idx = col_names.index("packing_co_placements")
+    check("Schema: packing_co_placements after submission_round",
+          co_place_idx == sub_round_idx + 1)
+
+except Exception as e:
+    check("E6b.20 71-column schema", False, traceback.format_exc())
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════════
 print(f"\n{'='*70}")
@@ -619,7 +1048,7 @@ if errors:
 
 if failed == 0:
     print("\nE6b VALIDATION: ALL CHECKS PASSED")
-    print("\nv1.1.0 GATE: ALL VE CRITERIA SATISFIED (VE1–VE25)")
+    print("\nv1.4.0 GATE: ALL ACCEPTANCE TESTS SATISFIED (AT1–AT7)")
     sys.exit(0)
 else:
     print(f"\nE6b VALIDATION: {failed} CHECKS FAILED")

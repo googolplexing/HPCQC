@@ -23,8 +23,11 @@ VE20: Two different circuits packed, demuxed, results match independent runs
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any
 
 import numpy as np
@@ -257,6 +260,12 @@ def compose_mixed_round(
 
     Raises:
         ValueError: If any entries overlap in physical qubits.
+
+    Note:
+        This function checks qubit overlap only.  CZ edge overlap
+        checking is the caller's responsibility.  Both DSatur (via
+        ``MixedPacker``) and ``GlobalPoolPacker`` guarantee no edge
+        overlap before calling this function.
     """
     # Verify non-overlapping
     all_used: set[int] = set()
@@ -511,3 +520,409 @@ def execute_mixed_round(
 
     round_result.total_time_s = time.time() - t_start
     return round_result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# v1.4.0 — Global pool packing (cross-experiment)
+#
+# PoolTask → GlobalPoolPacker.pack() → PackedBatch → compose_mixed_round
+#
+# RED-RESP-V140-DESIGN-v1.0 (REVISED) §6
+# ORANGE-TO-RED-COMMS-023 §2a (architecture sound), §4 (packing manifest)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class PoolTask:
+    """One atomic packing unit — a pre-built circuit on specific qubits.
+
+    Each PoolTask is the output of ``prebuild_pool_tasks()`` for one
+    (seed, placement, pauli_group) triple.  The circuit already has basis
+    rotations baked in.  The packer doesn't know or care what science
+    this circuit represents — it only checks qubit/edge overlap.
+    """
+    task_id: str                              # e.g. "s0_p7_g0"
+    circuit: QuantumCircuit                   # fully bound, basis-rotated
+    physical_indices: list[int]               # qubits on device
+    internal_edges: set[tuple[int, int]]      # CZ edges between physical_indices
+    metadata: dict[str, Any] = field(default_factory=dict)
+    # metadata keys: seed, placement_id, pauli_group_index,
+    #   pauli_group_labels, identity_energy, hamiltonian, topology_name
+
+
+@dataclass
+class PackedBatch:
+    """One QPU submission — a list of PoolTasks packed into one composite.
+
+    Maps directly to one MixedRound for composition + demux.
+    """
+    batch_id: int
+    tasks: list[PoolTask]
+    qubit_utilization: float          # len(all_used_qubits) / device_qubits
+    composite: QuantumCircuit | None = None  # built by compose_mixed_round
+
+
+class _BatchBuilder:
+    """Accumulator for one batch during packing."""
+
+    def __init__(self, batch_id: int, device_qubits: int):
+        self.batch_id = batch_id
+        self.device_qubits = device_qubits
+        self.tasks: list[PoolTask] = []
+        self.used_qubits: set[int] = set()
+        self.used_edges: set[tuple[int, int]] = set()
+
+    def add(self, task: PoolTask) -> None:
+        self.tasks.append(task)
+        self.used_qubits.update(task.physical_indices)
+        self.used_edges.update(task.internal_edges)
+
+    def finish(self) -> PackedBatch:
+        util = len(self.used_qubits) / self.device_qubits if self.device_qubits else 0.0
+        return PackedBatch(
+            batch_id=self.batch_id,
+            tasks=list(self.tasks),
+            qubit_utilization=util,
+        )
+
+
+class GlobalPoolPacker:
+    """Pack a flat pool of tasks into dense QPU batches.
+
+    Greedy backfill: iterate tasks sorted by qubit count (descending),
+    greedily add each task to the first batch where it fits (no qubit
+    or edge overlap).  If no batch fits, start a new batch.
+
+    This is first-fit-decreasing bin packing — O(N × B) where N is
+    tasks and B is batches.  For 2,640 tasks and ~330 batches, this is
+    ~870K comparisons, each a set intersection — sub-second.
+
+    Args:
+        device_qubits: Total qubit count (53 for Q50).
+        device_cal: DeviceCalibration for edge overlap checking.
+        objective: ``"max_throughput"`` (default).  Future:
+            ``"capped_utilization"``, ``"single_topology"`` (v1.4.1+).
+
+    Raises:
+        ValueError: If ``objective`` is not recognised.
+
+    RED-RESP-V140-DESIGN-v1.0 (REVISED) §5 — tunable objectives.
+    """
+
+    _KNOWN_OBJECTIVES = {"max_throughput", "capped_utilization", "single_topology"}
+
+    def __init__(
+        self,
+        device_qubits: int,
+        device_cal: Any,
+        *,
+        objective: str = "max_throughput",
+    ):
+        if device_cal is None:
+            raise ValueError("device_cal is required")
+        if objective not in self._KNOWN_OBJECTIVES:
+            raise ValueError(
+                f"Unknown packing objective '{objective}'. "
+                f"Known: {sorted(self._KNOWN_OBJECTIVES)}"
+            )
+        if objective != "max_throughput":
+            raise ValueError(
+                f"Objective '{objective}' is not yet implemented (v1.4.1+). "
+                f"Only 'max_throughput' is available in v1.4.0."
+            )
+        self._device_qubits = device_qubits
+        self._device_cal = device_cal
+        self._objective = objective
+
+    @property
+    def objective(self) -> str:
+        return self._objective
+
+    def pack(
+        self,
+        tasks: list[PoolTask],
+        *,
+        packing_seed: int = 42,
+    ) -> list[PackedBatch]:
+        """Pack tasks into batches using greedy backfill.
+
+        Algorithm (max_throughput):
+          1. Shuffle pool (deterministic with packing_seed) to break
+             submission-order bias for equal-size tasks
+          2. Sort by qubit count descending (big tasks first)
+          3. For each task, try to add to each existing batch:
+             - Check qubit overlap: task ∩ batch == ∅
+             - Check edge overlap: task ∩ batch == ∅
+          4. If no batch fits, create a new batch
+
+        Deterministic given the same input + packing_seed.
+
+        Args:
+            tasks: Flat list of PoolTasks from all experiment groups.
+            packing_seed: Random seed for shuffle before sort.
+
+        Returns:
+            List of PackedBatch, ordered by batch_id.
+        """
+        import random
+        rng = random.Random(packing_seed)
+
+        pool = list(tasks)
+        rng.shuffle(pool)
+        pool.sort(key=lambda t: len(t.physical_indices), reverse=True)
+
+        batches: list[_BatchBuilder] = []
+
+        for task in pool:
+            task_qubits = set(task.physical_indices)
+            task_edges = task.internal_edges
+            placed = False
+
+            for batch in batches:
+                if (not (task_qubits & batch.used_qubits)
+                        and not (task_edges & batch.used_edges)):
+                    batch.add(task)
+                    placed = True
+                    break
+
+            if not placed:
+                b = _BatchBuilder(len(batches), self._device_qubits)
+                b.add(task)
+                batches.append(b)
+
+        return [b.finish() for b in batches]
+
+
+def validate_packed_batch(batch: PackedBatch) -> list[str]:
+    """Validate a single packed batch for the 3 per-batch invariants.
+
+    Invariant 1: No qubit overlap between tasks.
+    Invariant 2: No edge overlap between tasks.
+    Invariant 3: No duplicate task IDs.
+
+    Returns:
+        List of error strings.  Empty = valid.
+    """
+    errors: list[str] = []
+    all_qubits: set[int] = set()
+    all_edges: set[tuple[int, int]] = set()
+    task_ids: set[str] = set()
+
+    for task in batch.tasks:
+        q = set(task.physical_indices)
+        e = task.internal_edges
+
+        overlap = q & all_qubits
+        if overlap:
+            errors.append(
+                f"Qubit overlap: {task.task_id} shares qubits {overlap}"
+            )
+
+        edge_overlap = e & all_edges
+        if edge_overlap:
+            errors.append(
+                f"Edge overlap: {task.task_id} shares edges {edge_overlap}"
+            )
+
+        if task.task_id in task_ids:
+            errors.append(f"Duplicate task: {task.task_id}")
+
+        all_qubits |= q
+        all_edges |= e
+        task_ids.add(task.task_id)
+
+    return errors
+
+
+def validate_packing(
+    batches: list[PackedBatch],
+    original_pool_size: int,
+) -> list[str]:
+    """Validate the full packing result against campaign-level invariants.
+
+    Invariant 3 (global): Every task appears exactly once.
+    Invariant 4: Determinism is the caller's responsibility (pack twice,
+                 compare).  Not checked here.
+
+    Args:
+        batches: Output of ``GlobalPoolPacker.pack()``.
+        original_pool_size: ``len(tasks)`` passed to ``pack()``.
+
+    Returns:
+        List of error strings.  Empty = valid.
+    """
+    errors: list[str] = []
+
+    # Per-batch validation
+    for batch in batches:
+        errors.extend(validate_packed_batch(batch))
+
+    # Global: every task exactly once
+    all_ids: list[str] = []
+    for batch in batches:
+        all_ids.extend(t.task_id for t in batch.tasks)
+
+    if len(all_ids) != original_pool_size:
+        errors.append(
+            f"Task count mismatch: pool had {original_pool_size}, "
+            f"packing produced {len(all_ids)}"
+        )
+    if len(all_ids) != len(set(all_ids)):
+        from collections import Counter
+        dupes = [tid for tid, c in Counter(all_ids).items() if c > 1]
+        errors.append(f"Duplicate tasks across batches: {dupes}")
+
+    return errors
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Packing manifest — static record of task→batch assignment
+#
+# Written once before QPU submission.  Never modified.  Used on resume
+# to replay the original batch composition (replay + skip completed).
+#
+# ORANGE-TO-RED-COMMS-023 §4 — schema approved by Red.
+# RED-RESP-V140-DESIGN-v1.0 (REVISED) §3b.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class PackingManifest:
+    """Static record of how tasks were packed into batches.
+
+    Written atomically after ``GlobalPoolPacker.pack()`` completes,
+    before any QPU submission.  One file per campaign.  Never modified
+    after creation — the campaign manifest tracks completion.
+
+    Resume flow:
+      1. ``GlobalPoolPacker.pack()`` → ``PackingManifest`` (written once)
+      2. Sweep engine executes batches → ``CampaignManifest`` (updated)
+      3. On resume: load both.  Packing manifest = planned.
+         Campaign manifest = completed.  Execute the difference.
+    """
+    packing_version: str = "1.0"
+    strategy: str = "global_pool"
+    objective: str = "max_throughput"
+    packing_seed: int = 0              # set by caller from PackingConfig.seed
+    device_qubits: int = 0             # set by caller from backend device info
+    total_tasks: int = 0
+    total_batches: int = 0
+    mean_utilization: float = 0.0
+    created_at: str = ""
+    batches: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_packed_batches(
+        cls,
+        batches: list[PackedBatch],
+        *,
+        strategy: str = "global_pool",
+        objective: str = "max_throughput",
+        packing_seed: int = 0,
+        device_qubits: int = 0,
+    ) -> PackingManifest:
+        """Build a manifest from the packer output."""
+        from datetime import datetime, timezone
+
+        batch_records: list[dict[str, Any]] = []
+        total_util = 0.0
+
+        for batch in batches:
+            task_records = []
+            for task in batch.tasks:
+                task_records.append({
+                    "task_id": task.task_id,
+                    "seed": task.metadata.get("seed"),
+                    "placement_id": task.metadata.get("placement_id"),
+                    "pauli_group_index": task.metadata.get("pauli_group_index"),
+                    "hamiltonian": task.metadata.get("hamiltonian"),
+                    "topology_name": task.metadata.get("topology_name"),
+                    "physical_indices": task.physical_indices,
+                })
+
+            batch_records.append({
+                "batch_id": batch.batch_id,
+                "qubit_utilization": round(batch.qubit_utilization, 4),
+                "n_tasks": len(batch.tasks),
+                "tasks": task_records,
+            })
+            total_util += batch.qubit_utilization
+
+        n_batches = len(batches)
+        return cls(
+            strategy=strategy,
+            objective=objective,
+            packing_seed=packing_seed,
+            device_qubits=device_qubits,
+            total_tasks=sum(len(b.tasks) for b in batches),
+            total_batches=n_batches,
+            mean_utilization=round(total_util / n_batches, 4) if n_batches else 0.0,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            batches=batch_records,
+        )
+
+    def save(self, path: str | os.PathLike) -> None:
+        """Atomic write — temp file + rename.
+
+        Same pattern as ``CampaignManifest.save()`` for crash safety.
+        """
+        path = os.fspath(path)
+        parent = os.path.dirname(path) or "."
+        data = asdict(self)
+
+        fd, tmp_path = tempfile.mkstemp(
+            dir=parent,
+            prefix=".packing_manifest_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2)
+            os.rename(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @classmethod
+    def load(cls, path: str | os.PathLike) -> PackingManifest:
+        """Load an existing packing manifest for resume."""
+        with open(path) as f:
+            data = json.load(f)
+        return cls(
+            packing_version=data.get("packing_version", "1.0"),
+            strategy=data.get("strategy", "global_pool"),
+            objective=data.get("objective", "max_throughput"),
+            packing_seed=data.get("packing_seed", 0),
+            device_qubits=data.get("device_qubits", 0),
+            total_tasks=data.get("total_tasks", 0),
+            total_batches=data.get("total_batches", 0),
+            mean_utilization=data.get("mean_utilization", 0.0),
+            created_at=data.get("created_at", ""),
+            batches=data.get("batches", []),
+        )
+
+    def completed_batch_ids(self, campaign_manifest_path: str | os.PathLike) -> set[int]:
+        """Cross-reference with campaign manifest to find completed batches.
+
+        Loads the campaign manifest (if it exists), finds which batch_ids
+        are marked completed, and returns them as a set for the resume
+        skip-logic.
+        """
+        from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
+
+        cpath = os.fspath(campaign_manifest_path)
+        if not os.path.exists(cpath):
+            return set()
+
+        cm = CampaignManifest.load(cpath)
+        completed_tasks = set(cm.completed_tasks())
+
+        done: set[int] = set()
+        for batch_rec in self.batches:
+            batch_task_ids = [t["task_id"] for t in batch_rec["tasks"]]
+            if all(tid in completed_tasks for tid in batch_task_ids):
+                done.add(batch_rec["batch_id"])
+        return done

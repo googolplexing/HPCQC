@@ -81,6 +81,10 @@ class SweepResultEntry:
     per_edge_cz_fidelity: list[float] | None = None
     exact_ground_energy: float | None = None
     model_params: dict[str, float] = field(default_factory=dict)
+    calibration_set_id: str | None = None              # v1.4.0 — VTT QX calibration UUID
+    packing_co_placements: int = 1                     # v1.4.0 — tasks in batch
+    packing_qubit_utilization: float = 0.0             # v1.4.0 — batch utilization
+    packing_algorithm: str = "none"                    # v1.4.0 — "dsatur"|"global_pool"|"none"
 
     @property
     def group_path(self) -> str:
@@ -146,6 +150,11 @@ class SweepResultEntry:
             d["exact_ground_energy"] = self.exact_ground_energy
         if self.model_params:
             d["model_params"] = self.model_params
+        if self.calibration_set_id is not None:
+            d["calibration_set_id"] = self.calibration_set_id
+        d["packing_co_placements"] = self.packing_co_placements
+        d["packing_qubit_utilization"] = self.packing_qubit_utilization
+        d["packing_algorithm"] = self.packing_algorithm
         return d
 
 
@@ -362,6 +371,13 @@ class SweepHDF5Writer:
         if entry.model_params:
             grp.attrs["model_params"] = json.dumps(entry.model_params)
 
+        # v1.4.0 — packing provenance + calibration UUID
+        if entry.calibration_set_id is not None:
+            grp.attrs["calibration_set_id"] = entry.calibration_set_id
+        grp.attrs["packing_co_placements"] = entry.packing_co_placements
+        grp.attrs["packing_qubit_utilization"] = entry.packing_qubit_utilization
+        grp.attrs["packing_algorithm"] = entry.packing_algorithm
+
     def create_soft_link(
         self, source_path: str, target_path: str
     ) -> None:
@@ -453,6 +469,10 @@ class SweepHDF5Writer:
             per_edge_cz_fidelity=d.get("per_edge_cz_fidelity"),
             exact_ground_energy=d.get("exact_ground_energy"),
             model_params=d.get("model_params", {}),
+            calibration_set_id=d.get("calibration_set_id"),
+            packing_co_placements=d.get("packing_co_placements", 1),
+            packing_qubit_utilization=d.get("packing_qubit_utilization", 0.0),
+            packing_algorithm=d.get("packing_algorithm", "none"),
         )
 
     def verify_consistency(self) -> dict[str, Any]:

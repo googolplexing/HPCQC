@@ -132,6 +132,7 @@ class SweepExperimentConfig:
     topologies: str | list[str] = "auto"  # "auto" or explicit list
     seeds: int = 20
     seed_offset: int = 0  # Starting seed (seeds run from offset to offset+seeds-1)
+    seed_list: list[int] | None = None  # v1.4.0 — explicit seed list (overrides seeds/seed_offset)
 
     # Noise scope
     noise_configs: str | list[str] = "all"  # "all" or explicit list
@@ -148,6 +149,20 @@ class SweepExperimentConfig:
 
     # Metadata
     label: str = ""
+
+
+@dataclass
+class PackingConfig:
+    """Global pool packing parameters — parsed from ``sweep.packing`` YAML.
+
+    Top-level config (not per-experiment) because global pool packing is
+    inherently cross-experiment.
+
+    v1.4.0 — RED-RESP-V140-DESIGN-v1.0 (REVISED) §2 Q1.
+    """
+    strategy: str = "dsatur"           # "dsatur" (default, current) or "global_pool"
+    objective: str = "max_throughput"   # v1.4.0: only max_throughput implemented
+    seed: int = 42                     # packing seed for deterministic assignment
 
 
 @dataclass
@@ -168,6 +183,9 @@ class SweepConfig:
 
     # QPU execution parameters (RED-DIRECTIVE-QPU-CONFIG-v1.0)
     qpu: QPUConfig = field(default_factory=QPUConfig)
+
+    # Packing strategy (v1.4.0 — RED-RESP-V140-DESIGN §2 Q1)
+    packing: PackingConfig = field(default_factory=PackingConfig)
 
     # Sweep metadata
     sweep_id: str = ""
@@ -225,6 +243,12 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             nc_names = exp.noise_configs if isinstance(exp.noise_configs, list) else [exp.noise_configs]
             noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names if n in NOISE_ENV_BY_NAME]
 
+        # Resolve seed values (v1.4.0 — seed_list overrides seeds/seed_offset)
+        if exp.seed_list is not None:
+            seed_values = exp.seed_list
+        else:
+            seed_values = [exp.seed_offset + i for i in range(exp.seeds)]
+
         # Apply measurement_stats_interval override from YAML (Item 4)
         if exp.measurement_stats_interval_override is not None:
             from dataclasses import replace
@@ -274,7 +298,7 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                 and exp.sampling.parameters):
                             lhs_samples = _generate_lhs_samples(exp.sampling)
                             for sample_idx, params in enumerate(lhs_samples):
-                                for seed_idx in range(exp.seeds):
+                                for seed in seed_values:
                                     task_counter += 1
                                     tasks.append(SweepTask(
                                         task_id=f"T{task_counter:06d}",
@@ -282,7 +306,7 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                         qubit_size=qsize,
                                         topology_name=topo_name,
                                         topology_edges=list(topo_spec["edges"]),
-                                        seed=exp.seed_offset + seed_idx,
+                                        seed=seed,
                                         calibration_path=cal_path,
                                         calibration_id=_calibration_id(cal_path),
                                         experiment_type=exp.experiment_type,
@@ -294,7 +318,7 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                     ))
                         else:
                             # ── Standard grid expansion ──
-                            for seed_idx in range(exp.seeds):
+                            for seed in seed_values:
                                 task_counter += 1
                                 tasks.append(SweepTask(
                                     task_id=f"T{task_counter:06d}",
@@ -302,7 +326,7 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                     qubit_size=qsize,
                                     topology_name=topo_name,
                                     topology_edges=list(topo_spec["edges"]),
-                                    seed=exp.seed_offset + seed_idx,
+                                    seed=seed,
                                     calibration_path=cal_path,
                                     calibration_id=_calibration_id(cal_path),
                                     experiment_type=exp.experiment_type,
@@ -326,6 +350,34 @@ def _calibration_id(path: str) -> str:
             if p.isdigit() and len(p) == 8:
                 return f"cal_{p}"
     return f"cal_{hashlib.md5(path.encode()).hexdigest()[:8]}"
+
+
+def _parse_seed_range(range_str: str) -> list[int]:
+    """Parse a seed range string into a list of integers.
+
+    Accepts comma-separated tokens where each token is either a single
+    integer or a dash-separated range (inclusive on both ends).
+
+    v1.4.0 — ``seed_list`` support (COMMS-021, RED-RESP-V140 §2 Q2).
+
+    Examples:
+        >>> _parse_seed_range("0-4,10-14,42")
+        [0, 1, 2, 3, 4, 10, 11, 12, 13, 14, 42]
+        >>> _parse_seed_range("5")
+        [5]
+    """
+    seeds: list[int] = []
+    for token in range_str.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            parts = token.split("-", 1)
+            lo, hi = int(parts[0]), int(parts[1])
+            seeds.extend(range(lo, hi + 1))
+        else:
+            seeds.append(int(token))
+    return seeds
 
 
 def _generate_lhs_samples(
@@ -412,6 +464,16 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             label=exp_dict.get("label", ""),
         )
 
+        # Parse seed_list (v1.4.0 — explicit seed list)
+        raw_seeds = exp_dict.get("seed_list")
+        if raw_seeds is not None:
+            if isinstance(raw_seeds, list):
+                exp.seed_list = [int(s) for s in raw_seeds]
+            elif isinstance(raw_seeds, str):
+                exp.seed_list = _parse_seed_range(raw_seeds)
+            elif isinstance(raw_seeds, int):
+                exp.seed_list = [raw_seeds]
+
         # Parse sampling block (v1.2.0 Item C)
         sampling_dict = exp_dict.get("sampling")
         if sampling_dict and isinstance(sampling_dict, dict):
@@ -450,6 +512,14 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
         queue_prefetch=bool(qpu_dict.get("queue_prefetch", False)),
     )
 
+    # Parse packing config (v1.4.0 — RED-RESP-V140-DESIGN §2 Q1)
+    packing_dict = sweep_dict.get("packing", {})
+    packing_config = PackingConfig(
+        strategy=str(packing_dict.get("strategy", "dsatur")),
+        objective=str(packing_dict.get("objective", "max_throughput")),
+        seed=int(packing_dict.get("seed", 42)),
+    )
+
     config = SweepConfig(
         experiments=experiments,
         calibrations=sweep_dict.get("calibrations", []),
@@ -460,6 +530,7 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
         enable_swmr=sweep_dict.get("enable_swmr", False),
         debug_json=sweep_dict.get("debug_json", False),
         qpu=qpu_config,
+        packing=packing_config,
         sweep_id=sweep_dict.get("sweep_id", str(uuid.uuid4())[:8]),
         framework_version=sweep_dict.get("framework_version", _pkg_version),
     )
@@ -490,6 +561,15 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
         if exp.seeds < 1:
             errors.append(f"{prefix}: seeds must be >= 1, got {exp.seeds}")
 
+        # Validate seed_list (v1.4.0)
+        if exp.seed_list is not None:
+            if len(exp.seed_list) == 0:
+                errors.append(f"{prefix}: seed_list is empty")
+            if any(s < 0 for s in exp.seed_list):
+                errors.append(f"{prefix}: seed_list contains negative values")
+            if len(exp.seed_list) != len(set(exp.seed_list)):
+                errors.append(f"{prefix}: seed_list contains duplicates")
+
         # Validate noise config names
         if isinstance(exp.noise_configs, list) and exp.noise_configs != ["all"]:
             for nc_name in exp.noise_configs:
@@ -512,6 +592,14 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
     for cal_path in config.calibrations:
         if not Path(cal_path).exists():
             errors.append(f"Calibration file not found: {cal_path}")
+
+    # Validate packing config (v1.4.0)
+    valid_strategies = {"dsatur", "global_pool"}
+    if config.packing.strategy not in valid_strategies:
+        errors.append(
+            f"Unknown packing strategy '{config.packing.strategy}'. "
+            f"Available: {sorted(valid_strategies)}"
+        )
 
     return errors
 
