@@ -13,6 +13,16 @@ v1.3.0 additions (RED-DIRECTIVE-V130-v1.0):
   Item 3: Dynamic batch limit from get_job_policy() at connection time.
   Item 7: Batch retry with exponential backoff (3 retries, 1s/2s/4s).
 
+v1.3.1 changes (RED-DIRECTIVE-QPU-CONFIG-v1.0):
+  - Retry DISABLED by default.  Configurable via QPUConfig / YAML.
+  - Error classification: only retryable_errors patterns trigger retry.
+  - QXClient / timing capture opt-in via QPUConfig.timing_capture.
+  - Queue prefetch opt-in via QPUConfig.queue_prefetch.
+  - Connection timeout via signal.alarm (Finding 5).
+  - Auto-chunk logging when batches exceed VTT limit (Finding 3).
+  - Shots read from QPUConfig single source (Finding 6).
+  - retry_attempts tracked per batch for benchmark Parquet (Finding 7).
+
 Submits circuits to the IQM Q50 quantum processor through CSC's
 HPC-Quantum middleware on LUMI. No API token required — access is
 controlled through SLURM's q_fiqci partition and FiQCI modules.
@@ -35,6 +45,7 @@ References:
 from __future__ import annotations
 
 import os
+import signal
 import time
 from typing import Any
 
@@ -55,38 +66,75 @@ class IqmQpuBackend(Backend):
     name = "iqm_qpu"
 
     # VTT default batch limit — overridden at connection time by
-    # get_job_policy() if the QX API is reachable (Item 3).
+    # get_job_policy() if the QX API is reachable and QPUConfig allows.
     VTT_BATCH_LIMIT = 100
-
-    # Retry configuration (Item 7 — RED-DIRECTIVE-V130 §7)
-    MAX_RETRIES = 3
-    RETRY_BASE_WAIT_S = 1  # exponential: 1s, 2s, 4s
 
     def __init__(self, config: ExperimentConfig | None = None) -> None:
         self._config = config
         self._sim = None  # IQM backend object (named _sim for interface compat)
-        self._qx = None   # QXClient for timing + monitoring (Item 2)
+        self._qx = None   # QXClient for timing + monitoring (opt-in)
         self._device = "Q50"
-        self._shots = 4096
         self._calibration_set_id = None
 
         # QPU timing accumulator — one QPUJobTiming per _submit_batch() call.
-        # Fed into benchmark Parquet export at sweep completion (Item 1).
+        # Fed into benchmark Parquet export at sweep completion.
         self._batch_timings: list = []
 
-        # Queue length captured once before a sweep, not per-batch.
-        # Avoids 10s timeout penalty on every batch when the QX monitoring
-        # endpoint is unreachable.
+        # Retry attempts per batch — parallel to _batch_timings.
+        # 1 = first-try success, 2+ = retried. (Finding 7)
+        self._batch_retry_attempts: list[int] = []
+
+        # Queue length captured once before a sweep if queue_prefetch enabled.
         self._queue_length_before: int | None = None
+
+        # ── QPUConfig defaults: retry OFF, timing OFF, queue OFF ──
+        self._retry_enabled: bool = False
+        self._retry_max_attempts: int = 3
+        self._retry_base_wait_s: float = 1.0
+        self._retry_errors: list[str] = [
+            "No results available", "timeout", "ConnectionError",
+        ]
+        self._timing_capture: bool = False
+        self._queue_prefetch: bool = False
+        self._connection_timeout_s: int = 60
+        self._shots: int = 4096
 
         if config:
             bp = config.backend_params
             self._device = bp.get("device", "Q50")
-            self._shots = bp.get("shots", 4096)
             self._calibration_set_id = bp.get("calibration_set_id")
 
+            # Read QPUConfig fields if passed through backend_params
+            qpu = bp.get("qpu_config")
+            if qpu is not None:
+                self._apply_qpu_config(qpu)
+            else:
+                self._shots = bp.get("shots", 4096)
+
+    def _apply_qpu_config(self, qpu) -> None:
+        """Apply QPUConfig (dataclass or duck-typed object) to instance."""
+        self._shots = getattr(qpu, "shots", 4096)
+        self._connection_timeout_s = getattr(qpu, "connection_timeout_s", 60)
+        self._retry_enabled = getattr(qpu, "retry_enabled", False)
+        self._retry_max_attempts = getattr(qpu, "retry_max_attempts", 3)
+        self._retry_base_wait_s = getattr(qpu, "retry_base_wait_s", 1.0)
+        self._retry_errors = getattr(qpu, "retry_errors", self._retry_errors)
+        self._timing_capture = getattr(qpu, "timing_capture", False)
+        self._queue_prefetch = getattr(qpu, "queue_prefetch", False)
+        bl = getattr(qpu, "batch_limit", None)
+        if bl is not None:
+            self.VTT_BATCH_LIMIT = bl
+
+    def set_qpu_config(self, qpu_config) -> None:
+        """Apply QPUConfig after construction.
+
+        Called by the sweep engine when it has parsed the YAML qpu:
+        section but the backend was already instantiated.
+        """
+        self._apply_qpu_config(qpu_config)
+
     def _ensure_sim(self) -> None:
-        """Connect to Q50 via IQM provider, create QXClient, query batch limit."""
+        """Connect to Q50 via IQM provider, optionally create QXClient."""
         if self._sim is not None:
             return
 
@@ -118,8 +166,25 @@ class IqmQpuBackend(Backend):
                 "  module load fiqci-vtt-qiskit"
             )
 
-        provider = IQMProvider(url)
-        self._sim = provider.get_backend()
+        # ── Finding 5: Connection timeout via signal.alarm ──
+        timeout_s = self._connection_timeout_s
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError(
+                f"{self._device} did not respond within {timeout_s}s. "
+                f"The device may be offline. VTT calibrates Q50 at 06:30 and 19:00 UTC. "
+                f"Check device status or increase qpu.connection_timeout_s in your campaign YAML."
+            )
+
+        old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(timeout_s)
+        try:
+            provider = IQMProvider(url)
+            self._sim = provider.get_backend()
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
         print(f"  Connected to {self._device}: {url[:40]}...")
         print(f"  Backend: {self._sim.name}")
 
@@ -129,17 +194,23 @@ class IqmQpuBackend(Backend):
         except Exception:
             pass
 
-        # ── Item 2: Create QXClient for timing capture + monitoring ──
-        try:
-            from lumi_hpc_qc.backends.qx_client import QXClient
-            self._qx = QXClient.from_backend(self._sim)
-            print(f"  QXClient: initialized (timing capture enabled)")
-        except Exception as e:
-            self._qx = None
-            print(f"  QXClient: unavailable ({e}) — timing capture disabled")
+        # ── Print QPU config summary ──
+        retry_status = "ENABLED" if self._retry_enabled else "DISABLED"
+        print(f"  QPU config: retry={retry_status}, timing_capture={self._timing_capture}, "
+              f"queue_prefetch={self._queue_prefetch}, shots={self._shots}")
 
-        # ── Item 3: Dynamic batch limit from get_job_policy() ──
-        if self._qx is not None:
+        # ── QXClient: only if timing_capture is enabled (Finding 4) ──
+        if self._timing_capture:
+            try:
+                from lumi_hpc_qc.backends.qx_client import QXClient
+                self._qx = QXClient.from_backend(self._sim)
+                print(f"  QXClient: initialized (timing capture enabled)")
+            except Exception as e:
+                self._qx = None
+                print(f"  QXClient: unavailable ({e}) — timing capture disabled")
+
+        # ── Dynamic batch limit: only if not overridden by config ──
+        if self._qx is not None and self.VTT_BATCH_LIMIT == 100:
             try:
                 policy = self._qx.get_job_policy()
                 if policy and "max_number_circuits_per_batch" in policy:
@@ -150,9 +221,11 @@ class IqmQpuBackend(Backend):
                     print(f"  Batch limit: {self.VTT_BATCH_LIMIT} (default — policy endpoint empty)")
             except Exception:
                 print(f"  Batch limit: {self.VTT_BATCH_LIMIT} (default — policy endpoint unreachable)")
+        else:
+            print(f"  Batch limit: {self.VTT_BATCH_LIMIT}")
 
-        # ── Queue length: capture once before sweep starts ──
-        if self._qx is not None:
+        # ── Queue length: only if queue_prefetch enabled (Finding 4) ──
+        if self._queue_prefetch and self._qx is not None:
             try:
                 self._queue_length_before = self._qx.get_queue_length()
                 if self._queue_length_before is not None:
@@ -211,8 +284,6 @@ class IqmQpuBackend(Backend):
                         )
 
                     # ── Batch submission to QPU ──
-                    # IQM .run() accepts list[QuantumCircuit] as single batch.
-                    # VTT caps at VTT_BATCH_LIMIT circuits/batch — auto-chunk.
                     counts_list = self._submit_batch(
                         meas_circuits, shots=shots,
                     )
@@ -247,28 +318,13 @@ class IqmQpuBackend(Backend):
     ) -> list[dict[str, int]]:
         """Submit circuits as batched .run() calls, auto-chunking at VTT limit.
 
-        IQM's IQMBackend.run() accepts list[QuantumCircuit] as a single
-        batch job — one queue entry for the entire list. VTT enforces a
-        hard cap (default 100) circuits per batch. This method:
-
-        1. If len(circuits) <= VTT_BATCH_LIMIT: single .run() call
-        2. If len(circuits) > VTT_BATCH_LIMIT: chunk into sequential
-           batches of <=limit, submit each, reassemble in original order
-
-        Item 2: When QXClient is available, uses capture_job_timing()
-        to record server-side QPU timing from the VTT QX API timeline.
-        Timing is best-effort — never crashes execution.
-
-        Item 7: Retries transient failures with exponential backoff
-        (1s, 2s, 4s). Permanent failures propagate after MAX_RETRIES.
+        v1.3.1 changes (RED-DIRECTIVE-QPU-CONFIG-v1.0):
+          - Auto-chunk logging: clear message when splitting (Finding 3).
+          - Retry disabled by default; error-classified when enabled (Finding 1).
+          - retry_attempts tracked per chunk for benchmark Parquet (Finding 7).
 
         Returns:
             List of count dicts in the same order as input circuits.
-            result[i] corresponds to circuits[i].
-
-        Ordering guarantee: IQM .run(list) returns results in submission
-        order — result.get_counts(i) corresponds to circuit_list[i].
-        Verified by Test A (single batch) and Test B (multi-batch).
         """
         if not circuits:
             return []
@@ -276,39 +332,63 @@ class IqmQpuBackend(Backend):
         all_counts: list[dict[str, int]] = []
         limit = self.VTT_BATCH_LIMIT
 
+        # ── Finding 3: Auto-chunk logging ──
+        if len(circuits) > limit:
+            n_chunks = -(-len(circuits) // limit)  # ceil division
+            chunk_sizes = []
+            for i in range(0, len(circuits), limit):
+                chunk_sizes.append(min(limit, len(circuits) - i))
+            print(f"  \u26a0 Batch of {len(circuits)} circuits exceeds VTT limit ({limit}).")
+            print(f"    Splitting into {n_chunks} chunks: {chunk_sizes}")
+            print(f"    Each chunk incurs a separate queue wait (~20s typical).")
+
         for chunk_start in range(0, len(circuits), limit):
             chunk = circuits[chunk_start:chunk_start + limit]
             chunk_for_run = chunk[0] if len(chunk) == 1 else chunk
 
-            # ── Item 7: Retry with exponential backoff ──
+            # ── Retry: OFF by default, error-classified when ON (Finding 1) ──
+            max_attempts = self._retry_max_attempts if self._retry_enabled else 1
             result = None
             timing = None
+            attempts_taken = 0
 
-            for attempt in range(self.MAX_RETRIES + 1):
+            for attempt in range(max_attempts):
+                attempts_taken = attempt + 1
                 try:
                     if self._qx is not None:
-                        # ── Item 2: Submit via QXClient for timing capture ──
                         qiskit_result, timing = self._qx.capture_job_timing(
                             self._sim, chunk_for_run, shots,
                             queue_length_before=self._queue_length_before,
                         )
                         result = qiskit_result
                     else:
-                        # Fallback: direct submission without timing
                         result = self._sim.run(chunk_for_run, shots=shots).result()
                     break  # success
                 except Exception as e:
-                    if attempt == self.MAX_RETRIES:
-                        print(f"  BATCH FAILED after {self.MAX_RETRIES + 1} attempts: {e}")
-                        raise
-                    wait = self.RETRY_BASE_WAIT_S * (2 ** attempt)
-                    print(f"  Batch failed (attempt {attempt + 1}/{self.MAX_RETRIES + 1}): {e}")
+                    if not self._retry_enabled:
+                        raise  # retry disabled — fail immediately
+
+                    # Check if this error is retryable
+                    error_str = str(e)
+                    is_retryable = any(
+                        pattern in error_str
+                        for pattern in self._retry_errors
+                    )
+                    if not is_retryable or attempt == max_attempts - 1:
+                        print(f"  BATCH FAILED after {attempts_taken} attempt(s): {e}")
+                        raise  # fatal error or last attempt
+
+                    wait = self._retry_base_wait_s * (2 ** attempt)
+                    print(f"  Retryable error (attempt {attempts_taken}/{max_attempts}): {e}")
                     print(f"  Retrying in {wait}s...")
                     time.sleep(wait)
 
-            # Accumulate timing record (best-effort — Item 2)
+            # Accumulate timing record (best-effort)
             if timing is not None:
                 self._batch_timings.append(timing)
+
+            # Track retry attempts for benchmark Parquet (Finding 7)
+            self._batch_retry_attempts.append(attempts_taken)
 
             # Extract counts from result
             if len(chunk) == 1:
@@ -320,13 +400,16 @@ class IqmQpuBackend(Backend):
         return all_counts
 
     def get_batch_timings(self) -> list:
-        """Return accumulated QPUJobTiming records for benchmark export.
-
-        Called by sweep_engine at sweep completion to feed Item 1
-        (benchmark Parquet export). Returns a copy; the internal
-        list is preserved for the lifetime of the backend instance.
-        """
+        """Return accumulated QPUJobTiming records for benchmark export."""
         return list(self._batch_timings)
+
+    def get_batch_retry_attempts(self) -> list[int]:
+        """Return retry attempt counts per batch for benchmark Parquet.
+
+        Parallel to get_batch_timings(). Value 1 = first-try success,
+        2+ = retried. (RED-DIRECTIVE-QPU-CONFIG Finding 7)
+        """
+        return list(self._batch_retry_attempts)
 
     def compile_circuit(self, circuit):
         """Transpile circuit for IQM native gate set (CZ + phased-RX)."""

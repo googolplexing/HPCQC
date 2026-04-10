@@ -3,6 +3,60 @@
 
 # Changelog
 
+## 1.3.1 (2026-04-10)
+
+### QPU Behavior Audit — Configurable Defaults (RED-DIRECTIVE-QPU-CONFIG-v1.0)
+
+Mandatory patch before any production QPU campaign.  All automatic QPU
+behaviors are now off by default and configurable via the new `qpu:`
+YAML section.  ~130 lines modified across 4 source files + 2 test files.
+
+**Governing document:** RED-DIRECTIVE-QPU-CONFIG-v1.0
+
+#### Finding 1 — Retry Disabled by Default (CRITICAL)
+- Removed hardcoded `MAX_RETRIES = 3` and `RETRY_BASE_WAIT_S = 1`
+- Retry is OFF by default — errors propagate immediately
+- When enabled via `qpu.retry.enabled: true`, only errors matching
+  `retryable_errors` patterns trigger retry; fatal errors always propagate
+- `except Exception` no longer silently retries permanent failures
+
+#### Finding 2 — QPUConfig Dataclass + YAML `qpu:` Section
+- New `QPUConfig` dataclass in `sweep_engine.py` (10 fields, all safe defaults)
+- `parse_sweep_config()` parses `qpu:` section from campaign YAML
+- `IqmQpuBackend.set_qpu_config()` for post-construction application
+- All QPU params flow from YAML → QPUConfig → backend (single source)
+
+#### Finding 3 — Auto-Chunk Logging
+- Clear warning when batch exceeds VTT limit and is split into chunks
+- Shows chunk count, sizes, and queue wait impact
+
+#### Finding 4 — QXClient / Timing Capture Opt-In
+- `QXClient.from_backend()` only created when `qpu.timing_capture: true`
+- Queue length prefetch only when `qpu.queue_prefetch: true`
+- `get_job_policy()` only when `batch_limit` not set in config
+- Zero automatic HTTP requests to VTT QX API by default
+
+#### Finding 5 — Connection Timeout
+- `signal.alarm()` wraps `IQMProvider.get_backend()` (default 60s)
+- Clear error message with calibration schedule and config hint
+- Configurable via `qpu.connection_timeout_s`
+
+#### Finding 6 — Shots Single Source
+- `IqmQpuBackend._shots` reads from `QPUConfig.shots`
+- Hardcoded 4096 defaults remain in 5 modules as fallbacks only;
+  QPUConfig is the authoritative source when present
+
+#### Finding 7 — retry_attempts in Benchmark Parquet
+- Schema updated: 35 → 36 columns (+`retry_attempts` int32 nullable)
+- `IqmQpuBackend.get_batch_retry_attempts()` parallel to `get_batch_timings()`
+- Sweep engine injects retry counts into timing records before export
+- Null for simulator sweeps
+
+### Validation
+- E6b: updated retry tests → QPUConfig defaults, `set_qpu_config()`,
+  `get_batch_retry_attempts()`
+- E7: updated Parquet column count 35 → 36, added `retry_attempts` column check
+
 ## 1.3.0 (2026-04-09)
 
 ### VTT QX API Integration, Campaign Reliability, Benchmark Parquet (RED-DIRECTIVE-V130-v1.0)

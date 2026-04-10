@@ -1180,7 +1180,7 @@ try:
 
         check("Benchmark Parquet: has rows", bench_table.num_rows > 0,
               f"got {bench_table.num_rows} rows")
-        check("Benchmark Parquet: 35 columns", bench_table.num_columns == 35,
+        check("Benchmark Parquet: 36 columns", bench_table.num_columns == 36,
               f"got {bench_table.num_columns} columns")
 
         col_names = bench_table.column_names
@@ -1192,6 +1192,8 @@ try:
               "wall_total_s" in col_names)
         check("Benchmark Parquet: qpu_execute_s column",
               "qpu_execute_s" in col_names)
+        check("Benchmark Parquet: retry_attempts column",
+              "retry_attempts" in col_names)
 
         # Simulator sweep: mode should be "simulator"
         modes = bench_table.column("mode").to_pylist()

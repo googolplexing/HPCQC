@@ -91,6 +91,32 @@ class SamplingConfig:
 
 
 @dataclass
+class QPUConfig:
+    """QPU execution parameters — parsed from the ``qpu:`` YAML section.
+
+    All behaviors default to OFF or safe values.  The researcher opts in
+    to retry, timing capture, and queue prefetch explicitly.
+
+    RED-DIRECTIVE-QPU-CONFIG-v1.0 §3.
+    """
+    shots: int = 4096
+    batch_limit: int | None = None          # None = auto-detect from VTT API, fallback 100
+    connection_timeout_s: int = 60
+
+    # Retry policy — DISABLED by default (RED-DIRECTIVE-QPU-CONFIG §2 Finding 1)
+    retry_enabled: bool = False
+    retry_max_attempts: int = 3             # total attempts (1 = original only)
+    retry_base_wait_s: float = 1.0          # doubles each attempt: 1s, 2s, 4s
+    retry_errors: list[str] = field(default_factory=lambda: [
+        "No results available", "timeout", "ConnectionError",
+    ])
+
+    # QX API features — OFF by default (Finding 4)
+    timing_capture: bool = False
+    queue_prefetch: bool = False
+
+
+@dataclass
 class SweepExperimentConfig:
     """One experiment block from the sweep YAML.
 
@@ -139,6 +165,9 @@ class SweepConfig:
     hdf5_filename: str = "sweep.h5"
     enable_swmr: bool = False
     debug_json: bool = False
+
+    # QPU execution parameters (RED-DIRECTIVE-QPU-CONFIG-v1.0)
+    qpu: QPUConfig = field(default_factory=QPUConfig)
 
     # Sweep metadata
     sweep_id: str = ""
@@ -404,6 +433,23 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
     # Parse execution section
     execution = sweep_dict.get("execution", {})
 
+    # Parse QPU config section (RED-DIRECTIVE-QPU-CONFIG-v1.0 §3)
+    qpu_dict = sweep_dict.get("qpu", {})
+    retry_dict = qpu_dict.get("retry", {})
+    qpu_config = QPUConfig(
+        shots=int(qpu_dict.get("shots", 4096)),
+        batch_limit=int(qpu_dict["batch_limit"]) if "batch_limit" in qpu_dict else None,
+        connection_timeout_s=int(qpu_dict.get("connection_timeout_s", 60)),
+        retry_enabled=bool(retry_dict.get("enabled", False)),
+        retry_max_attempts=int(retry_dict.get("max_attempts", 3)),
+        retry_base_wait_s=float(retry_dict.get("base_wait_s", 1.0)),
+        retry_errors=retry_dict.get("retryable_errors", [
+            "No results available", "timeout", "ConnectionError",
+        ]),
+        timing_capture=bool(qpu_dict.get("timing_capture", False)),
+        queue_prefetch=bool(qpu_dict.get("queue_prefetch", False)),
+    )
+
     config = SweepConfig(
         experiments=experiments,
         calibrations=sweep_dict.get("calibrations", []),
@@ -413,6 +459,7 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
         hdf5_filename=sweep_dict.get("hdf5_filename", "sweep.h5"),
         enable_swmr=sweep_dict.get("enable_swmr", False),
         debug_json=sweep_dict.get("debug_json", False),
+        qpu=qpu_config,
         sweep_id=sweep_dict.get("sweep_id", str(uuid.uuid4())[:8]),
         framework_version=sweep_dict.get("framework_version", _pkg_version),
     )
@@ -1050,6 +1097,18 @@ class SweepEngine:
                 timing_records = backend.get_batch_timings()
                 if timing_records:
                     mode = "qpu"
+                    # Inject retry_attempts from backend (v1.3.1 Finding 7)
+                    if hasattr(backend, "get_batch_retry_attempts"):
+                        retry_attempts = backend.get_batch_retry_attempts()
+                        for idx, rec in enumerate(timing_records):
+                            ra = retry_attempts[idx] if idx < len(retry_attempts) else None
+                            if isinstance(rec, dict):
+                                rec["retry_attempts"] = ra
+                            else:
+                                try:
+                                    rec.retry_attempts = ra
+                                except AttributeError:
+                                    pass  # dataclass without field — stays None in export
 
             # Fallback: simulator timing from sweep_timing.json
             if not timing_records:

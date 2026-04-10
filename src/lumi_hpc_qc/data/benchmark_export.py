@@ -8,11 +8,13 @@ timing comes from QPUJobTiming records captured via QXClient. For
 simulator sweeps, local perf_counter data is used and QPU-specific
 columns are null.
 
-35-column schema per RED-DIRECTIVE-BENCHMARK-PARQUET-v1.0 Appendix A:
+36-column schema per RED-DIRECTIVE-BENCHMARK-PARQUET-v1.0 Appendix A
++ RED-DIRECTIVE-QPU-CONFIG-v1.0 §5 (retry_attempts):
   Identity (6), Batch (8), Server Timing (6), Local Timing (3),
-  Derived (2), Context (5), Infrastructure (5)
+  Derived (2), Context (5), Retry (1), Infrastructure (5)
 
 RED-DIRECTIVE-V130-v1.0 §1 — Benchmark Parquet Export
+RED-DIRECTIVE-QPU-CONFIG-v1.0 §5 — retry_attempts column
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any
 
 
 def _benchmark_schema():
-    """Build the 35-column PyArrow schema.
+    """Build the 36-column PyArrow schema.
 
     Lazy import to avoid pyarrow dependency at module load time
     (pyarrow is heavy and not needed for HDF5-only operations).
@@ -76,7 +78,10 @@ def _benchmark_schema():
         pa.field("heralding_mode", pa.string()),
         pa.field("max_circuit_duration_s", pa.float64()),  # provisional
 
-        # ── Section 7: Infrastructure ──
+        # ── Section 7: Retry (RED-DIRECTIVE-QPU-CONFIG §5) ──
+        pa.field("retry_attempts", pa.int32()),            # 1=first try, 2+=retried, null=sim
+
+        # ── Section 8: Infrastructure ──
         pa.field("device", pa.string()),
         pa.field("partition", pa.string()),
         pa.field("slurm_job_id", pa.string()),
@@ -91,7 +96,7 @@ def export_benchmark_to_parquet(
     *,
     packing_metadata: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Export per-batch benchmark data to a 35-column Parquet file.
+    """Export per-batch benchmark data to a 36-column Parquet file.
 
     Args:
         timing_records: List of QPUJobTiming dataclasses (from
@@ -205,6 +210,9 @@ def export_benchmark_to_parquet(
         rows["heralding_mode"].append(_get("heralding_mode"))
         rows["max_circuit_duration_s"].append(_get("max_circuit_duration_s"))
 
+        # ── Retry (RED-DIRECTIVE-QPU-CONFIG §5) ──
+        rows["retry_attempts"].append(_get("retry_attempts"))
+
         # ── Infrastructure ──
         rows["device"].append(device)
         rows["partition"].append(partition)
@@ -263,4 +271,6 @@ def make_simulator_timing_records(
         "dd_mode": None,
         "heralding_mode": None,
         "max_circuit_duration_s": None,
+        # Retry — null for simulator
+        "retry_attempts": None,
     }]

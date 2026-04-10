@@ -572,23 +572,34 @@ try:
               str(ve))
     check("Item 8: MixedPacker(device_cal=None) raises ValueError", raised)
 
-    # ── Item 7: Verify retry constants on IqmQpuBackend ──
+    # ── v1.3.1: Verify QPUConfig-based defaults on IqmQpuBackend ──
     from lumi_hpc_qc.backends.iqm_qpu import IqmQpuBackend
-    check("Item 7: MAX_RETRIES = 3",
-          IqmQpuBackend.MAX_RETRIES == 3,
-          f"got {IqmQpuBackend.MAX_RETRIES}")
-    check("Item 7: RETRY_BASE_WAIT_S = 1",
-          IqmQpuBackend.RETRY_BASE_WAIT_S == 1,
-          f"got {IqmQpuBackend.RETRY_BASE_WAIT_S}")
-    check("Item 7: VTT_BATCH_LIMIT = 100",
+    check("v1.3.1: retry disabled by default",
+          IqmQpuBackend()._retry_enabled is False,
+          f"got {IqmQpuBackend()._retry_enabled}")
+    check("v1.3.1: VTT_BATCH_LIMIT = 100",
           IqmQpuBackend.VTT_BATCH_LIMIT == 100,
           f"got {IqmQpuBackend.VTT_BATCH_LIMIT}")
 
-    # ── Item 7: Verify batch_timings accessor exists ──
+    # ── Verify batch accessors exist ──
     backend = IqmQpuBackend()
-    check("Item 7: get_batch_timings() returns empty list",
+    check("v1.3.1: get_batch_timings() returns empty list",
           backend.get_batch_timings() == [],
           f"got {backend.get_batch_timings()}")
+    check("v1.3.1: get_batch_retry_attempts() returns empty list",
+          backend.get_batch_retry_attempts() == [],
+          f"got {backend.get_batch_retry_attempts()}")
+
+    # ── Verify set_qpu_config applies settings ──
+    from lumi_hpc_qc.sweep.sweep_engine import QPUConfig
+    cfg = QPUConfig(retry_enabled=True, shots=2048, timing_capture=True)
+    backend.set_qpu_config(cfg)
+    check("v1.3.1: set_qpu_config applies retry_enabled",
+          backend._retry_enabled is True,
+          f"got {backend._retry_enabled}")
+    check("v1.3.1: set_qpu_config applies shots",
+          backend._shots == 2048,
+          f"got {backend._shots}")
 
 except Exception as e:
     check("E6b.10 v1.3.0 guards", False, traceback.format_exc())
