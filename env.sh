@@ -12,7 +12,7 @@
 # =============================================================================
 
 # ── SLURM account ──
-export HPCQC_ACCOUNT="${HPCQC_ACCOUNT:-project_462001289}"
+export HPCQC_ACCOUNT="${HPCQC_ACCOUNT:-project_462000055}"
 # SLURM uses SBATCH_ACCOUNT as the default --account for all sbatch calls
 export SBATCH_ACCOUNT="${HPCQC_ACCOUNT}"
 
@@ -20,7 +20,7 @@ export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 
 # ── Container paths ──
 # GPU container (qiskit-aer with ROCm/hipBLAS for MI250X)
-export HPCQC_GPU_CONTAINER="${HPCQC_GPU_CONTAINER:-/flash/project_462001289/mucciard/CSC_QT_simulations_container_builder/ccpe-extensions-cray-qiskit-aer-patch/output/07-patchelf-fix.sif}"
+export HPCQC_GPU_CONTAINER="${HPCQC_GPU_CONTAINER:-/appl/local/quantum/qiskit/qiskit_2.3.0_csc.sif}"
 
 # CPU container (same image works for CPU, or set a different one)
 export HPCQC_CPU_CONTAINER="${HPCQC_CPU_CONTAINER:-${HPCQC_GPU_CONTAINER}}"
@@ -28,10 +28,10 @@ export HPCQC_CPU_CONTAINER="${HPCQC_CPU_CONTAINER:-${HPCQC_GPU_CONTAINER}}"
 # ── Container launch wrappers ──
 # These handle Singularity bind mounts and GPU affinity.
 # GPU wrapper: sets ROCR_VISIBLE_DEVICES for MI250X GCD mapping
-export HPCQC_GPU_WRAPPER="${HPCQC_GPU_WRAPPER:-/flash/project_462001289/mucciard/CSC_QT_simulations_container_builder/ccpe-extensions-cray-qiskit-aer-patch/bin/run-singularity-with-gpu-affinity}"
+export HPCQC_GPU_WRAPPER="${HPCQC_GPU_WRAPPER:-/appl/local/quantum/qiskit/run-singularity-with-gpu-affinity}"
 
 # CPU wrapper: sets up bind mounts without GPU affinity
-export HPCQC_CPU_WRAPPER="${HPCQC_CPU_WRAPPER:-/flash/project_462001289/mucciard/CSC_QT_simulations_container_builder/ccpe-extensions-cray-qiskit-aer-patch/bin/run-singularity}"
+export HPCQC_CPU_WRAPPER="${HPCQC_CPU_WRAPPER:-/appl/local/quantum/qiskit/run-singularity}"
 
 # ── GPU affinity mask ──
 # CPU-to-GCD binding mask for LUMI-G nodes (MI250X, 8 GCDs per node)
