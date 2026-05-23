@@ -162,6 +162,7 @@ def build_control_readout_noise_model(
     single_gate_time_ns: float | None = None,
     cz_gate_time_ns: float | None = None,
     measure_time_ns: float | None = None,
+    spec=None,
 ):
     """Build the static noise that is applied during gates and measurement.
 
@@ -207,6 +208,38 @@ def build_control_readout_noise_model(
     noise_model = NoiseModel()
     warnings: list[str] = []
 
+    # --- Resolve which noise channels are active (the --noise selection) ---
+    # spec=None => full model (every channel on), preserving the behaviour of
+    # all existing callers (aer_gpu, twin_simulator, tests, the default runner).
+    # A NoiseSpec (lumi_hpc_qc.backends.noise_spec) selects a subset for ablation
+    # studies on the SAME native circuit.
+    if spec is None:
+        sq_on = tq_on = ro_on = th_on = True
+        th_over: dict = {}
+    else:
+        sq_on = bool(spec.single_qubit_depolarizing)
+        tq_on = bool(spec.two_qubit_depolarizing)
+        ro_on = bool(spec.readout)
+        th_on = bool(spec.thermal_relaxation)
+        th_over = dict(getattr(spec, "thermal_overrides", {}) or {})
+
+    # Uniform thermal overrides (optional, for ablation): replace the per-qubit
+    # T1/T2 and/or the gate-relaxation duration with explicit values. NOTE: these
+    # apply to the GATE-TIME (resident) relaxation built here. The idle/delay
+    # relaxation pass (build_relaxation_pass) reads T1/T2 from the calibration
+    # independently, so if you override here you may want to keep them consistent.
+    if th_on and th_over:
+        n_sel = len(selected)
+        if "t1_us" in th_over:
+            t1s_s = [th_over["t1_us"] * 1e-6] * n_sel
+        if "t2_us" in th_over:
+            t2s_s = [th_over["t2_us"] * 1e-6] * n_sel
+        if "dt_ns" in th_over:
+            sg_s = cz_s = th_over["dt_ns"] * 1e-9
+        warnings.append(
+            f"thermal overrides active (gate-time relaxation only): {th_over}"
+        )
+
     # --- Single-qubit gate: control error + gate-duration relaxation ---
     # When a single-qubit gate runs, two things happen: the applied rotation is
     # slightly off (control error -- a depolarizing error sized by the measured
@@ -217,13 +250,13 @@ def build_control_readout_noise_model(
     for qname, qdata in selected:
         i = name_to_idx[qname]
         sg_err = qdata.get("single_gate_error", 0.001)
-        if qdata.get(t2k, 99.0) < _T2_WARN_US:
+        if th_on and qdata.get(t2k, 99.0) < _T2_WARN_US:
             warnings.append(
                 f"qubit {qname}: {t2_mode} T2={qdata.get(t2k):.3f}us "
                 f"(<{_T2_WARN_US}us) -- heavy dephasing"
             )
-        depol1 = depolarizing_error(sg_err, 1) if sg_err > 0 else None
-        relax1 = _thermal_1q(t1s_s[i], t2s_s[i], sg_s)
+        depol1 = depolarizing_error(sg_err, 1) if (sg_err > 0 and sq_on) else None
+        relax1 = _thermal_1q(t1s_s[i], t2s_s[i], sg_s) if th_on else None
         timed_err = _combine_control_relax(depol1, relax1)
         if timed_err is not None:
             noise_model.add_quantum_error(
@@ -249,18 +282,16 @@ def build_control_readout_noise_model(
             continue
         i, j = name_to_idx[q1], name_to_idx[q2]
         cz_err = gate_data.get("cz_error", 0.005)
-        if cz_err > _CZ_ERR_WARN:
+        if tq_on and cz_err > _CZ_ERR_WARN:
             warnings.append(
                 f"edge {gate_pair}: CZ error={cz_err:.4f} "
                 f"(>{_CZ_ERR_WARN}) -- low-fidelity coupling"
             )
-        depol2 = depolarizing_error(cz_err, 2) if cz_err > 0 else None
-        err_ij = _combine_control_relax(
-            depol2, _thermal_nq([i, j], t1s_s, t2s_s, cz_s)
-        )
-        err_ji = _combine_control_relax(
-            depol2, _thermal_nq([j, i], t1s_s, t2s_s, cz_s)
-        )
+        depol2 = depolarizing_error(cz_err, 2) if (cz_err > 0 and tq_on) else None
+        relax_ij = _thermal_nq([i, j], t1s_s, t2s_s, cz_s) if th_on else None
+        relax_ji = _thermal_nq([j, i], t1s_s, t2s_s, cz_s) if th_on else None
+        err_ij = _combine_control_relax(depol2, relax_ij)
+        err_ji = _combine_control_relax(depol2, relax_ji)
         if err_ij is not None:
             noise_model.add_quantum_error(
                 err_ij, _NATIVE_2Q_GATES, [i, j], warnings=False
@@ -275,13 +306,14 @@ def build_control_readout_noise_model(
     # symmetric bit-flip: probability p of reading 1 when the qubit is 0 and
     # vice versa, where p is derived from the qubit's readout fidelity. (We
     # split the total infidelity evenly between the two flip directions.)
-    for qname, qdata in selected:
-        i = name_to_idx[qname]
-        ro = qdata.get("readout_fidelity", 0.97)
-        p = (1 - ro) / 2
-        noise_model.add_readout_error(
-            ReadoutError([[1 - p, p], [p, 1 - p]]), [i]
-        )
+    if ro_on:
+        for qname, qdata in selected:
+            i = name_to_idx[qname]
+            ro = qdata.get("readout_fidelity", 0.97)
+            p = (1 - ro) / 2
+            noise_model.add_readout_error(
+                ReadoutError([[1 - p, p], [p, 1 - p]]), [i]
+            )
 
     edges = _extract_edges(cal, name_to_idx)
     coupling_map = CouplingMap(edges) if edges else None

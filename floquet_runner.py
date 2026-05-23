@@ -10,9 +10,6 @@ imported at module level so workers inherit them.
 
 Noise sources (--noise-source):
   noiseless        : AerSimulator(), no noise, circuit as-written.
-  logical-gates    : your logical circuit as-written (rx/rz/rzz, no native
-                     transpilation or routing), with HPCQC's existing
-                     calibration noise model (build_noise_model). Fast.
   device-calibrated: transpile to device native gates (PRX->r, CZ->cz),
                      route onto the device coupling map, SCHEDULE
                      (scheduling done inside transpile) so idle periods are
@@ -44,31 +41,37 @@ from qiskit.compiler import transpile
 from qiskit_aer import AerSimulator
 
 try:
-    from lumi_hpc_qc.backends.noise_model import build_noise_model
-    HAVE_LOGICAL_NOISE = True
-except ImportError:
-    _proj = os.environ.get("PROJECT_DIR") or os.environ.get("SINGULARITYENV_PROJECT_DIR")
-    if _proj:
-        sys.path.insert(0, os.path.join(_proj, "src"))
-    try:
-        from lumi_hpc_qc.backends.noise_model import build_noise_model
-        HAVE_LOGICAL_NOISE = True
-    except ImportError:
-        build_noise_model = None
-        HAVE_LOGICAL_NOISE = False
-
-try:
     from lumi_hpc_qc.backends.device_noise import (
         build_control_readout_noise_model,
         build_relaxation_pass,
     )
     HAVE_DEVICE_NOISE = True
 except ImportError:
-    build_control_readout_noise_model = None
-    build_relaxation_pass = None
-    HAVE_DEVICE_NOISE = False
+    # Not pip-installed: make the in-repo package importable from a checkout
+    # (PROJECT_DIR/src), then retry. This sys.path bootstrap previously lived
+    # in the now-removed logical-gates (build_noise_model) import block.
+    _proj = os.environ.get("PROJECT_DIR") or os.environ.get("SINGULARITYENV_PROJECT_DIR")
+    if _proj:
+        sys.path.insert(0, os.path.join(_proj, "src"))
+    try:
+        from lumi_hpc_qc.backends.device_noise import (
+            build_control_readout_noise_model,
+            build_relaxation_pass,
+        )
+        HAVE_DEVICE_NOISE = True
+    except ImportError:
+        build_control_readout_noise_model = None
+        build_relaxation_pass = None
+        HAVE_DEVICE_NOISE = False
 
-NOISE_SOURCES = ["noiseless", "logical-gates", "device-calibrated", "iqm-fake-backend"]
+# parse_noise_spec has no qiskit dependency; import it independently so the
+# --noise flag still validates even if the qiskit-dependent builders are absent.
+try:
+    from lumi_hpc_qc.backends.noise_spec import parse_noise_spec
+except ImportError:
+    parse_noise_spec = None
+
+NOISE_SOURCES = ["noiseless", "device-calibrated", "iqm-fake-backend"]
 
 
 def get_autocorrelation(counts, init_bit_array, num_qubits):
@@ -127,7 +130,7 @@ def build_init_bit_array(initial_state, num_qubits):
 
 
 def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
-                             durations, tag):
+                             durations, tag, spec=None):
     """Turn logical circuits into scheduled, native-gate circuits ready to run.
 
     This does the steps that make a circuit resemble what the real Q50 would
@@ -169,7 +172,8 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     sg_ns, cz_ns, me_ns = durations
     nm, coupling_map, info = build_control_readout_noise_model(
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
-        single_gate_time_ns=sg_ns, cz_gate_time_ns=cz_ns, measure_time_ns=me_ns)
+        single_gate_time_ns=sg_ns, cz_gate_time_ns=cz_ns, measure_time_ns=me_ns,
+        spec=spec)
 
     # One tick = 1 ns, so a duration value of N means N nanoseconds.
     dt_s = 1e-9
@@ -214,43 +218,47 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     )
 
     # Idle/delay relaxation. Gate-time relaxation is already RESIDENT in `nm`
-    # (added by build_control_readout_noise_model), so this pass only handles
-    # the variable-duration part: the idle "delay" steps. We register it as a
-    # NoiseModel custom noise pass -- exactly how Aer's own
-    # NoiseModel.from_backend attaches its delay-relaxation pass. Aer runs it at
-    # assemble time on circuits that contain a Delay and skips circuits with
-    # none (no idle gap -> no idle relaxation to add), which is correct.
-    #
-    # Why this scales: keeping the gate relaxation resident means a qubit with
-    # T2 > T1 -- whose thermal channel is a genuine non-unitary Kraus map -- is
-    # present in `nm` at construction. That puts a kraus optype in the model, so
-    # Aer precomputes the canonical Kraus for ALL its errors (resident gate AND
-    # injected delay) and statevector simulation samples them per shot. This
-    # works for arbitrarily many qubits, with no per-circuit baked-in channels
-    # and no density-matrix fallback (which is O(4^n) and small-n only). The old
-    # approach baked every channel into the circuit, which routed the genuine-
-    # Kraus errors onto a non-resident path where the precompute did not fire,
-    # giving "QuantumError: Kraus is empty" under statevector.
-    relax_pass, _, _ = build_relaxation_pass(
-        calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
-        dt_seconds=dt_s, target=target)
-    nm._custom_noise_passes.append(relax_pass)
+    # (added by build_control_readout_noise_model); this pass adds the
+    # variable-duration part -- the idle "delay" steps the scheduler inserts.
+    # We register it as a NoiseModel custom noise pass, exactly how Aer's own
+    # NoiseModel.from_backend attaches its delay-relaxation pass: Aer runs it at
+    # assemble time on circuits containing a Delay and skips those with none.
+    # Skipped entirely when the thermal channel is disabled (e.g. --noise=1q,2q).
+    relax_pass = None
+    thermal_on = (spec is None) or bool(spec.thermal_relaxation)
+    if thermal_on:
+        relax_pass, _, _ = build_relaxation_pass(
+            calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
+            dt_seconds=dt_s, target=target)
+        nm._custom_noise_passes.append(relax_pass)
 
     # Keep each worker single-threaded (40 workers share the node; we don't
     # want each one spawning its own Aer thread pool).
     aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
                          max_parallel_shots=1)
-    simulator = AerSimulator(noise_model=nm, **aer_threading)
+    # Pin method="statevector" rather than leaving it "automatic". The thermal
+    # channel is a genuine non-unitary Kraus map for any qubit with T2 > T1.
+    # Under statevector, Aer samples such noise via a kraus path that reads a
+    # PRECOMPUTED canonical Kraus (circuit_executor.hpp: branch on
+    # opset.contains(kraus)). That precompute (NoiseModel::enable_kraus_method)
+    # runs DETERMINISTICALLY in the forced-method path when method==statevector
+    # and the model opset contains kraus (aer_controller.hpp:778). In "automatic"
+    # mode the same precompute is gated on a per-circuit method decision that can
+    # be skipped, leaving the kraus path with an empty Kraus -> "QuantumError:
+    # Kraus is empty". Forcing statevector closes that gating gap for EVERY
+    # --noise combination (including thermal-only) and is the scalable path
+    # (statevector + per-shot sampling, not O(4^n) density_matrix).
+    simulator = AerSimulator(method="statevector", noise_model=nm, **aer_threading)
     # `scheduled` carries the native + routed + ALAP-scheduled circuits with
     # explicit Delays; Aer runs the delay-relaxation pass at assemble time. We
-    # return relax_pass so the caller can log that relaxation is configured.
+    # return relax_pass so the caller can log whether relaxation is configured.
     return scheduled, simulator, relax_pass, info
 
 
 def run_one_instance(args_tuple):
     (instance_id, noise_source, calibration_path, output_dir, num_qubits,
      num_shots, num_max_kicks, epsilon, initial_state, t2_mode, durations,
-     iqm_device) = args_tuple
+     iqm_device, noise_spec) = args_tuple
 
     tag = f"[instance {instance_id:02d}]"
     log_path = os.path.join(output_dir, f"instance_{instance_id:02d}.log")
@@ -291,25 +299,15 @@ def run_one_instance(args_tuple):
             run_circuits = transpile(circuits, simulator,
                                      optimization_level=3, num_processes=1)
 
-        elif noise_source == "logical-gates":
-            if not HAVE_LOGICAL_NOISE:
-                raise RuntimeError("build_noise_model not importable")
-            nm, coupling_map = build_noise_model(
-                calibration_path, num_qubits=num_qubits, noise_channels=None)
-            simulator = AerSimulator(noise_model=nm, coupling_map=coupling_map,
-                                     **aer_threading)
-            print(f"{tag} WARNING: logical-gates simulates abstract gates (rzz) "
-                  f"without native transpilation; 2q noise may under-attach.")
-            print(f"{tag} transpiling {len(circuits)} circuits (serial)...")
-            run_circuits = transpile(circuits, simulator,
-                                     optimization_level=3, num_processes=1)
-
         elif noise_source == "device-calibrated":
             if not HAVE_DEVICE_NOISE:
                 raise RuntimeError("device_noise not importable")
             print(f"{tag} transpiling to native gates + scheduling...")
+            if noise_spec is not None:
+                print(f"{tag} noise channels: {noise_spec.describe()}")
             run_circuits, simulator, relax_pass, dinfo = _prepare_device_circuits(
-                circuits, num_qubits, calibration_path, t2_mode, durations, tag)
+                circuits, num_qubits, calibration_path, t2_mode, durations, tag,
+                spec=noise_spec)
             print(f"{tag} selected qubits: {dinfo['selected_qubits']}")
             print(f"{tag} durations(ns): prx={dinfo['single_gate_time_ns']} "
                   f"cz={dinfo['cz_gate_time_ns']} measure={dinfo['measure_time_ns']} "
@@ -410,6 +408,13 @@ def main():
     parser.add_argument("--epsilon", type=float, default=0.03)
     parser.add_argument("--initial-state", type=int, default=3)
     parser.add_argument("--t2-mode", choices=["ramsey", "echo"], default="ramsey")
+    parser.add_argument(
+        "--noise", default="all",
+        help="device-calibrated noise channels (default: all). One of "
+             "all|none, or a comma-separated subset of "
+             "1q,2q,measurement,thermal_relaxation_error "
+             "(e.g. --noise=1q,2q or --noise=thermal_relaxation_error). "
+             "Ignored for noiseless / iqm-fake-backend.")
     parser.add_argument("--prx-time-ns", type=float, default=None)
     parser.add_argument("--cz-time-ns", type=float, default=None)
     parser.add_argument("--measure-time-ns", type=float, default=None)
@@ -417,7 +422,7 @@ def main():
     parser.add_argument("--single-instance-id", type=int, default=None)
     args = parser.parse_args()
 
-    needs_cal = args.noise_source in ("logical-gates", "device-calibrated")
+    needs_cal = args.noise_source in ("device-calibrated",)
     if needs_cal:
         if not args.calibration:
             sys.exit(f"ERROR: --calibration required for {args.noise_source}")
@@ -425,6 +430,16 @@ def main():
             sys.exit(f"ERROR: calibration file not found: {args.calibration}")
     if args.noise_source == "device-calibrated" and not HAVE_DEVICE_NOISE:
         sys.exit("ERROR: device_noise not importable. Set PROJECT_DIR/PYTHONPATH.")
+
+    # Parse the --noise channel selection (device-calibrated only).
+    noise_spec = None
+    if args.noise_source == "device-calibrated":
+        if parse_noise_spec is None:
+            sys.exit("ERROR: noise_spec not importable. Set PROJECT_DIR/PYTHONPATH.")
+        try:
+            noise_spec = parse_noise_spec(args.noise)
+        except ValueError as e:
+            sys.exit(f"ERROR: bad --noise value '{args.noise}': {e}")
 
     os.makedirs(args.output_dir, exist_ok=True)
     os.environ.setdefault("QISKIT_IN_PARALLEL", "TRUE")
@@ -444,6 +459,7 @@ def main():
     print(f"initial_state : {args.initial_state}")
     if args.noise_source == "device-calibrated":
         print(f"t2_mode       : {args.t2_mode}")
+        print(f"noise         : {noise_spec.describe()}")
     if args.noise_source == "iqm-fake-backend":
         print(f"iqm_device    : {args.iqm_device}")
     print("=" * 64)
@@ -452,7 +468,7 @@ def main():
     worker_args = [
         (i, args.noise_source, args.calibration, args.output_dir, args.num_qubits,
          args.num_shots, args.num_max_kicks, args.epsilon, args.initial_state,
-         args.t2_mode, durations, args.iqm_device)
+         args.t2_mode, durations, args.iqm_device, noise_spec)
         for i in range(args.num_instances)]
 
     if args.single_instance_id is not None:

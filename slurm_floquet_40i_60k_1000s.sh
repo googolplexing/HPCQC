@@ -9,7 +9,6 @@
 #
 # Usage:
 #   sbatch slurm_floquet_40i_60k_1000s.sh noiseless
-#   sbatch slurm_floquet_40i_60k_1000s.sh logical-gates     /path/cal.json
 #   sbatch slurm_floquet_40i_60k_1000s.sh device-calibrated /path/cal.json
 #   sbatch slurm_floquet_40i_60k_1000s.sh iqm-fake-backend
 #
@@ -43,9 +42,9 @@ CAL_PATH="${2:-}"
 
 case "$NOISE_SOURCE" in
   noiseless|iqm-fake-backend) NEEDS_CAL=0 ;;
-  logical-gates|device-calibrated) NEEDS_CAL=1 ;;
+  device-calibrated) NEEDS_CAL=1 ;;
   *)
-    echo "ERROR: first arg must be one of: noiseless | logical-gates | device-calibrated | iqm-fake-backend"
+    echo "ERROR: first arg must be one of: noiseless | device-calibrated | iqm-fake-backend"
     echo "got '${NOISE_SOURCE}'"
     exit 2 ;;
 esac
