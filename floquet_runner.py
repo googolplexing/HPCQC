@@ -2,42 +2,30 @@
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
 """
-Floquet driver -- 10 (or N) gate instances in parallel via multiprocessing.
+Floquet driver -- N gate instances in parallel via multiprocessing.
 
-Architecture: ONE Python process, ONE container instance, started by ONE
-``srun`` -- matches the proven HPCQC standard-partition pattern
-(``tests/e2_cpu_stress_test.py``, ``tests/slurm_e2_stress.sh``).
-Parallelism is provided by ``multiprocessing.Pool`` with the ``forkserver``
-context. qiskit / qiskit-aer / the HPCQC noise builder are imported once
-at MODULE LEVEL (before the forkserver starts) so workers inherit them
-and don't each re-trigger the qiskit-aer C++ extension load.
+ONE Python process, ONE container, ONE srun; parallelism via
+multiprocessing.Pool(forkserver). qiskit / qiskit-aer / HPCQC noise builders
+imported at module level so workers inherit them.
 
-Inside each worker, ``transpile(..., num_processes=1)`` is required:
-Pool workers are daemonic, and daemonic processes can't spawn child
-processes -- which is what qiskit's ``parallel_map`` would otherwise try
-to do when transpiling a list of circuits with optimization_level=3.
-Setting QISKIT_IN_PARALLEL=TRUE in the env (the SLURM script does this)
-is a belt-and-braces against any other nested parallel_map inside
-qiskit/qiskit-aer.
+Noise sources (--noise-source):
+  noiseless        : AerSimulator(), no noise, circuit as-written.
+  logical-gates    : your logical circuit as-written (rx/rz/rzz, no native
+                     transpilation or routing), with HPCQC's existing
+                     calibration noise model (build_noise_model). Fast.
+  device-calibrated: transpile to device native gates (PRX->r, CZ->cz),
+                     route onto the device coupling map, SCHEDULE
+                     (ALAP+PadDelay) so idle periods are explicit delays,
+                     then simulate with a static NoiseModel of depolarizing
+                     CONTROL error (gates) + readout, plus a duration-aware
+                     RelaxationNoisePass applying ALL T1/T2 decoherence to
+                     every instruction (gates AND idle delays) by its real
+                     scheduled duration. Most faithful. (device_noise.py)
+  iqm-fake-backend : run on a genuine IQM IQMFake* backend as a static
+                     representative reference. Dependency call; not HPCQC.
 
-The per-circuit physics (build_circuit, apply_one_floquet_period,
-get_autocorrelation, FFT inputs) is byte-identical to the original
-driver. Only the outer "for n in range(num_gate_instances)" became a
-worker pool.
-
-Usage:
-  python3 floquet_runner.py --backend noiseless \\
-                            --output-dir results/floquet_noiseless \\
-                            --num-instances 10
-
-  python3 floquet_runner.py --backend q50-noise \\
-                            --calibration examples/q50_calibration_<...>.json \\
-                            --output-dir results/floquet_q50noise \\
-                            --num-instances 10
-
-  # debug a single instance (skips the pool):
-  python3 floquet_runner.py --backend noiseless \\
-                            --output-dir /tmp/dbg --single-instance-id 0
+Per-circuit physics (build_circuit, apply_one_floquet_period,
+get_autocorrelation) is byte-identical to the original driver.
 """
 import os
 import sys
@@ -50,29 +38,37 @@ import multiprocessing as mp
 
 import numpy as np
 
-# -- Import qiskit/aer at MODULE LEVEL so the forkserver process loads them
-# once and child workers inherit. Matches tests/e2_cpu_stress_test.py.
 from qiskit import QuantumCircuit
 from qiskit.compiler import transpile
 from qiskit_aer import AerSimulator
 
-# -- Optional: HPCQC noise builder (only needed for --backend=q50-noise).
 try:
     from lumi_hpc_qc.backends.noise_model import build_noise_model
-    HAVE_NOISE_BUILDER = True
+    HAVE_LOGICAL_NOISE = True
 except ImportError:
     _proj = os.environ.get("PROJECT_DIR") or os.environ.get("SINGULARITYENV_PROJECT_DIR")
     if _proj:
         sys.path.insert(0, os.path.join(_proj, "src"))
     try:
         from lumi_hpc_qc.backends.noise_model import build_noise_model
-        HAVE_NOISE_BUILDER = True
+        HAVE_LOGICAL_NOISE = True
     except ImportError:
-        build_noise_model = None  # type: ignore
-        HAVE_NOISE_BUILDER = False
+        build_noise_model = None
+        HAVE_LOGICAL_NOISE = False
 
+try:
+    from lumi_hpc_qc.backends.device_noise import (
+        build_control_readout_noise_model,
+        build_relaxation_pass,
+    )
+    HAVE_DEVICE_NOISE = True
+except ImportError:
+    build_control_readout_noise_model = None
+    build_relaxation_pass = None
+    HAVE_DEVICE_NOISE = False
 
-# ----------------- physics helpers (unchanged) -----------------
+NOISE_SOURCES = ["noiseless", "logical-gates", "device-calibrated", "iqm-fake-backend"]
+
 
 def get_autocorrelation(counts, init_bit_array, num_qubits):
     total_shots = sum(counts.values())
@@ -102,8 +98,7 @@ def apply_one_floquet_period(qc, hz_angles, Jzz_angles, num_qubits, h_x):
         qc.rzz(Jzz_angles[wire], wire, wire + 1)
 
 
-def build_circuit(num_kicks, hz_angles, Jzz_angles, init_bit_array,
-                  num_qubits, h_x):
+def build_circuit(num_kicks, hz_angles, Jzz_angles, init_bit_array, num_qubits, h_x):
     qc = QuantumCircuit(num_qubits, num_qubits)
     for wire in range(num_qubits):
         if init_bit_array[wire] == 1:
@@ -130,20 +125,57 @@ def build_init_bit_array(initial_state, num_qubits):
     return init_bit_array
 
 
-# ----------------- worker: one gate instance -----------------
+def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
+                             durations, tag):
+    """Transpile to native gates, route, schedule (ALAP+PadDelay); return
+    (scheduled_circuits, simulator, relaxation_pass, info)."""
+    from qiskit.transpiler import PassManager, InstructionDurations
+    from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDelay
+
+    sg_ns, cz_ns, me_ns = durations
+    nm, coupling_map, info = build_control_readout_noise_model(
+        calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
+        single_gate_time_ns=sg_ns, cz_gate_time_ns=cz_ns, measure_time_ns=me_ns)
+
+    sg = info["single_gate_time_ns"]
+    cz = info["cz_gate_time_ns"]
+    me = info["measure_time_ns"]
+
+    basis = ["r", "rz", "sx", "x", "cz", "measure", "delay"]
+    durations_table = InstructionDurations(
+        [("r", None, sg), ("rz", None, 0), ("sx", None, sg),
+         ("x", None, sg), ("cz", None, cz),
+         ("measure", None, me), ("delay", None, 0)],
+        dt=1e-9)
+
+    native = transpile(circuits, basis_gates=basis, coupling_map=coupling_map,
+                       optimization_level=3, num_processes=1)
+    try:
+        from iqm.qiskit_iqm.iqm_transpilation import optimize_single_qubit_gates
+        native = [optimize_single_qubit_gates(c) for c in native]
+    except Exception:
+        pass
+
+    sched_pm = PassManager([ALAPScheduleAnalysis(durations_table),
+                            PadDelay(durations_table)])
+    scheduled = [sched_pm.run(c) for c in native]
+
+    relax_pass, _, _ = build_relaxation_pass(
+        calibration_path, num_qubits=num_qubits, t2_mode=t2_mode, dt_seconds=1e-9)
+
+    aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
+                         max_parallel_shots=1)
+    simulator = AerSimulator(noise_model=nm, **aer_threading)
+    return scheduled, simulator, relax_pass, info
+
 
 def run_one_instance(args_tuple):
-    """Worker -- runs ONE gate instance, writes its own log/dat/json,
-    returns (instance_id, ok, runtime_s, err_msg|None)."""
-    (instance_id, backend, calibration_path, output_dir,
-     num_qubits, num_shots, num_max_kicks, epsilon, initial_state) = args_tuple
+    (instance_id, noise_source, calibration_path, output_dir, num_qubits,
+     num_shots, num_max_kicks, epsilon, initial_state, t2_mode, durations,
+     iqm_device) = args_tuple
 
     tag = f"[instance {instance_id:02d}]"
     log_path = os.path.join(output_dir, f"instance_{instance_id:02d}.log")
-
-    # Belt-and-braces: tell qiskit's parallel_map to stay serial inside
-    # this daemonic worker (the env var is what SLURM script also sets;
-    # we re-export here in case the runner is invoked outside SLURM).
     os.environ["QISKIT_IN_PARALLEL"] = "TRUE"
 
     log_fh = open(log_path, "w", buffering=1, encoding="utf-8")
@@ -154,81 +186,94 @@ def run_one_instance(args_tuple):
     try:
         random.seed(instance_id)
         np.random.seed(instance_id)
-
         h_x = (1 - epsilon) * np.pi
         init_bit_array = build_init_bit_array(initial_state, num_qubits)
+        aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
+                             max_parallel_shots=1)
 
-        # Force each Pool worker to run Aer strictly single-threaded, so
-        # 40 workers map to ~40 cores instead of 40 * (Aer threads)
-        # oversubscribing the 128-core node. These are Aer run-options;
-        # OMP_NUM_THREADS etc. (set in the SLURM script) cap NumPy/BLAS,
-        # but Aer's own pool is controlled here.
-        aer_threading = dict(
-            max_parallel_threads=1,
-            max_parallel_experiments=1,
-            max_parallel_shots=1,
-        )
-
-        if backend == "noiseless":
-            print(f"{tag} backend: noiseless AerSimulator()")
-            simulator = AerSimulator(**aer_threading)
-        else:
-            print(f"{tag} backend: AerSimulator + Q50 calibration noise model "
-                  f"(all 5 channels)")
-            print(f"{tag} calibration: {calibration_path}")
-            if not HAVE_NOISE_BUILDER:
-                raise RuntimeError(
-                    "lumi_hpc_qc.backends.noise_model not importable; "
-                    "ensure HPCQC src/ is on PYTHONPATH (set PROJECT_DIR)."
-                )
-            noise_model, coupling_map = build_noise_model(
-                calibration_path,
-                num_qubits=num_qubits,
-                noise_channels=None,   # None => all 5 channels active
-            )
-            simulator = AerSimulator(noise_model=noise_model,
-                                     coupling_map=coupling_map,
-                                     **aer_threading)
-
+        print(f"{tag} noise-source: {noise_source}")
         print(f"{tag} init_bit_array = {init_bit_array}")
-
         t0 = time.time()
 
         Jz_angles = np.random.uniform(-1.5 * np.pi, -0.5 * np.pi, num_qubits)
-        hz_angles = np.random.uniform(-np.pi,        np.pi,       num_qubits)
+        hz_angles = np.random.uniform(-np.pi, np.pi, num_qubits)
+        circuits = [build_circuit(n, hz_angles, Jz_angles, init_bit_array,
+                                  num_qubits, h_x) for n in range(num_max_kicks)]
 
-        circuits = [
-            build_circuit(n, hz_angles, Jz_angles, init_bit_array,
-                          num_qubits, h_x)
-            for n in range(num_max_kicks)
-        ]
+        relax_pass = None
 
-        # num_processes=1: critical inside Pool workers -- without it, qiskit's
-        # parallel_map tries to spawn child processes which is forbidden in
-        # daemonic Pool workers (AssertionError "daemonic processes are not
-        # allowed to have children").
-        print(f"{tag} transpiling {len(circuits)} circuits (serial)...")
-        compiled = transpile(circuits, simulator,
-                             optimization_level=3, num_processes=1)
+        if noise_source == "noiseless":
+            simulator = AerSimulator(**aer_threading)
+            print(f"{tag} transpiling {len(circuits)} circuits (serial)...")
+            run_circuits = transpile(circuits, simulator,
+                                     optimization_level=3, num_processes=1)
+
+        elif noise_source == "logical-gates":
+            if not HAVE_LOGICAL_NOISE:
+                raise RuntimeError("build_noise_model not importable")
+            nm, coupling_map = build_noise_model(
+                calibration_path, num_qubits=num_qubits, noise_channels=None)
+            simulator = AerSimulator(noise_model=nm, coupling_map=coupling_map,
+                                     **aer_threading)
+            print(f"{tag} WARNING: logical-gates simulates abstract gates (rzz) "
+                  f"without native transpilation; 2q noise may under-attach.")
+            print(f"{tag} transpiling {len(circuits)} circuits (serial)...")
+            run_circuits = transpile(circuits, simulator,
+                                     optimization_level=3, num_processes=1)
+
+        elif noise_source == "device-calibrated":
+            if not HAVE_DEVICE_NOISE:
+                raise RuntimeError("device_noise not importable")
+            print(f"{tag} transpiling to native gates + scheduling...")
+            run_circuits, simulator, relax_pass, dinfo = _prepare_device_circuits(
+                circuits, num_qubits, calibration_path, t2_mode, durations, tag)
+            print(f"{tag} selected qubits: {dinfo['selected_qubits']}")
+            print(f"{tag} durations(ns): prx={dinfo['single_gate_time_ns']} "
+                  f"cz={dinfo['cz_gate_time_ns']} measure={dinfo['measure_time_ns']} "
+                  f"(source: {dinfo['duration_source']})")
+            print(f"{tag} t2_mode: {dinfo['t2_mode']}  edges: {dinfo['num_edges']}")
+            for w in dinfo["health_warnings"]:
+                print(f"{tag} HEALTH: {w}")
+
+        elif noise_source == "iqm-fake-backend":
+            from iqm.qiskit_iqm import IQMFakeAphrodite
+            try:
+                from iqm.qiskit_iqm import IQMFakeApollo
+            except Exception:
+                IQMFakeApollo = None
+            fake_map = {"aphrodite": IQMFakeAphrodite, "apollo": IQMFakeApollo}
+            fb_cls = fake_map.get(iqm_device) or IQMFakeAphrodite
+            fb = fb_cls()
+            print(f"{tag} IQM fake backend: {fb_cls.__name__}")
+            print(f"{tag} transpiling for fake backend...")
+            run_circuits = transpile(circuits, backend=fb,
+                                     optimization_level=3, num_processes=1)
+            simulator = fb
+        else:
+            raise ValueError(f"unknown noise-source {noise_source!r}")
+
+        if relax_pass is not None:
+            from qiskit.transpiler import PassManager
+            print(f"{tag} applying duration-aware RelaxationNoisePass...")
+            rp_pm = PassManager([relax_pass])
+            run_circuits = [rp_pm.run(c) for c in run_circuits]
 
         print(f"{tag} running...")
-        job = simulator.run(compiled, shots=num_shots, memory=True)
+        job = simulator.run(run_circuits, shots=num_shots, memory=True)
         result = job.result()
 
         autocorrelators = np.zeros(num_max_kicks)
         counts_per_kick = []
         for i in range(num_max_kicks):
             counts_i = result.get_counts(i)
-            autocorrelators[i] = get_autocorrelation(counts_i,
-                                                     init_bit_array,
-                                                     num_qubits)
+            autocorrelators[i] = get_autocorrelation(counts_i, init_bit_array, num_qubits)
             counts_per_kick.append({str(k): int(v) for k, v in counts_i.items()})
 
         elapsed = time.time() - t0
         print(f"{tag} runtime: {elapsed:.2f} s")
 
-        stem      = f"instance_{instance_id:02d}"
-        dat_path  = os.path.join(output_dir, f"{stem}_autocorr.dat")
+        stem = f"instance_{instance_id:02d}"
+        dat_path = os.path.join(output_dir, f"{stem}_autocorr.dat")
         json_path = os.path.join(output_dir, f"{stem}_full.json")
 
         with open(dat_path, "w", encoding="utf-8") as f:
@@ -237,26 +282,18 @@ def run_one_instance(args_tuple):
                 f.write(f"{n:4d} {autocorrelators[n]:10.4f}\n")
 
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "instance_id":     instance_id,
-                    "backend":         backend,
-                    "calibration":     calibration_path,
-                    "num_qubits":      num_qubits,
-                    "num_shots":       num_shots,
-                    "num_max_kicks":   num_max_kicks,
-                    "epsilon":         epsilon,
-                    "h_x":             h_x,
-                    "initial_state":   initial_state,
-                    "init_bit_array":  init_bit_array,
-                    "Jz_angles":       Jz_angles.tolist(),
-                    "hz_angles":       hz_angles.tolist(),
-                    "autocorrelators": autocorrelators.tolist(),
-                    "counts_per_kick": counts_per_kick,
-                    "elapsed_seconds": elapsed,
-                },
-                f, indent=2,
-            )
+            json.dump({
+                "instance_id": instance_id, "noise_source": noise_source,
+                "calibration": calibration_path, "t2_mode": t2_mode,
+                "durations_ns": {"prx": durations[0], "cz": durations[1],
+                                 "measure": durations[2]},
+                "num_qubits": num_qubits, "num_shots": num_shots,
+                "num_max_kicks": num_max_kicks, "epsilon": epsilon, "h_x": h_x,
+                "initial_state": initial_state, "init_bit_array": init_bit_array,
+                "Jz_angles": Jz_angles.tolist(), "hz_angles": hz_angles.tolist(),
+                "autocorrelators": autocorrelators.tolist(),
+                "counts_per_kick": counts_per_kick, "elapsed_seconds": elapsed,
+            }, f, indent=2)
 
         print(f"{tag} wrote {dat_path}")
         print(f"{tag} wrote {json_path}")
@@ -272,49 +309,43 @@ def run_one_instance(args_tuple):
         sys.stderr = saved_stderr
 
 
-# ----------------- main -----------------
-
 def main():
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--backend",        choices=["noiseless", "q50-noise"],
-                        required=True)
-    parser.add_argument("--calibration",    default=None,
-                        help="HPCQC-format Q50 calibration JSON. "
-                             "Required when --backend=q50-noise.")
-    parser.add_argument("--output-dir",     required=True)
-    parser.add_argument("--num-instances",  type=int,   default=10)
-    parser.add_argument("--num-qubits",     type=int,   default=10)
-    parser.add_argument("--num-shots",      type=int,   default=100)
-    parser.add_argument("--num-max-kicks",  type=int,   default=40)
-    parser.add_argument("--epsilon",        type=float, default=0.03)
-    parser.add_argument("--initial-state",  type=int,   default=3,
-                        help="1: random, 2: Neel, 3: polarized (default)")
-    parser.add_argument("--single-instance-id", type=int, default=None,
-                        help="(debug) run only this instance and exit; skip Pool")
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--noise-source", choices=NOISE_SOURCES, required=True)
+    parser.add_argument("--calibration", default=None)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--num-instances", type=int, default=40)
+    parser.add_argument("--num-qubits", type=int, default=10)
+    parser.add_argument("--num-shots", type=int, default=1000)
+    parser.add_argument("--num-max-kicks", type=int, default=60)
+    parser.add_argument("--epsilon", type=float, default=0.03)
+    parser.add_argument("--initial-state", type=int, default=3)
+    parser.add_argument("--t2-mode", choices=["ramsey", "echo"], default="ramsey")
+    parser.add_argument("--prx-time-ns", type=float, default=None)
+    parser.add_argument("--cz-time-ns", type=float, default=None)
+    parser.add_argument("--measure-time-ns", type=float, default=None)
+    parser.add_argument("--iqm-device", choices=["aphrodite", "apollo"], default="aphrodite")
+    parser.add_argument("--single-instance-id", type=int, default=None)
     args = parser.parse_args()
 
-    if args.backend == "q50-noise":
+    needs_cal = args.noise_source in ("logical-gates", "device-calibrated")
+    if needs_cal:
         if not args.calibration:
-            sys.exit("ERROR: --calibration required when --backend=q50-noise")
+            sys.exit(f"ERROR: --calibration required for {args.noise_source}")
         if not os.path.isfile(args.calibration):
             sys.exit(f"ERROR: calibration file not found: {args.calibration}")
-        if not HAVE_NOISE_BUILDER:
-            sys.exit("ERROR: lumi_hpc_qc.backends.noise_model not importable. "
-                     "Set PROJECT_DIR or PYTHONPATH so HPCQC src/ is reachable.")
+    if args.noise_source == "device-calibrated" and not HAVE_DEVICE_NOISE:
+        sys.exit("ERROR: device_noise not importable. Set PROJECT_DIR/PYTHONPATH.")
 
     os.makedirs(args.output_dir, exist_ok=True)
-
-    # Make qiskit's parallel_map stay serial in this process and any
-    # children it forks. Also re-asserted inside the worker.
     os.environ.setdefault("QISKIT_IN_PARALLEL", "TRUE")
+    durations = (args.prx_time_ns, args.cz_time_ns, args.measure_time_ns)
 
     print("=" * 64)
     print(" Floquet driver")
     print("=" * 64)
-    print(f"backend       : {args.backend}")
+    print(f"noise_source  : {args.noise_source}")
     print(f"calibration   : {args.calibration}")
     print(f"output_dir    : {args.output_dir}")
     print(f"num_instances : {args.num_instances}")
@@ -323,28 +354,27 @@ def main():
     print(f"num_max_kicks : {args.num_max_kicks}")
     print(f"epsilon       : {args.epsilon}")
     print(f"initial_state : {args.initial_state}")
+    if args.noise_source == "device-calibrated":
+        print(f"t2_mode       : {args.t2_mode}")
+    if args.noise_source == "iqm-fake-backend":
+        print(f"iqm_device    : {args.iqm_device}")
     print("=" * 64)
     sys.stdout.flush()
 
     worker_args = [
-        (i, args.backend, args.calibration, args.output_dir,
-         args.num_qubits, args.num_shots, args.num_max_kicks,
-         args.epsilon, args.initial_state)
-        for i in range(args.num_instances)
-    ]
+        (i, args.noise_source, args.calibration, args.output_dir, args.num_qubits,
+         args.num_shots, args.num_max_kicks, args.epsilon, args.initial_state,
+         args.t2_mode, durations, args.iqm_device)
+        for i in range(args.num_instances)]
 
-    # -- debug path: skip the Pool, run one instance in-process --
     if args.single_instance_id is not None:
         if not 0 <= args.single_instance_id < args.num_instances:
-            sys.exit(f"ERROR: --single-instance-id={args.single_instance_id} "
-                     f"out of range [0, {args.num_instances})")
-        print(f"DEBUG: running ONLY instance {args.single_instance_id} "
-              f"(no Pool)")
+            sys.exit("ERROR: --single-instance-id out of range")
+        print(f"DEBUG: running ONLY instance {args.single_instance_id} (no Pool)")
         sys.stdout.flush()
         r = run_one_instance(worker_args[args.single_instance_id])
         print(f"\nresult: {r}")
-        log_path = os.path.join(args.output_dir,
-                                f"instance_{r[0]:02d}.log")
+        log_path = os.path.join(args.output_dir, f"instance_{r[0]:02d}.log")
         if os.path.exists(log_path):
             print(f"\n----- {log_path} -----")
             with open(log_path, encoding="utf-8") as f:
@@ -352,9 +382,7 @@ def main():
             print(f"----- end {log_path} -----")
         sys.exit(0 if r[1] else 1)
 
-    # -- parallel path: forkserver Pool --
-    print(f"Launching {args.num_instances} workers via "
-          f"multiprocessing.Pool(forkserver)...")
+    print(f"Launching {args.num_instances} workers via multiprocessing.Pool(forkserver)...")
     sys.stdout.flush()
     t0 = time.time()
     ctx = mp.get_context("forkserver")
@@ -378,7 +406,6 @@ def main():
     print(f"Per-instance logs: {args.output_dir}/instance_*.log")
     print(f"Per-instance dat : {args.output_dir}/instance_*_autocorr.dat")
     print(f"Per-instance json: {args.output_dir}/instance_*_full.json")
-
     sys.exit(0 if n_ok == len(results) else 1)
 
 

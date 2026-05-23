@@ -3,23 +3,21 @@
 # SPDX-License-Identifier: SSPL-1.0
 #
 # Run N Floquet gate instances in parallel on ONE LUMI standard node.
-# Matches the HPCQC standard-partition pattern (tests/slurm_e2_stress.sh):
-# single srun, single container instance, multiprocessing.Pool inside Python.
+# Single srun, single container, multiprocessing.Pool inside Python.
 #
-# Defaults baked into this file: 40 instances, 60 kicks/circuits per
-# instance, 1000 shots (both noiseless and q50-noise).
+# Defaults: 40 instances, 60 kicks/circuits per instance, 1000 shots.
 #
 # Usage:
 #   sbatch slurm_floquet_40i_60k_1000s.sh noiseless
-#   sbatch slurm_floquet_40i_60k_1000s.sh q50-noise /full/path/to/calibration.json
+#   sbatch slurm_floquet_40i_60k_1000s.sh logical-gates     /path/cal.json
+#   sbatch slurm_floquet_40i_60k_1000s.sh device-calibrated /path/cal.json
+#   sbatch slurm_floquet_40i_60k_1000s.sh iqm-fake-backend
 #
-# Tunable knobs (env vars; defaults shown). Override at submit time, e.g.:
-#   FLOQUET_SHOTS=100 sbatch slurm_floquet_40i_60k_1000s.sh noiseless
-#   FLOQUET_INSTANCES=80 sbatch slurm_floquet_40i_60k_1000s.sh q50-noise /path/cal.json
-#
-#   FLOQUET_INSTANCES : number of parallel gate instances        (default 40)
-#   FLOQUET_KICKS     : circuits per instance (kick counts 0..K-1) (default 60)
-#   FLOQUET_SHOTS     : shots per circuit                         (default 1000)
+# Env-overridable tunables (defaults shown):
+#   FLOQUET_INSTANCES=40   FLOQUET_KICKS=60   FLOQUET_SHOTS=1000
+#   FLOQUET_T2_MODE=ramsey            (device-calibrated only: ramsey|echo)
+#   FLOQUET_IQM_DEVICE=aphrodite      (iqm-fake-backend only: aphrodite|apollo)
+#   FLOQUET_PRX_NS / FLOQUET_CZ_NS / FLOQUET_MEASURE_NS  (override JSON durations)
 #
 #SBATCH --job-name=floquet_par
 #SBATCH --account=project_462000055
@@ -34,101 +32,90 @@
 set -euo pipefail
 source "${SLURM_SUBMIT_DIR}/env.sh"
 
-# --------------- tunables (env-overridable) ---------------
 NUM_INSTANCES="${FLOQUET_INSTANCES:-40}"
 NUM_KICKS="${FLOQUET_KICKS:-60}"
 NUM_SHOTS="${FLOQUET_SHOTS:-1000}"
+T2_MODE="${FLOQUET_T2_MODE:-ramsey}"
+IQM_DEVICE="${FLOQUET_IQM_DEVICE:-aphrodite}"
 
-# --------------- args ---------------
-MODE="${1:-}"
+NOISE_SOURCE="${1:-}"
 CAL_PATH="${2:-}"
 
-if [[ "$MODE" != "noiseless" && "$MODE" != "q50-noise" ]]; then
-    echo "ERROR: first arg must be 'noiseless' or 'q50-noise', got '${MODE}'"
-    echo "Usage: sbatch $0 noiseless"
-    echo "       sbatch $0 q50-noise /path/to/calibration.json"
-    exit 2
-fi
-if [[ "$MODE" == "q50-noise" ]]; then
+case "$NOISE_SOURCE" in
+  noiseless|iqm-fake-backend) NEEDS_CAL=0 ;;
+  logical-gates|device-calibrated) NEEDS_CAL=1 ;;
+  *)
+    echo "ERROR: first arg must be one of: noiseless | logical-gates | device-calibrated | iqm-fake-backend"
+    echo "got '${NOISE_SOURCE}'"
+    exit 2 ;;
+esac
+
+if [[ "$NEEDS_CAL" == "1" ]]; then
     if [[ -z "$CAL_PATH" ]]; then
-        echo "ERROR: q50-noise mode needs a calibration JSON as 2nd arg"
-        exit 2
+        echo "ERROR: ${NOISE_SOURCE} needs a calibration JSON as 2nd arg"; exit 2
     fi
     if [[ ! -f "$CAL_PATH" ]]; then
-        echo "ERROR: calibration file not found: $CAL_PATH"
-        exit 2
+        echo "ERROR: calibration file not found: $CAL_PATH"; exit 2
     fi
 fi
 
-# --------------- output dir ---------------
 mkdir -p "${HPCQC_ROOT}/slurm_logs"
 TS="$(date +%Y%m%d_%H%M%S)"
-OUTDIR="${HPCQC_ROOT}/results/floquet_${MODE//-/_}_${TS}_job${SLURM_JOB_ID}"
+OUTDIR="${HPCQC_ROOT}/results/floquet_${NOISE_SOURCE//-/_}_${TS}_job${SLURM_JOB_ID}"
 mkdir -p "$OUTDIR"
 
-echo "=== Floquet ${NUM_INSTANCES}-instance parallel run (${MODE}) ==="
+echo "=== Floquet ${NUM_INSTANCES}-instance run (${NOISE_SOURCE}) ==="
 echo "Job ID    : ${SLURM_JOB_ID}"
 echo "Node      : $(hostname)"
 echo "CPUs/task : ${SLURM_CPUS_PER_TASK}"
-echo "Instances : ${NUM_INSTANCES}"
-echo "Kicks     : ${NUM_KICKS}  (circuits per instance)"
-echo "Shots     : ${NUM_SHOTS}"
+echo "Instances : ${NUM_INSTANCES}   Kicks: ${NUM_KICKS}   Shots: ${NUM_SHOTS}"
 echo "Container : ${HPCQC_CPU_CONTAINER}"
-echo "Wrapper   : ${HPCQC_CPU_WRAPPER}"
 echo "HPCQC root: ${HPCQC_ROOT}"
 echo "Output dir: ${OUTDIR}"
-echo "Calib.    : ${CAL_PATH:-(noiseless, not used)}"
+echo "Calib.    : ${CAL_PATH:-(not used)}"
+[[ "$NOISE_SOURCE" == "device-calibrated" ]] && echo "T2 mode   : ${T2_MODE}"
+[[ "$NOISE_SOURCE" == "iqm-fake-backend" ]] && echo "IQM device: ${IQM_DEVICE}"
 echo "Started   : $(date)"
 echo
 
-# --------------- env propagated into the container ---------------
 export SINGULARITYENV_PROJECT_DIR="${HPCQC_ROOT}"
 export SINGULARITYENV_PYTHONPATH="${HPCQC_ROOT}/src"
-
-# Suppress ROCm/HSA GPU init on the standard partition (matches
-# tests/slurm_e2_stress.sh).
 export SINGULARITYENV_ROCR_VISIBLE_DEVICES=""
 export SINGULARITYENV_HSA_TOOLS_LIB=""
-
-# Keep qiskit's parallel_map in SERIAL mode inside the multiprocessing
-# Pool. Pool workers are daemonic; daemonic processes can't spawn
-# children, so any nested parallel_map call would raise
-# AssertionError("daemonic processes are not allowed to have children").
 export SINGULARITYENV_QISKIT_IN_PARALLEL=TRUE
-
-# Cap external thread pools so each of the N Pool workers stays
-# single-threaded. Without these, NumPy/BLAS (and Aer) each fan out to
-# many threads per worker, and N workers * many-threads oversubscribes
-# the 128-core node and slows everything down. Aer's own thread pool is
-# additionally capped via max_parallel_threads=1 in floquet_runner.py.
 export SINGULARITYENV_OMP_NUM_THREADS=1
 export SINGULARITYENV_OPENBLAS_NUM_THREADS=1
 export SINGULARITYENV_MKL_NUM_THREADS=1
 export SINGULARITYENV_NUMEXPR_NUM_THREADS=1
 
-# --------------- calibration CLI arg ---------------
-CAL_ARG=""
-if [[ "$MODE" == "q50-noise" ]]; then
-    CAL_ARG="--calibration ${CAL_PATH}"
+# Assemble optional CLI args.
+EXTRA_ARGS=""
+if [[ "$NEEDS_CAL" == "1" ]]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --calibration ${CAL_PATH}"
+fi
+if [[ "$NOISE_SOURCE" == "device-calibrated" ]]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --t2-mode ${T2_MODE}"
+    [[ -n "${FLOQUET_PRX_NS:-}" ]]     && EXTRA_ARGS="${EXTRA_ARGS} --prx-time-ns ${FLOQUET_PRX_NS}"
+    [[ -n "${FLOQUET_CZ_NS:-}" ]]      && EXTRA_ARGS="${EXTRA_ARGS} --cz-time-ns ${FLOQUET_CZ_NS}"
+    [[ -n "${FLOQUET_MEASURE_NS:-}" ]] && EXTRA_ARGS="${EXTRA_ARGS} --measure-time-ns ${FLOQUET_MEASURE_NS}"
+fi
+if [[ "$NOISE_SOURCE" == "iqm-fake-backend" ]]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --iqm-device ${IQM_DEVICE}"
 fi
 
-# --------------- single srun -> single container -> Pool inside ---------------
 srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} \
     python3 "${HPCQC_ROOT}/floquet_runner.py" \
-        --backend "${MODE}" \
-        ${CAL_ARG} \
+        --noise-source "${NOISE_SOURCE}" \
+        ${EXTRA_ARGS} \
         --output-dir "${OUTDIR}" \
         --num-instances "${NUM_INSTANCES}" \
         --num-max-kicks "${NUM_KICKS}" \
         --num-shots "${NUM_SHOTS}"
 
 EXIT_CODE=$?
-
 echo
 echo "=== Finished: $(date)  exit=${EXIT_CODE} ==="
-echo
 echo "Aggregate + plot:"
 echo "  srun ${HPCQC_CPU_WRAPPER} ${HPCQC_CPU_CONTAINER} \\"
 echo "      python3 ${HPCQC_ROOT}/aggregate_floquet.py ${OUTDIR}"
-
 exit ${EXIT_CODE}
