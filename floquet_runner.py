@@ -164,8 +164,7 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     Returns:
         (scheduled_circuits, simulator, relaxation_pass, info)
     """
-    from qiskit.transpiler import (InstructionDurations, CouplingMap, Target,
-                                   PassManager)
+    from qiskit.transpiler import InstructionDurations, CouplingMap, Target
 
     sg_ns, cz_ns, me_ns = durations
     nm, coupling_map, info = build_control_readout_noise_model(
@@ -214,40 +213,37 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
         num_processes=1,
     )
 
-    # Step 4: the time-based decoherence pass. CRUCIAL: we pass the SAME target
-    # to the pass. Aer's RelaxationNoisePass looks up GATE durations from the
-    # target (by name+qubits), and reads DELAY durations off the scheduled
-    # circuit. Without the target, it would try to read gate .duration off the
-    # circuit, not find it, and silently skip every gate (the cause of the
-    # "Instruction duration not found" warnings seen earlier). Passing the
-    # target is exactly how Aer's own NoiseModel.from_backend builds its
-    # relaxation pass.
+    # Idle/delay relaxation. Gate-time relaxation is already RESIDENT in `nm`
+    # (added by build_control_readout_noise_model), so this pass only handles
+    # the variable-duration part: the idle "delay" steps. We register it as a
+    # NoiseModel custom noise pass -- exactly how Aer's own
+    # NoiseModel.from_backend attaches its delay-relaxation pass. Aer runs it at
+    # assemble time on circuits that contain a Delay and skips circuits with
+    # none (no idle gap -> no idle relaxation to add), which is correct.
+    #
+    # Why this scales: keeping the gate relaxation resident means a qubit with
+    # T2 > T1 -- whose thermal channel is a genuine non-unitary Kraus map -- is
+    # present in `nm` at construction. That puts a kraus optype in the model, so
+    # Aer precomputes the canonical Kraus for ALL its errors (resident gate AND
+    # injected delay) and statevector simulation samples them per shot. This
+    # works for arbitrarily many qubits, with no per-circuit baked-in channels
+    # and no density-matrix fallback (which is O(4^n) and small-n only). The old
+    # approach baked every channel into the circuit, which routed the genuine-
+    # Kraus errors onto a non-resident path where the precompute did not fire,
+    # giving "QuantumError: Kraus is empty" under statevector.
     relax_pass, _, _ = build_relaxation_pass(
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
         dt_seconds=dt_s, target=target)
-
-    # NOTE on why we apply the pass MANUALLY here rather than attaching it to
-    # the noise model: Aer only runs a noise model's custom passes on circuits
-    # that already contain a Delay instruction (see aerbackend.py: it filters
-    # to circuits where `Delay in optypes`). Our Floquet circuit is uniform --
-    # every qubit is driven every layer and all qubits are measured together --
-    # so ALAP scheduling may insert few or no delays, and Aer would then SKIP
-    # the relaxation pass entirely (applying neither gate nor idle relaxation).
-    # Applying the pass ourselves guarantees it runs regardless. The pass
-    # inserts thermal-relaxation channels as instructions in the circuit; Aer
-    # recognises and applies those channel instructions at run time (it pulls
-    # them into the noise model internally), so we can run the result directly.
-    relax_pm = PassManager([relax_pass])
-    scheduled = relax_pm.run(scheduled)
+    nm._custom_noise_passes.append(relax_pass)
 
     # Keep each worker single-threaded (40 workers share the node; we don't
     # want each one spawning its own Aer thread pool).
     aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
                          max_parallel_shots=1)
     simulator = AerSimulator(noise_model=nm, **aer_threading)
-    # The relaxation channels are now baked into `scheduled` (applied above),
-    # so the worker runs these circuits directly. We still return relax_pass
-    # so the caller can log that relaxation was applied.
+    # `scheduled` carries the native + routed + ALAP-scheduled circuits with
+    # explicit Delays; Aer runs the delay-relaxation pass at assemble time. We
+    # return relax_pass so the caller can log that relaxation is configured.
     return scheduled, simulator, relax_pass, info
 
 
@@ -345,12 +341,11 @@ def run_one_instance(args_tuple):
             raise ValueError(f"unknown noise-source {noise_source!r}")
 
         if relax_pass is not None:
-            # The duration-aware relaxation was already applied to the
-            # scheduled circuits inside _prepare_device_circuits (the channels
-            # are baked into run_circuits). Aer applies those channel
-            # instructions at run time. Nothing to do here but note it.
-            print(f"{tag} duration-aware relaxation: applied to scheduled "
-                  f"circuits (gate + idle decoherence)")
+            # Gate-time relaxation is resident in the noise model; idle/delay
+            # relaxation runs as a NoiseModel custom pass inside Aer at assemble
+            # time. Statevector samples all of it per shot (scales to large n).
+            print(f"{tag} duration-aware relaxation: gate relaxation resident "
+                  f"in noise model; idle/delay relaxation via custom pass")
 
         print(f"{tag} running...")
         job = simulator.run(run_circuits, shots=num_shots, memory=True)

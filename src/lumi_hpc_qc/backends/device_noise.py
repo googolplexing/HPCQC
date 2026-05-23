@@ -52,6 +52,10 @@ from lumi_hpc_qc.backends.noise_model import (
 )
 
 _NATIVE_1Q_GATES = ["r", "rz", "sx", "x"]
+# Native single-qubit gates with a finite execution time (they decohere) vs the
+# virtual rz frame change (zero time -> no relaxation, only control error).
+_TIMED_1Q_GATES = ["r", "sx", "x"]
+_VIRTUAL_1Q_GATES = ["rz"]
 _NATIVE_2Q_GATES = ["cz"]
 _DEFAULT_T2_MODE = "ramsey"
 
@@ -94,6 +98,63 @@ def _resolve_durations(cal, sg, cz, me):
     return float(sg), float(cz), float(me)
 
 
+def _per_qubit_t1_t2_seconds(cal, selected, t2_mode):
+    """Per-qubit (T1, T2) in SECONDS, indexed in the selected-qubit order.
+
+    T2 is the chosen mode (ramsey/echo), capped at the physical 2*T1 ceiling.
+    The calibration stores microseconds; thermal_relaxation_error wants the
+    same time unit as the gate duration, and we use seconds throughout.
+    """
+    t2k = _t2_key(t2_mode)
+    t1s_s, t2s_s = [], []
+    for _, qdata in selected:
+        t1 = qdata.get("t1_us", 50.0) * 1e-6
+        t2 = _clamp_t2(t1, qdata.get(t2k, 20.0) * 1e-6)
+        t1s_s.append(t1)
+        t2s_s.append(t2)
+    return t1s_s, t2s_s
+
+
+def _thermal_1q(t1_s, t2_s, dur_s):
+    """A single-qubit thermal-relaxation error for a finite-duration step.
+
+    Returns None for a zero (or missing) duration -- a virtual rz takes no
+    time and a zero-duration thermal channel would be degenerate.
+    """
+    if dur_s is None or dur_s <= 0:
+        return None
+    from qiskit_aer.noise.errors import thermal_relaxation_error
+    return thermal_relaxation_error(t1_s, t2_s, dur_s)
+
+
+def _thermal_nq(qubit_order, t1s_s, t2s_s, dur_s):
+    """A multi-qubit thermal-relaxation error: independent single-qubit
+    relaxation on each qubit for the same step duration, tensored together in
+    the given qubit order.
+
+    The order MUST match the qubit list passed to add_quantum_error so the
+    per-qubit channels line up with the gate's operands. Returns None for a
+    zero/missing duration.
+    """
+    if dur_s is None or dur_s <= 0:
+        return None
+    err = None
+    for q in qubit_order:
+        single = _thermal_1q(t1s_s[q], t2s_s[q], dur_s)
+        err = single if err is None else err.expand(single)
+    return err
+
+
+def _combine_control_relax(depol_err, relax_err):
+    """Combine a gate's control (depolarizing) error with its thermal
+    relaxation into one QuantumError applied during the gate: control error
+    first, then relaxation. Either may be None.
+    """
+    if depol_err is not None and relax_err is not None:
+        return depol_err.compose(relax_err)
+    return depol_err if depol_err is not None else relax_err
+
+
 def build_control_readout_noise_model(
     calibration_path: str,
     num_qubits: int = 10,
@@ -102,12 +163,27 @@ def build_control_readout_noise_model(
     cz_gate_time_ns: float | None = None,
     measure_time_ns: float | None = None,
 ):
-    """Build the noise that happens during gates and measurement.
+    """Build the static noise that is applied during gates and measurement.
 
-    Covers gate control error (gates are imperfect) and readout error
-    (measurements misread). Does NOT cover T1/T2 decoherence -- that is
-    handled separately by build_relaxation_pass, because decoherence depends
-    on how long each step takes.
+    Covers, per native gate:
+      - control error (the gate is imperfect): a depolarizing error sized by
+        the measured gate error rate, and
+      - thermal relaxation FOR THE GATE'S OWN DURATION: a fixed-duration
+        T1/T2 channel (20 ns for single-qubit gates, 60 ns for CZ),
+    composed into a single error per gate. Also covers readout error.
+
+    Why gate relaxation lives HERE (resident in the NoiseModel) rather than in
+    the duration-aware pass: gate durations are fixed, so the relaxation per
+    (gate, qubit) is fixed and can be a normal noise-model entry -- exactly how
+    Aer's NoiseModel.from_backend does it. Keeping it resident means a qubit
+    with T2 > T1 (whose thermal channel is a genuine non-unitary Kraus map)
+    is present in the model at construction, so Aer precomputes its canonical
+    Kraus and statevector simulation samples it per shot and scales to large
+    qubit counts. The duration-aware pass (build_relaxation_pass) then only has
+    to handle the part with VARIABLE duration: idle "delay" steps.
+
+    Does NOT add relaxation to the virtual rz (zero time) or to measurement
+    (readout error already models the measurement outcome).
 
     Returns:
         (noise_model, coupling_map, info)
@@ -124,18 +200,20 @@ def build_control_readout_noise_model(
     sg_ns, cz_ns, me_ns = _resolve_durations(
         cal, single_gate_time_ns, cz_gate_time_ns, measure_time_ns
     )
+    # Gate relaxation needs T1/T2 (seconds) and the gate durations (seconds).
+    t1s_s, t2s_s = _per_qubit_t1_t2_seconds(cal, selected, t2_mode)
+    sg_s, cz_s = sg_ns * 1e-9, cz_ns * 1e-9
 
     noise_model = NoiseModel()
     warnings: list[str] = []
 
-    # --- Single-qubit gate control error ---
-    # When a single-qubit gate runs, the applied rotation is slightly off from
-    # the intended one. We model that imperfection as a depolarizing error
-    # whose strength is the gate's measured error rate (1 - RB fidelity,
-    # stored as single_gate_error). It is attached to every native
-    # single-qubit gate name on that qubit. This is ONLY the control
-    # imperfection; the qubit's decoherence during the gate is added later by
-    # the relaxation pass.
+    # --- Single-qubit gate: control error + gate-duration relaxation ---
+    # When a single-qubit gate runs, two things happen: the applied rotation is
+    # slightly off (control error -- a depolarizing error sized by the measured
+    # single_gate_error), and the qubit decoheres for the gate's duration
+    # (T1/T2 relaxation). We combine both into ONE error per qubit and attach it
+    # to the timed native 1q gates. The virtual rz (zero time) gets only the
+    # control error -- no relaxation, since it takes no time.
     for qname, qdata in selected:
         i = name_to_idx[qname]
         sg_err = qdata.get("single_gate_error", 0.001)
@@ -144,16 +222,24 @@ def build_control_readout_noise_model(
                 f"qubit {qname}: {t2_mode} T2={qdata.get(t2k):.3f}us "
                 f"(<{_T2_WARN_US}us) -- heavy dephasing"
             )
-        if sg_err > 0:
+        depol1 = depolarizing_error(sg_err, 1) if sg_err > 0 else None
+        relax1 = _thermal_1q(t1s_s[i], t2s_s[i], sg_s)
+        timed_err = _combine_control_relax(depol1, relax1)
+        if timed_err is not None:
             noise_model.add_quantum_error(
-                depolarizing_error(sg_err, 1), _NATIVE_1Q_GATES, [i]
+                timed_err, _TIMED_1Q_GATES, [i], warnings=False
+            )
+        if depol1 is not None:
+            noise_model.add_quantum_error(
+                depol1, _VIRTUAL_1Q_GATES, [i], warnings=False
             )
 
-    # --- Two-qubit (CZ) gate control error ---
-    # Same idea for the two-qubit CZ gate: a depolarizing error sized by the
-    # measured CZ error rate (cz_error), attached to each calibrated qubit
-    # pair. We add it in both qubit orderings ([i,j] and [j,i]) because the
-    # transpiler may emit the CZ in either direction.
+    # --- Two-qubit (CZ) gate: control error + gate-duration relaxation ---
+    # Same idea for CZ: a 2q depolarizing control error (sized by cz_error)
+    # combined with thermal relaxation on BOTH qubits for the CZ duration. We
+    # attach it in both qubit orderings ([i,j] and [j,i]) because the transpiler
+    # may emit the CZ in either direction; the relaxation operands are tensored
+    # in the matching order so they line up with each ordering's qubits.
     for gate_pair, gate_data in gates_data.items():
         parts = gate_pair.split("-")
         if len(parts) != 2:
@@ -168,10 +254,21 @@ def build_control_readout_noise_model(
                 f"edge {gate_pair}: CZ error={cz_err:.4f} "
                 f"(>{_CZ_ERR_WARN}) -- low-fidelity coupling"
             )
-        if cz_err > 0:
-            err2 = depolarizing_error(cz_err, 2)
-            noise_model.add_quantum_error(err2, _NATIVE_2Q_GATES, [i, j])
-            noise_model.add_quantum_error(err2, _NATIVE_2Q_GATES, [j, i])
+        depol2 = depolarizing_error(cz_err, 2) if cz_err > 0 else None
+        err_ij = _combine_control_relax(
+            depol2, _thermal_nq([i, j], t1s_s, t2s_s, cz_s)
+        )
+        err_ji = _combine_control_relax(
+            depol2, _thermal_nq([j, i], t1s_s, t2s_s, cz_s)
+        )
+        if err_ij is not None:
+            noise_model.add_quantum_error(
+                err_ij, _NATIVE_2Q_GATES, [i, j], warnings=False
+            )
+        if err_ji is not None:
+            noise_model.add_quantum_error(
+                err_ji, _NATIVE_2Q_GATES, [j, i], warnings=False
+            )
 
     # --- Readout error ---
     # The measurement sometimes reports the wrong bit. We model it as a
@@ -209,71 +306,49 @@ def build_relaxation_pass(
     dt_seconds: float | None = None,
     target=None,
 ):
-    """Build the time-based decoherence (T1/T2) as a duration-aware pass.
+    """Build the IDLE decoherence (T1/T2 on delays) as a duration-aware pass.
 
-    This is the part of the noise that depends on HOW LONG each step takes.
-    Qiskit Aer's RelaxationNoisePass applies, after each instruction, the
-    amount of T1/T2 decay corresponding to that instruction's duration. A
-    short 20 ns gate gets a little decay; a long idle wait (a "delay" the
-    scheduler inserted while this qubit waited for its neighbours) gets
-    proportionally more. This is what lets idle qubits decohere realistically
-    -- the feature the IQM fake backends lack.
+    Gate-time relaxation is now resident in the static noise model (see
+    build_control_readout_noise_model), because gate durations are fixed. This
+    pass handles the remaining, VARIABLE-duration part: the idle "delay" steps
+    the scheduler inserts while a qubit waits for its neighbours. A long idle
+    wait decoheres more than a short one -- the effect the IQM fake backends
+    lack entirely (they never decohere idle qubits).
 
-    Where the durations come from (important detail of how the pass works):
-      - For "delay" instructions, the pass reads the delay's own duration off
-        the scheduled circuit.
-      - For GATES, the pass looks the duration up in the supplied `target`
-        (by gate name and qubits), NOT off the circuit. So a `target` MUST be
-        passed for gate decoherence to be applied at all. Without it, the pass
-        falls back to reading each gate's .duration attribute, which scheduled
-        circuits do not reliably carry -- and the pass then silently skips
-        every gate (emitting "Instruction duration not found" warnings). This
-        matches how Aer's own NoiseModel.from_backend builds its delay-
-        relaxation pass: it passes target=target.
+    How the pass is used: it is registered as a NoiseModel custom noise pass
+    (noise_model._custom_noise_passes), exactly as Aer's NoiseModel.from_backend
+    registers ITS delay-relaxation pass. Aer runs it at assemble time on any
+    circuit that contains a Delay, and harmlessly skips circuits with none (a
+    circuit with no idle gaps has no idle relaxation to add).
 
-    Which steps get decoherence (op_types): gates and idle delays, but NOT
-    measurement. Two reasons: (1) the static noise model already handles the
-    measurement outcome via readout error, and (2) attaching a relaxation
-    channel to the measure step can interfere with how Aer samples the
-    measurement. (Modelling the qubit decohering *during* the long readout
-    window is a possible future refinement, deliberately left out here.)
-
-    Units. T1 and T2 are passed in SECONDS (the calibration stores them in
-    microseconds, so we multiply by 1e-6). The Target's instruction durations
-    are in dt ticks with one tick = 1 ns (dt = 1e-9 s); passing dt_seconds =
-    1e-9 lets the pass convert a duration of N ticks into N * 1e-9 seconds
-    before comparing to T1/T2 in seconds. So a CZ of 60 ticks becomes 60 ns of
-    decay time. Both sides end up in seconds, which makes the decay amounts
-    physically correct.
+    Duration resolution: for a "delay" the pass reads the delay's own duration
+    off the scheduled circuit. The durations are in dt ticks with one tick =
+    1 ns (dt = 1e-9 s); passing dt_seconds = 1e-9 lets the pass convert N ticks
+    into N * 1e-9 seconds before comparing to T1/T2 in seconds, so a 100 ns idle
+    gap becomes 100 ns of decay. The zero-duration guard (below) drops any
+    zero-length delay the padder may emit, which would otherwise build a
+    degenerate channel.
 
     Args:
-        target: the transpiler Target carrying the native-gate instruction
-            durations. Required for gate decoherence (see above). The runner
-            builds this and passes it in.
+        target: the transpiler Target (carried through for consistency with the
+            guard's duration resolution). Not strictly required for delays,
+            which the pass reads off the circuit, but harmless to pass.
 
     Returns:
         (relaxation_pass, t1s_s, t2s_s) -- the pass plus the per-qubit T1/T2
         in seconds, indexed in the selected-qubit order, for logging.
     """
     from qiskit_aer.noise import RelaxationNoisePass
-    from qiskit.circuit import Gate, Delay
+    from qiskit.circuit import Delay
 
-    t2k = _t2_key(t2_mode)
     cal = _load_calibration(calibration_path)
     selected = _select_qubits(cal, num_qubits)
 
     # Calibration stores T1/T2 in microseconds; the pass wants seconds.
-    t1s_s = []
-    t2s_s = []
-    for _, qdata in selected:
-        t1 = qdata.get("t1_us", 50.0) * 1e-6
-        t2 = _clamp_t2(t1, qdata.get(t2k, 20.0) * 1e-6)
-        t1s_s.append(t1)
-        t2s_s.append(t2)
+    t1s_s, t2s_s = _per_qubit_t1_t2_seconds(cal, selected, t2_mode)
 
-    # Apply decoherence to gates and idle delays only (not measurement).
-    # target= is what lets gate durations resolve (see docstring).
-    op_types = [Gate, Delay]
+    # Idle delays ONLY -- gate relaxation is resident in the static model.
+    op_types = [Delay]
     kwargs = dict(t1s=t1s_s, t2s=t2s_s, op_types=op_types)
     if dt_seconds is not None:
         kwargs["dt"] = dt_seconds
