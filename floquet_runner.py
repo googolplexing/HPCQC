@@ -164,7 +164,8 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     Returns:
         (scheduled_circuits, simulator, relaxation_pass, info)
     """
-    from qiskit.transpiler import InstructionDurations, CouplingMap, Target
+    from qiskit.transpiler import (InstructionDurations, CouplingMap, Target,
+                                   PassManager)
 
     sg_ns, cz_ns, me_ns = durations
     nm, coupling_map, info = build_control_readout_noise_model(
@@ -225,29 +226,28 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
         dt_seconds=dt_s, target=target)
 
-    # Attach the relaxation pass to the noise model so Aer applies it
-    # INTERNALLY at run time, on the scheduled circuit. This is the same
-    # mechanism Aer's own NoiseModel.from_backend uses to add delay-relaxation
-    # (it appends a RelaxationNoisePass to _custom_noise_passes). Letting Aer
-    # apply it internally means Aer also handles the resulting noise channels
-    # during simulation -- so the worker just runs the scheduled circuit
-    # normally, with no manual pass application and no re-transpile of a
-    # channel-laden circuit (which is brittle). If a future Aer renames the
-    # attribute, we fall back to the documented-but-older name.
-    try:
-        nm._custom_noise_passes.append(relax_pass)
-    except AttributeError:
-        existing = getattr(nm, "_noise_passes", [])
-        existing.append(relax_pass)
-        nm._noise_passes = existing
+    # NOTE on why we apply the pass MANUALLY here rather than attaching it to
+    # the noise model: Aer only runs a noise model's custom passes on circuits
+    # that already contain a Delay instruction (see aerbackend.py: it filters
+    # to circuits where `Delay in optypes`). Our Floquet circuit is uniform --
+    # every qubit is driven every layer and all qubits are measured together --
+    # so ALAP scheduling may insert few or no delays, and Aer would then SKIP
+    # the relaxation pass entirely (applying neither gate nor idle relaxation).
+    # Applying the pass ourselves guarantees it runs regardless. The pass
+    # inserts thermal-relaxation channels as instructions in the circuit; Aer
+    # recognises and applies those channel instructions at run time (it pulls
+    # them into the noise model internally), so we can run the result directly.
+    relax_pm = PassManager([relax_pass])
+    scheduled = relax_pm.run(scheduled)
 
     # Keep each worker single-threaded (40 workers share the node; we don't
     # want each one spawning its own Aer thread pool).
     aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
                          max_parallel_shots=1)
     simulator = AerSimulator(noise_model=nm, **aer_threading)
-    # relax_pass is now inside the noise model; the worker does NOT apply it
-    # again. We still return it so the caller can log that it was attached.
+    # The relaxation channels are now baked into `scheduled` (applied above),
+    # so the worker runs these circuits directly. We still return relax_pass
+    # so the caller can log that relaxation was applied.
     return scheduled, simulator, relax_pass, info
 
 
@@ -283,6 +283,11 @@ def run_one_instance(args_tuple):
                                   num_qubits, h_x) for n in range(num_max_kicks)]
 
         relax_pass = None
+        # Actual durations used (ns). For device-calibrated this is filled from
+        # the resolved values (file or CLI override); for other sources the
+        # CLI override tuple (often all None) is recorded as-is.
+        durations_used = {"prx": durations[0], "cz": durations[1],
+                          "measure": durations[2]}
 
         if noise_source == "noiseless":
             simulator = AerSimulator(**aer_threading)
@@ -314,6 +319,11 @@ def run_one_instance(args_tuple):
                   f"cz={dinfo['cz_gate_time_ns']} measure={dinfo['measure_time_ns']} "
                   f"(source: {dinfo['duration_source']})")
             print(f"{tag} t2_mode: {dinfo['t2_mode']}  edges: {dinfo['num_edges']}")
+            durations_used = {
+                "prx": dinfo["single_gate_time_ns"],
+                "cz": dinfo["cz_gate_time_ns"],
+                "measure": dinfo["measure_time_ns"],
+            }
             for w in dinfo["health_warnings"]:
                 print(f"{tag} HEALTH: {w}")
 
@@ -335,12 +345,12 @@ def run_one_instance(args_tuple):
             raise ValueError(f"unknown noise-source {noise_source!r}")
 
         if relax_pass is not None:
-            # The relaxation pass is already attached to the noise model
-            # inside _prepare_device_circuits, so Aer applies it internally
-            # at run time on the scheduled circuit. Nothing to do here except
-            # note it in the log.
-            print(f"{tag} duration-aware relaxation: attached to noise model "
-                  f"(applied internally by Aer at run time)")
+            # The duration-aware relaxation was already applied to the
+            # scheduled circuits inside _prepare_device_circuits (the channels
+            # are baked into run_circuits). Aer applies those channel
+            # instructions at run time. Nothing to do here but note it.
+            print(f"{tag} duration-aware relaxation: applied to scheduled "
+                  f"circuits (gate + idle decoherence)")
 
         print(f"{tag} running...")
         job = simulator.run(run_circuits, shots=num_shots, memory=True)
@@ -369,8 +379,7 @@ def run_one_instance(args_tuple):
             json.dump({
                 "instance_id": instance_id, "noise_source": noise_source,
                 "calibration": calibration_path, "t2_mode": t2_mode,
-                "durations_ns": {"prx": durations[0], "cz": durations[1],
-                                 "measure": durations[2]},
+                "durations_ns": durations_used,
                 "num_qubits": num_qubits, "num_shots": num_shots,
                 "num_max_kicks": num_max_kicks, "epsilon": epsilon, "h_x": h_x,
                 "initial_state": initial_state, "init_bit_array": init_bit_array,
