@@ -279,6 +279,119 @@ def build_relaxation_pass(
         kwargs["dt"] = dt_seconds
     if target is not None:
         kwargs["target"] = target
-    relax_pass = RelaxationNoisePass(**kwargs)
+
+    relax_pass = _build_zero_safe_relaxation_pass(RelaxationNoisePass, kwargs)
     return relax_pass, t1s_s, t2s_s
+
+
+def _build_zero_safe_relaxation_pass(RelaxationNoisePass, kwargs):
+    """Construct a RelaxationNoisePass that never builds a zero-duration
+    channel.
+
+    Root cause this guards against: Aer's RelaxationNoisePass resolves each
+    operation's duration and calls thermal_relaxation_error(t1, t2, duration).
+    The builds we target only skip ops whose resolved duration is *None* --
+    they do NOT skip a resolved duration of *zero*. A zero-duration thermal
+    relaxation channel is degenerate, and Aer raises "QuantumError: Kraus is
+    empty" when it tries to apply it at simulation time. Zero-duration ops
+    arise legitimately and from more than one source -- a virtual rz gate
+    (genuinely zero time), or a zero-length Delay the scheduler can emit when
+    a qubit has no idle gap -- so patching individual gate durations or
+    stripping specific instructions is whack-a-mole. The correct, general fix
+    is: whenever an op's duration resolves to zero, add no channel for it.
+
+    Implementation: subclass the pass and override the per-op error builder to
+    (1) resolve the duration the SAME way the parent does -- target lookup for
+    gates, op.duration for delays / no-target -- and (2) return None (no
+    channel) when that duration is zero. For every other case it defers
+    entirely to the parent, so behaviour is otherwise identical.
+
+    The duration-resolution logic below is replicated to match Aer's
+    RelaxationNoisePass._thermal_relaxation_error. If a future Aer changes
+    that method's name or shape, the subclass would no longer guard correctly
+    -- so we verify at construction that the parent still has the expected
+    internals, and if not, fall back to the stock pass and emit a clear
+    warning rather than silently shipping unguarded (degenerate) channels.
+    """
+    import warnings as _warnings
+    import numpy as _np
+    from qiskit.circuit import Delay as _Delay
+
+    # Safety check: the guard relies on these parent internals. If any is
+    # missing (e.g. a future Aer refactor), do not pretend to guard.
+    required = ("_thermal_relaxation_error", "_target", "_dt")
+    probe_ok = True
+    try:
+        probe = RelaxationNoisePass(**kwargs)
+        for attr in required:
+            if not hasattr(probe, attr):
+                probe_ok = False
+                break
+    except Exception:
+        probe_ok = False
+
+    if not probe_ok:
+        _warnings.warn(
+            "device_noise: could not verify RelaxationNoisePass internals "
+            "needed for the zero-duration guard; falling back to the stock "
+            "pass. Zero-duration ops (e.g. virtual rz, zero-length delays) "
+            "may cause 'Kraus is empty' errors at simulation time. If you see "
+            "that error, the guard needs updating for this Aer version.",
+            RuntimeWarning,
+        )
+        return RelaxationNoisePass(**kwargs)
+
+    def _resolve_duration_seconds(pass_obj, op, qubits):
+        """Replicate the parent's duration resolution, returning seconds (or
+        None if the parent would find no duration)."""
+        from qiskit.utils.units import apply_prefix  # local import
+        dt = pass_obj._dt
+        target = pass_obj._target
+        if target is not None:
+            if op.name == "delay":
+                duration = op.duration
+                if duration is None:
+                    return None
+                if op.unit == "dt":
+                    if dt is None:
+                        return None
+                    return op.duration * dt
+                return apply_prefix(op.duration, op.unit)
+            op_props = target.get(op.name)
+            if op_props is not None:
+                inst_props = op_props.get(tuple(qubits))
+                if inst_props is not None:
+                    return getattr(inst_props, "duration", None)
+            return None
+        # No target: read straight off the op.
+        duration = getattr(op, "duration", None)
+        if duration is None:
+            return None
+        if getattr(op, "unit", "dt") == "dt":
+            if dt is None:
+                return None
+            return op.duration * dt
+        return apply_prefix(op.duration, op.unit)
+
+    class _ZeroSafeRelaxationNoisePass(RelaxationNoisePass):
+        def _thermal_relaxation_error(self, op, qubits):
+            dur = _resolve_duration_seconds(self, op, qubits)
+            if dur is not None and dur == 0:
+                # Zero-duration op: no decoherence, and building a channel
+                # here would be degenerate. Skip it.
+                return None
+            # Otherwise defer entirely to the stock implementation, so all
+            # other behaviour (None-duration warning, 1q/2q channel building,
+            # inf-T1/T2 handling) is byte-identical to upstream.
+            return super()._thermal_relaxation_error(op, qubits)
+
+    try:
+        return _ZeroSafeRelaxationNoisePass(**kwargs)
+    except Exception:
+        _warnings.warn(
+            "device_noise: zero-duration-guarded RelaxationNoisePass could "
+            "not be constructed; falling back to the stock pass.",
+            RuntimeWarning,
+        )
+        return RelaxationNoisePass(**kwargs)
 

@@ -179,7 +179,7 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     me = int(round(info["measure_time_ns"]))        # readout ~1576 ns
 
     # Native gate set the hardware supports (plus measure/id helpers).
-    # rz is a virtual frame change on real hardware, so it takes zero time.
+    # rz is a virtual frame change on real hardware and takes zero time.
     basis = ["r", "rz", "sx", "x", "cz", "id", "measure"]
     instr_durations = InstructionDurations(
         [
