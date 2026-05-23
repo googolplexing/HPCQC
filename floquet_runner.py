@@ -164,7 +164,7 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     Returns:
         (scheduled_circuits, simulator, relaxation_pass, info)
     """
-    from qiskit.transpiler import InstructionDurations, CouplingMap
+    from qiskit.transpiler import InstructionDurations, CouplingMap, Target
 
     sg_ns, cz_ns, me_ns = durations
     nm, coupling_map, info = build_control_readout_noise_model(
@@ -192,34 +192,38 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
     cmap = coupling_map if isinstance(coupling_map, CouplingMap) else (
         CouplingMap(coupling_map) if coupling_map else None)
 
-    # Steps 1-3 in ONE transpile call: translate to native gates, route onto
-    # the coupling map, AND schedule (scheduling_method='alap'). Doing the
-    # scheduling inside transpile is what writes a concrete .duration onto
-    # EVERY instruction (gates and the inserted delays alike). That is
-    # essential: the relaxation pass below reads each instruction's own
-    # .duration attribute; if scheduling is done as a separate pass the gate
-    # durations are not attached and the relaxation pass silently skips every
-    # gate (it only sees the delays). Scheduling here fixes that.
-    scheduled = transpile(
-        circuits,
+    # Qiskit 2.3's transpile() removed the loose instruction_durations kwarg;
+    # durations must be carried on a Target. We build a Target from the native
+    # basis, coupling map, and durations, then pass it to transpile with
+    # scheduling_method='alap'. transpile internally builds a preset pass
+    # manager with this target and schedules with it -- doing layout, routing,
+    # native translation, and ALAP scheduling in one validated pipeline.
+    target = Target.from_configuration(
         basis_gates=basis,
+        num_qubits=num_qubits,
         coupling_map=cmap,
         instruction_durations=instr_durations,
-        scheduling_method="alap",
         dt=dt_s,
+    )
+    scheduled = transpile(
+        circuits,
+        target=target,
+        scheduling_method="alap",
         optimization_level=3,
         num_processes=1,
     )
-    # IQM's single-qubit cleanup would strip the scheduled durations, so it is
-    # intentionally NOT applied on the device-calibrated path -- the native
-    # gates from the transpile above are sufficient and keep their durations.
 
-    # Step 4: the time-based decoherence pass. It reads each scheduled
-    # instruction's .duration (in dt units) and converts to seconds with dt_s,
-    # so the decay amounts line up with T1/T2 (in seconds inside the pass).
+    # Step 4: the time-based decoherence pass. CRUCIAL: we pass the SAME target
+    # to the pass. Aer's RelaxationNoisePass looks up GATE durations from the
+    # target (by name+qubits), and reads DELAY durations off the scheduled
+    # circuit. Without the target, it would try to read gate .duration off the
+    # circuit, not find it, and silently skip every gate (the cause of the
+    # "Instruction duration not found" warnings seen earlier). Passing the
+    # target is exactly how Aer's own NoiseModel.from_backend builds its
+    # relaxation pass.
     relax_pass, _, _ = build_relaxation_pass(
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
-        dt_seconds=dt_s)
+        dt_seconds=dt_s, target=target)
 
     # Attach the relaxation pass to the noise model so Aer applies it
     # INTERNALLY at run time, on the scheduled circuit. This is the same

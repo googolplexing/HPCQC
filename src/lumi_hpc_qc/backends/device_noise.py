@@ -207,22 +207,29 @@ def build_relaxation_pass(
     num_qubits: int = 10,
     t2_mode: str = _DEFAULT_T2_MODE,
     dt_seconds: float | None = None,
+    target=None,
 ):
     """Build the time-based decoherence (T1/T2) as a duration-aware pass.
 
     This is the part of the noise that depends on HOW LONG each step takes.
-    Qiskit Aer's RelaxationNoisePass walks through an already-scheduled
-    circuit, reads the real duration of each step, and applies the matching
-    amount of T1/T2 decay. A short 20 ns gate gets a little decay; a long
-    idle wait (a "delay" step the scheduler inserted while this qubit waited
-    for its neighbours) gets proportionally more. This is what lets idle
-    qubits decohere realistically -- the feature the IQM fake backends lack.
+    Qiskit Aer's RelaxationNoisePass applies, after each instruction, the
+    amount of T1/T2 decay corresponding to that instruction's duration. A
+    short 20 ns gate gets a little decay; a long idle wait (a "delay" the
+    scheduler inserted while this qubit waited for its neighbours) gets
+    proportionally more. This is what lets idle qubits decohere realistically
+    -- the feature the IQM fake backends lack.
 
-    Why a pass and not the static noise model: the static noise model applies
-    a fixed channel to a given operation regardless of how long it lasts, so
-    it cannot tell a 60 ns wait from a 1500 ns wait. The pass can, because it
-    inspects each step's scheduled duration. That is the whole reason the
-    time-based decoherence lives here instead of in the noise model.
+    Where the durations come from (important detail of how the pass works):
+      - For "delay" instructions, the pass reads the delay's own duration off
+        the scheduled circuit.
+      - For GATES, the pass looks the duration up in the supplied `target`
+        (by gate name and qubits), NOT off the circuit. So a `target` MUST be
+        passed for gate decoherence to be applied at all. Without it, the pass
+        falls back to reading each gate's .duration attribute, which scheduled
+        circuits do not reliably carry -- and the pass then silently skips
+        every gate (emitting "Instruction duration not found" warnings). This
+        matches how Aer's own NoiseModel.from_backend builds its delay-
+        relaxation pass: it passes target=target.
 
     Which steps get decoherence (op_types): gates and idle delays, but NOT
     measurement. Two reasons: (1) the static noise model already handles the
@@ -232,14 +239,17 @@ def build_relaxation_pass(
     window is a possible future refinement, deliberately left out here.)
 
     Units. T1 and T2 are passed in SECONDS (the calibration stores them in
-    microseconds, so we multiply by 1e-6). Separately, when the runner
-    schedules the circuit it expresses every duration as an integer count of
-    "dt" ticks, and it sets one tick = 1 nanosecond (dt = 1e-9 s). Passing
-    dt_seconds = 1e-9 here tells the pass to convert a step lasting N ticks
-    into N * 1e-9 seconds before comparing it to T1/T2 in seconds. So a CZ
-    scheduled as 60 ticks becomes 60 ns of real decay time. Both sides
-    (T1/T2 and the durations) end up in seconds, which is what makes the
-    decay amounts come out physically correct.
+    microseconds, so we multiply by 1e-6). The Target's instruction durations
+    are in dt ticks with one tick = 1 ns (dt = 1e-9 s); passing dt_seconds =
+    1e-9 lets the pass convert a duration of N ticks into N * 1e-9 seconds
+    before comparing to T1/T2 in seconds. So a CZ of 60 ticks becomes 60 ns of
+    decay time. Both sides end up in seconds, which makes the decay amounts
+    physically correct.
+
+    Args:
+        target: the transpiler Target carrying the native-gate instruction
+            durations. Required for gate decoherence (see above). The runner
+            builds this and passes it in.
 
     Returns:
         (relaxation_pass, t1s_s, t2s_s) -- the pass plus the per-qubit T1/T2
@@ -262,10 +272,13 @@ def build_relaxation_pass(
         t2s_s.append(t2)
 
     # Apply decoherence to gates and idle delays only (not measurement).
+    # target= is what lets gate durations resolve (see docstring).
     op_types = [Gate, Delay]
     kwargs = dict(t1s=t1s_s, t2s=t2s_s, op_types=op_types)
     if dt_seconds is not None:
         kwargs["dt"] = dt_seconds
+    if target is not None:
+        kwargs["target"] = target
     relax_pass = RelaxationNoisePass(**kwargs)
     return relax_pass, t1s_s, t2s_s
 
