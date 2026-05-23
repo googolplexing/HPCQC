@@ -127,9 +127,38 @@ def build_init_bit_array(initial_state, num_qubits):
 
 def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
                              durations, tag):
-    """Transpile to native gates, route, schedule (ALAP+PadDelay); return
-    (scheduled_circuits, simulator, relaxation_pass, info)."""
-    from qiskit.transpiler import PassManager, InstructionDurations
+    """Turn logical circuits into scheduled, native-gate circuits ready to run.
+
+    This does the four steps that make a circuit resemble what the real Q50
+    would execute, and returns everything the caller needs to run them:
+
+      1. Translate every gate into the device's native gate set (the only
+         gates the hardware physically has): PRX -> Qiskit "r", CZ -> "cz".
+      2. Route the circuit onto the device's actual qubit connectivity,
+         inserting SWAPs where two qubits that need to interact are not
+         physically adjacent.
+      3. Schedule it: lay every gate out on a timeline using the gate
+         durations, and fill each qubit's idle stretches with explicit
+         "delay" steps. After this, the circuit knows how long every qubit
+         waits -- which is what the decoherence model needs.
+      4. Build the matching noise: the static gate/readout noise model, plus
+         the time-based relaxation pass the caller applies to the scheduled
+         circuit.
+
+    A note on how durations are expressed. The scheduler measures time in
+    integer "ticks" (Qiskit calls one tick "dt"). We set one tick = 1
+    nanosecond (dt = 1e-9 s), so a gate we describe as lasting "60" is 60 ns.
+    We hand these durations to a Target (Qiskit's description of a backend)
+    and let the scheduling passes read durations from that Target. Using a
+    Target -- rather than passing a loose duration table directly to the
+    passes -- is what reliably gives every instruction a duration; without it
+    the scheduler can fail to find a duration for some gate and crash.
+
+    Returns:
+        (scheduled_circuits, simulator, relaxation_pass, info)
+    """
+    from qiskit.transpiler import (PassManager, InstructionDurations, Target,
+                                   CouplingMap)
     from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDelay
 
     sg_ns, cz_ns, me_ns = durations
@@ -137,32 +166,64 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
         single_gate_time_ns=sg_ns, cz_gate_time_ns=cz_ns, measure_time_ns=me_ns)
 
-    sg = info["single_gate_time_ns"]
-    cz = info["cz_gate_time_ns"]
-    me = info["measure_time_ns"]
+    # One tick = 1 ns, so a duration value of N means N nanoseconds.
+    dt_s = 1e-9
+    sg = int(round(info["single_gate_time_ns"]))   # PRX:    ~20 ns
+    cz = int(round(info["cz_gate_time_ns"]))        # CZ:     ~60 ns
+    me = int(round(info["measure_time_ns"]))        # readout ~1576 ns
 
-    basis = ["r", "rz", "sx", "x", "cz", "measure", "delay"]
-    durations_table = InstructionDurations(
-        [("r", None, sg), ("rz", None, 0), ("sx", None, sg),
-         ("x", None, sg), ("cz", None, cz),
-         ("measure", None, me), ("delay", None, 0)],
-        dt=1e-9)
+    # Native gate set the hardware supports (plus measure/id helpers).
+    # rz is a virtual frame change on real hardware, so it takes zero time.
+    basis = ["r", "rz", "sx", "x", "cz", "id", "measure"]
+    instr_durations = InstructionDurations(
+        [
+            ("r", None, sg), ("rz", None, 0), ("sx", None, sg),
+            ("x", None, sg), ("id", None, sg), ("cz", None, cz),
+            ("measure", None, me), ("reset", None, me),
+        ],
+        dt=dt_s,
+    )
 
+    # Step 1 + 2: translate to native gates and route onto the device layout.
+    # (We schedule in a separate step below, because scheduling needs a Target.)
     native = transpile(circuits, basis_gates=basis, coupling_map=coupling_map,
                        optimization_level=3, num_processes=1)
+    # If IQM's helper is available, use it to tidy up runs of single-qubit
+    # native gates the way the real device's compiler would. Not essential --
+    # the transpile above already produced native gates -- so failures here
+    # are ignored.
     try:
         from iqm.qiskit_iqm.iqm_transpilation import optimize_single_qubit_gates
         native = [optimize_single_qubit_gates(c) for c in native]
     except Exception:
         pass
 
-    sched_pm = PassManager([ALAPScheduleAnalysis(durations_table),
-                            PadDelay(durations_table)])
+    # Step 3: schedule. Wrap the basis, layout, and durations into a Target,
+    # then run as-late-as-possible scheduling and pad idle time with delays.
+    cmap = coupling_map if isinstance(coupling_map, CouplingMap) else (
+        CouplingMap(coupling_map) if coupling_map else None)
+    target = Target.from_configuration(
+        basis_gates=basis,
+        num_qubits=num_qubits,
+        coupling_map=cmap,
+        instruction_durations=instr_durations,
+        dt=dt_s,
+    )
+    sched_pm = PassManager([
+        ALAPScheduleAnalysis(target=target),
+        PadDelay(target=target),
+    ])
     scheduled = [sched_pm.run(c) for c in native]
 
+    # Step 4: the time-based decoherence pass. It reads each scheduled step's
+    # duration (in ticks) and converts ticks to seconds using dt_s, so the
+    # decay amounts line up with T1/T2 (which are in seconds inside the pass).
     relax_pass, _, _ = build_relaxation_pass(
-        calibration_path, num_qubits=num_qubits, t2_mode=t2_mode, dt_seconds=1e-9)
+        calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
+        dt_seconds=dt_s)
 
+    # Keep each worker single-threaded (40 workers share the node; we don't
+    # want each one spawning its own Aer thread pool).
     aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
                          max_parallel_shots=1)
     simulator = AerSimulator(noise_model=nm, **aer_threading)
