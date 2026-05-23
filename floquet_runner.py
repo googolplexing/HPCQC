@@ -15,7 +15,8 @@ Noise sources (--noise-source):
                      calibration noise model (build_noise_model). Fast.
   device-calibrated: transpile to device native gates (PRX->r, CZ->cz),
                      route onto the device coupling map, SCHEDULE
-                     (ALAP+PadDelay) so idle periods are explicit delays,
+                     (scheduling done inside transpile) so idle periods are
+                     explicit delays,
                      then simulate with a static NoiseModel of depolarizing
                      CONTROL error (gates) + readout, plus a duration-aware
                      RelaxationNoisePass applying ALL T1/T2 decoherence to
@@ -129,8 +130,8 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
                              durations, tag):
     """Turn logical circuits into scheduled, native-gate circuits ready to run.
 
-    This does the four steps that make a circuit resemble what the real Q50
-    would execute, and returns everything the caller needs to run them:
+    This does the steps that make a circuit resemble what the real Q50 would
+    execute, and returns everything the caller needs to run them:
 
       1. Translate every gate into the device's native gate set (the only
          gates the hardware physically has): PRX -> Qiskit "r", CZ -> "cz".
@@ -139,27 +140,31 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
          physically adjacent.
       3. Schedule it: lay every gate out on a timeline using the gate
          durations, and fill each qubit's idle stretches with explicit
-         "delay" steps. After this, the circuit knows how long every qubit
-         waits -- which is what the decoherence model needs.
+         "delay" steps. Crucially, scheduling also stamps a concrete duration
+         onto EVERY instruction (each gate and each delay), not just the
+         delays.
       4. Build the matching noise: the static gate/readout noise model, plus
          the time-based relaxation pass the caller applies to the scheduled
          circuit.
 
-    A note on how durations are expressed. The scheduler measures time in
-    integer "ticks" (Qiskit calls one tick "dt"). We set one tick = 1
-    nanosecond (dt = 1e-9 s), so a gate we describe as lasting "60" is 60 ns.
-    We hand these durations to a Target (Qiskit's description of a backend)
-    and let the scheduling passes read durations from that Target. Using a
-    Target -- rather than passing a loose duration table directly to the
-    passes -- is what reliably gives every instruction a duration; without it
-    the scheduler can fail to find a duration for some gate and crash.
+    Steps 1-3 are done in a single transpile() call with
+    scheduling_method='alap'. This matters: the relaxation pass in step 4
+    reads each instruction's OWN .duration attribute to decide how much it
+    decoheres. If scheduling is done as a separate pass afterwards, the gates
+    end up without a .duration attached, and the relaxation pass silently
+    skips every gate (applying decoherence only to the delays) -- which
+    quietly removes most of the physics. Scheduling inside transpile attaches
+    durations to all instructions, so the relaxation pass sees them.
+
+    On units: time is measured in integer "ticks" (Qiskit calls one tick
+    "dt"); we set one tick = 1 nanosecond (dt = 1e-9 s), so a gate we describe
+    as lasting "60" is 60 ns. The relaxation pass is given the same dt to
+    convert each instruction's tick-count back into seconds.
 
     Returns:
         (scheduled_circuits, simulator, relaxation_pass, info)
     """
-    from qiskit.transpiler import (PassManager, InstructionDurations, Target,
-                                   CouplingMap)
-    from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDelay
+    from qiskit.transpiler import InstructionDurations, CouplingMap
 
     sg_ns, cz_ns, me_ns = durations
     nm, coupling_map, info = build_control_readout_noise_model(
@@ -184,49 +189,61 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
         dt=dt_s,
     )
 
-    # Step 1 + 2: translate to native gates and route onto the device layout.
-    # (We schedule in a separate step below, because scheduling needs a Target.)
-    native = transpile(circuits, basis_gates=basis, coupling_map=coupling_map,
-                       optimization_level=3, num_processes=1)
-    # If IQM's helper is available, use it to tidy up runs of single-qubit
-    # native gates the way the real device's compiler would. Not essential --
-    # the transpile above already produced native gates -- so failures here
-    # are ignored.
-    try:
-        from iqm.qiskit_iqm.iqm_transpilation import optimize_single_qubit_gates
-        native = [optimize_single_qubit_gates(c) for c in native]
-    except Exception:
-        pass
-
-    # Step 3: schedule. Wrap the basis, layout, and durations into a Target,
-    # then run as-late-as-possible scheduling and pad idle time with delays.
     cmap = coupling_map if isinstance(coupling_map, CouplingMap) else (
         CouplingMap(coupling_map) if coupling_map else None)
-    target = Target.from_configuration(
+
+    # Steps 1-3 in ONE transpile call: translate to native gates, route onto
+    # the coupling map, AND schedule (scheduling_method='alap'). Doing the
+    # scheduling inside transpile is what writes a concrete .duration onto
+    # EVERY instruction (gates and the inserted delays alike). That is
+    # essential: the relaxation pass below reads each instruction's own
+    # .duration attribute; if scheduling is done as a separate pass the gate
+    # durations are not attached and the relaxation pass silently skips every
+    # gate (it only sees the delays). Scheduling here fixes that.
+    scheduled = transpile(
+        circuits,
         basis_gates=basis,
-        num_qubits=num_qubits,
         coupling_map=cmap,
         instruction_durations=instr_durations,
+        scheduling_method="alap",
         dt=dt_s,
+        optimization_level=3,
+        num_processes=1,
     )
-    sched_pm = PassManager([
-        ALAPScheduleAnalysis(target=target),
-        PadDelay(target=target),
-    ])
-    scheduled = [sched_pm.run(c) for c in native]
+    # IQM's single-qubit cleanup would strip the scheduled durations, so it is
+    # intentionally NOT applied on the device-calibrated path -- the native
+    # gates from the transpile above are sufficient and keep their durations.
 
-    # Step 4: the time-based decoherence pass. It reads each scheduled step's
-    # duration (in ticks) and converts ticks to seconds using dt_s, so the
-    # decay amounts line up with T1/T2 (which are in seconds inside the pass).
+    # Step 4: the time-based decoherence pass. It reads each scheduled
+    # instruction's .duration (in dt units) and converts to seconds with dt_s,
+    # so the decay amounts line up with T1/T2 (in seconds inside the pass).
     relax_pass, _, _ = build_relaxation_pass(
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
         dt_seconds=dt_s)
+
+    # Attach the relaxation pass to the noise model so Aer applies it
+    # INTERNALLY at run time, on the scheduled circuit. This is the same
+    # mechanism Aer's own NoiseModel.from_backend uses to add delay-relaxation
+    # (it appends a RelaxationNoisePass to _custom_noise_passes). Letting Aer
+    # apply it internally means Aer also handles the resulting noise channels
+    # during simulation -- so the worker just runs the scheduled circuit
+    # normally, with no manual pass application and no re-transpile of a
+    # channel-laden circuit (which is brittle). If a future Aer renames the
+    # attribute, we fall back to the documented-but-older name.
+    try:
+        nm._custom_noise_passes.append(relax_pass)
+    except AttributeError:
+        existing = getattr(nm, "_noise_passes", [])
+        existing.append(relax_pass)
+        nm._noise_passes = existing
 
     # Keep each worker single-threaded (40 workers share the node; we don't
     # want each one spawning its own Aer thread pool).
     aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
                          max_parallel_shots=1)
     simulator = AerSimulator(noise_model=nm, **aer_threading)
+    # relax_pass is now inside the noise model; the worker does NOT apply it
+    # again. We still return it so the caller can log that it was attached.
     return scheduled, simulator, relax_pass, info
 
 
@@ -314,10 +331,12 @@ def run_one_instance(args_tuple):
             raise ValueError(f"unknown noise-source {noise_source!r}")
 
         if relax_pass is not None:
-            from qiskit.transpiler import PassManager
-            print(f"{tag} applying duration-aware RelaxationNoisePass...")
-            rp_pm = PassManager([relax_pass])
-            run_circuits = [rp_pm.run(c) for c in run_circuits]
+            # The relaxation pass is already attached to the noise model
+            # inside _prepare_device_circuits, so Aer applies it internally
+            # at run time on the scheduled circuit. Nothing to do here except
+            # note it in the log.
+            print(f"{tag} duration-aware relaxation: attached to noise model "
+                  f"(applied internally by Aer at run time)")
 
         print(f"{tag} running...")
         job = simulator.run(run_circuits, shots=num_shots, memory=True)
