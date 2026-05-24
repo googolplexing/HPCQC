@@ -95,18 +95,35 @@ def _safe_circuit_metrics(logical_circuits, native_circuits) -> dict:
         lc = logical_circuits[idx]
         nc = native_circuits[idx] if idx < len(native_circuits) else native_circuits[-1]
 
-        # Aggregate over the WHOLE batch (the actual per-instance workload).
+        # Single pass over the batch: aggregate totals AND a per-kick row for
+        # each circuit. The batch is built in kick order (circuit at index k has
+        # k Floquet periods), and transpile() preserves order, so index == kick
+        # count and logical_circuits[k] pairs with native_circuits[k].
         total_logical_2q = 0
         total_native_2q = 0
         total_native_cz = 0
         total_native_gates = 0
-        for c in logical_circuits:
-            total_logical_2q += sum(1 for i in c.data if _is_2q(i))
-        for c in native_circuits:
-            ops = c.count_ops()
-            total_native_cz += ops.get("cz", 0)
-            total_native_2q += sum(1 for i in c.data if _is_2q(i))
-            total_native_gates += sum(ops.values())
+        per_kick = []
+        n = min(len(logical_circuits), len(native_circuits))
+        for k in range(n):
+            lc_k = logical_circuits[k]
+            nc_k = native_circuits[k]
+            lc_2q = sum(1 for i in lc_k.data if _is_2q(i))
+            ops_k = nc_k.count_ops()
+            nc_cz = ops_k.get("cz", 0)
+            nc_2q = sum(1 for i in nc_k.data if _is_2q(i))
+            nc_tot = sum(ops_k.values())
+            total_logical_2q += lc_2q
+            total_native_cz += nc_cz
+            total_native_2q += nc_2q
+            total_native_gates += nc_tot
+            # kept compact (one row per kick lands in the result JSON):
+            per_kick.append({
+                "kick": k,
+                "logical_2q": lc_2q,
+                "native_cz": nc_cz,
+                "native_total": nc_tot,
+            })
 
         m = {
             "num_circuits": len(logical_circuits),
@@ -124,6 +141,8 @@ def _safe_circuit_metrics(logical_circuits, native_circuits) -> dict:
             "total_native_2q": total_native_2q,
             "total_native_cz": total_native_cz,
             "total_native_gates": total_native_gates,
+            # --- full per-kick curve (one row per kick) -> result JSON ---
+            "per_kick": per_kick,
         }
         ld = m["logical_depth"]
         m["depth_ratio"] = round(m["native_depth"] / ld, 2) if ld else None
@@ -307,22 +326,41 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
     metrics = _safe_circuit_metrics(circuits, scheduled)
     info["circuit_metrics"] = metrics
     if verbose and metrics:
+        # Human-readable labeled block. Full structured data (incl. native_ops
+        # and every field) is in info["circuit_metrics"] / the result JSON for
+        # machine consumption; this block is for a person skimming the log.
+        m = metrics
+        depth_x = f"{m['depth_ratio']}x deeper" if m['depth_ratio'] else "n/a"
+        tot_log2q = m['total_logical_2q']
+        tot_cz = m['total_native_cz']
+        cz_x = f"{tot_cz / tot_log2q:.1f}x" if tot_log2q else "n/a"
         print(
-            f"[prepare] device-calibrated circuit metrics -- deepest "
-            f"(idx {metrics['deepest_index']} of {metrics['num_circuits']}): "
-            f"depth {metrics['logical_depth']} -> {metrics['native_depth']} "
-            f"(x{metrics['depth_ratio']}); "
-            f"2q-depth {metrics['logical_2q_depth']} -> {metrics['native_2q_depth']}; "
-            f"2q gates {metrics['logical_2q_count']} -> {metrics['native_2q_count']}; "
-            f"native ops {metrics['native_ops']}"
+            f"[prepare] device-calibrated compilation "
+            f"({m['num_circuits']} circuits, native gates + ALAP schedule)\n"
+            f"  per-instance workload (summed over all {m['num_circuits']} "
+            f"circuits -- this is what drives runtime):\n"
+            f"      two-qubit gates (CZ) to simulate : {tot_cz:>8,}   "
+            f"(was {tot_log2q:,} logical rzz; {cz_x} after rzz->~2 CZ)\n"
+            f"      native gates total               : {m['total_native_gates']:>8,}   "
+            f"(then multiplied by your shot count)\n"
+            f"  largest single circuit (kick {m['deepest_index']} of "
+            f"{m['num_circuits'] - 1}):\n"
+            f"      circuit depth   : {m['logical_depth']:>5,} logical  ->  "
+            f"{m['native_depth']:>5,} native   ({depth_x})\n"
+            f"      two-qubit gates : {m['logical_2q_count']:>5,} logical  ->  "
+            f"{m['native_2q_count']:>5,} native"
         )
-        print(
-            f"[prepare] device-calibrated WORKLOAD (sum over all "
-            f"{metrics['num_circuits']} circuits, x shots = real per-instance cost): "
-            f"total CZ {metrics['total_native_cz']}; "
-            f"total 2q {metrics['total_logical_2q']} -> {metrics['total_native_2q']}; "
-            f"total native gates {metrics['total_native_gates']}"
-        )
+        # 3-row per-kick trend (first / middle / last) -- confirms linear growth
+        # at a glance; the full per-kick curve is in the result JSON.
+        pk = m.get("per_kick") or []
+        if len(pk) >= 2:
+            picks = sorted({0, len(pk) // 2, len(pk) - 1})
+            print(f"  growth check (CZ per circuit, full curve in JSON "
+                  f"under circuit_metrics.per_kick):")
+            for j in picks:
+                r = pk[j]
+                print(f"      kick {r['kick']:>3} : {r['native_cz']:>5,} CZ   "
+                      f"({r['native_total']:,} native gates)")
 
     # Idle/delay relaxation. Gate-time relaxation is already RESIDENT in `nm`;
     # this pass adds the variable-duration idle "delay" relaxation, registered
