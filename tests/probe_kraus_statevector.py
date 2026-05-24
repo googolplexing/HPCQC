@@ -37,7 +37,8 @@ for p in (_ROOT, os.path.join(_ROOT, "src")):
         sys.path.insert(0, p)
 
 from lumi_hpc_qc.backends.noise_spec import parse_noise_spec  # noqa: E402
-import floquet_runner as fr  # noqa: E402
+from lumi_hpc_qc.backends.prepare import prepare_simulation  # noqa: E402
+import floquet_runner as fr  # noqa: E402  (for build_circuit / build_init_bit_array)
 
 
 def _resolve_calibration(argv):
@@ -79,14 +80,17 @@ def _build_small_circuits(num_qubits, num_kicks=2):
 def _run_one(spec_str, calibration_path, num_qubits):
     spec = parse_noise_spec(spec_str)
     circuits = _build_small_circuits(num_qubits)
-    run_circuits, simulator, relax_pass, info = fr._prepare_device_circuits(
-        circuits, num_qubits, calibration_path, "ramsey",
-        (None, None, None), f"[probe {spec_str}]", spec=spec)
+    prep = prepare_simulation(
+        circuits, "device-calibrated",
+        spec=spec, calibration_path=calibration_path,
+        num_qubits=num_qubits, durations=(None, None, None),
+        t2_mode="ramsey", optimization_level=3, num_processes=1)
+    run_circuits, simulator = prep.run_circuits, prep.simulator
     method = simulator.options.method
     result = simulator.run(run_circuits, shots=8, memory=False).result()
     if not result.success:
         raise RuntimeError(f"result.success is False: {result.status}")
-    return method, _noise_tag(result), info.get("selected_qubits", [])
+    return method, _noise_tag(result), prep.info.get("selected_qubits", [])
 
 
 def main():
