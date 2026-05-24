@@ -241,7 +241,18 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             noise_envs = list(NOISE_ENVIRONMENTS)
         else:
             nc_names = exp.noise_configs if isinstance(exp.noise_configs, list) else [exp.noise_configs]
-            noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names if n in NOISE_ENV_BY_NAME]
+            # RED-RESP §7.5 F-6: never silently drop unknown noise-config names.
+            # The previous `if n in NOISE_ENV_BY_NAME` filter dropped typos with
+            # no error, so a sweep would quietly run a *different* set of
+            # environments than the config requested -- a latent data-integrity
+            # bug affecting all experiment types. Fail loud instead.
+            unknown = [n for n in nc_names if n not in NOISE_ENV_BY_NAME]
+            if unknown:
+                raise ValueError(
+                    f"Unknown noise config name(s) {unknown}. "
+                    f"Available: {', '.join(NOISE_ENV_BY_NAME.keys())}"
+                )
+            noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names]
 
         # Resolve seed values (v1.4.0 — seed_list overrides seeds/seed_offset)
         if exp.seed_list is not None:
@@ -570,9 +581,15 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
             if len(exp.seed_list) != len(set(exp.seed_list)):
                 errors.append(f"{prefix}: seed_list contains duplicates")
 
-        # Validate noise config names
-        if isinstance(exp.noise_configs, list) and exp.noise_configs != ["all"]:
-            for nc_name in exp.noise_configs:
+        # Validate noise config names. RED-RESP §7.5 F-6: also the scalar form
+        # (e.g. `noise_configs: bogus`), which the list-only check missed and
+        # expand_grid would otherwise have silently dropped.
+        if exp.noise_configs not in ("all", ["all"]):
+            nc_names = (
+                exp.noise_configs if isinstance(exp.noise_configs, list)
+                else [exp.noise_configs]
+            )
+            for nc_name in nc_names:
                 if nc_name not in NOISE_ENV_BY_NAME:
                     errors.append(
                         f"{prefix}: unknown noise config '{nc_name}'. "
