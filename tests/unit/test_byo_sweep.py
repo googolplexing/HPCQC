@@ -1,4 +1,4 @@
-import json, tempfile, os
+import json, tempfile, os, sys
 import numpy as np
 from lumi_hpc_qc.sweep import byo_sweep as B
 
@@ -116,3 +116,4 @@ raises("cross-grid check CATCHES drift (the Q2 bug)",
 
 print()
 print(f"{'ALL PASS' if F==0 else 'SOME FAILED'}  ({P} passed, {F} failed)")
+sys.exit(0 if F == 0 else 1)
