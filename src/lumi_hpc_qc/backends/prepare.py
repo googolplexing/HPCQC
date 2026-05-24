@@ -66,18 +66,23 @@ def _is_2q(instr) -> bool:
 
 
 def _safe_circuit_metrics(logical_circuits, native_circuits) -> dict:
-    """Depth / op-count comparison for the deepest circuit in the batch.
+    """Depth / op-count comparison for the batch.
 
-    Reports the LOGICAL (input) circuit against its NATIVE (decomposed + routed
-    + ALAP-scheduled) form, so the gate inflation and scheduling impact of
-    native compilation are visible. The "deepest" circuit (largest logical
-    depth) is chosen because it is the dominant-cost / worst-case member of the
-    batch; transpile() preserves input order, so the native circuit at the same
-    index corresponds to it.
+    Reports two complementary views of the LOGICAL (input) circuits vs their
+    NATIVE (decomposed + routed + ALAP-scheduled) forms:
 
-    2q-depth (depth counting only two-qubit gates) is the most robust
-    complexity measure here: it is unaffected by how 1q gates and idle Delays
-    are laid out, and 2q gates dominate both runtime and infidelity.
+      * DEEPEST circuit (largest logical depth): the worst-case single member,
+        useful for "how big does one circuit get". transpile() preserves input
+        order, so the native circuit at the same index corresponds to it.
+      * AGGREGATE over ALL circuits: the real per-instance workload. A Floquet
+        instance builds one circuit per kick-count (e.g. 60 circuits: 0..59
+        periods), and EVERY one is simulated. So the runtime-relevant quantity
+        is the SUM of gates across the whole batch, not the single deepest
+        circuit -- the batch is a staircase of growing circuits, and the
+        aggregate is the area under it. `total_native_cz` is the headline:
+        total CZ Aer must sample noise across, summed over all circuits.
+
+    2q gates / CZ dominate both runtime and infidelity, so they are the focus.
 
     This is diagnostic only -- it NEVER raises (returns {} on any failure), so a
     metrics quirk can never break an actual simulation run.
@@ -89,8 +94,23 @@ def _safe_circuit_metrics(logical_circuits, native_circuits) -> dict:
         idx = max(range(len(log_depths)), key=lambda k: log_depths[k])
         lc = logical_circuits[idx]
         nc = native_circuits[idx] if idx < len(native_circuits) else native_circuits[-1]
+
+        # Aggregate over the WHOLE batch (the actual per-instance workload).
+        total_logical_2q = 0
+        total_native_2q = 0
+        total_native_cz = 0
+        total_native_gates = 0
+        for c in logical_circuits:
+            total_logical_2q += sum(1 for i in c.data if _is_2q(i))
+        for c in native_circuits:
+            ops = c.count_ops()
+            total_native_cz += ops.get("cz", 0)
+            total_native_2q += sum(1 for i in c.data if _is_2q(i))
+            total_native_gates += sum(ops.values())
+
         m = {
             "num_circuits": len(logical_circuits),
+            # --- deepest single circuit (worst case) ---
             "deepest_index": idx,
             "logical_depth": lc.depth(),
             "native_depth": nc.depth(),
@@ -99,6 +119,11 @@ def _safe_circuit_metrics(logical_circuits, native_circuits) -> dict:
             "logical_2q_count": sum(1 for i in lc.data if _is_2q(i)),
             "native_2q_count": sum(1 for i in nc.data if _is_2q(i)),
             "native_ops": dict(nc.count_ops()),
+            # --- aggregate over ALL circuits (true per-instance workload) ---
+            "total_logical_2q": total_logical_2q,
+            "total_native_2q": total_native_2q,
+            "total_native_cz": total_native_cz,
+            "total_native_gates": total_native_gates,
         }
         ld = m["logical_depth"]
         m["depth_ratio"] = round(m["native_depth"] / ld, 2) if ld else None
@@ -283,13 +308,20 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
     info["circuit_metrics"] = metrics
     if verbose and metrics:
         print(
-            f"[prepare] device-calibrated circuit metrics "
-            f"(deepest of {metrics['num_circuits']}, idx {metrics['deepest_index']}): "
+            f"[prepare] device-calibrated circuit metrics -- deepest "
+            f"(idx {metrics['deepest_index']} of {metrics['num_circuits']}): "
             f"depth {metrics['logical_depth']} -> {metrics['native_depth']} "
             f"(x{metrics['depth_ratio']}); "
             f"2q-depth {metrics['logical_2q_depth']} -> {metrics['native_2q_depth']}; "
             f"2q gates {metrics['logical_2q_count']} -> {metrics['native_2q_count']}; "
             f"native ops {metrics['native_ops']}"
+        )
+        print(
+            f"[prepare] device-calibrated WORKLOAD (sum over all "
+            f"{metrics['num_circuits']} circuits, x shots = real per-instance cost): "
+            f"total CZ {metrics['total_native_cz']}; "
+            f"total 2q {metrics['total_logical_2q']} -> {metrics['total_native_2q']}; "
+            f"total native gates {metrics['total_native_gates']}"
         )
 
     # Idle/delay relaxation. Gate-time relaxation is already RESIDENT in `nm`;
