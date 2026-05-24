@@ -74,6 +74,30 @@ except ImportError:
 NOISE_SOURCES = ["noiseless", "device-calibrated", "iqm-fake-backend"]
 
 
+def resolve_instance_seed(master_seed, instance_id):
+    """Return a reproducible, per-instance integer seed (or None for fresh
+    entropy), using numpy SeedSequence so instances are statistically
+    independent yet deterministic from one master seed.
+
+    master_seed semantics:
+      None or "random" -> fresh OS entropy each run (NOT reproducible); returns
+                          None, which both global RNG seeding and Aer treat as
+                          "draw from entropy".
+      <int>            -> reproducible: instance k always gets the same seed,
+                          and different master_seeds give independent ensembles.
+
+    The single integer returned is used to seed BOTH the global numpy/`random`
+    state (for circuit-construction draws) and Aer's seed_simulator (for shot +
+    noise-trajectory sampling), so the entire instance is reproducible together.
+    """
+    if master_seed is None or master_seed == "random":
+        return None
+    # SeedSequence.spawn gives independent child sequences; take a 32-bit int
+    # from child[instance_id]. 32-bit keeps it in range for Aer's seed_simulator.
+    child = np.random.SeedSequence(int(master_seed)).spawn(instance_id + 1)[instance_id]
+    return int(child.generate_state(1, dtype=np.uint32)[0])
+
+
 def get_autocorrelation(counts, init_bit_array, num_qubits):
     total_shots = sum(counts.values())
     num_qub = len(list(counts.keys())[0])
@@ -258,7 +282,7 @@ def _prepare_device_circuits(circuits, num_qubits, calibration_path, t2_mode,
 def run_one_instance(args_tuple):
     (instance_id, noise_source, calibration_path, output_dir, num_qubits,
      num_shots, num_max_kicks, epsilon, initial_state, t2_mode, durations,
-     iqm_device, noise_spec) = args_tuple
+     iqm_device, noise_spec, master_seed) = args_tuple
 
     tag = f"[instance {instance_id:02d}]"
     log_path = os.path.join(output_dir, f"instance_{instance_id:02d}.log")
@@ -270,8 +294,15 @@ def run_one_instance(args_tuple):
     sys.stderr = log_fh
 
     try:
-        random.seed(instance_id)
-        np.random.seed(instance_id)
+        # Resolve ONE per-instance seed and apply it to the global numpy/random
+        # state immediately before any circuit-construction draws, so those
+        # draws are reproducible. The SAME seed sets seed_simulator below, so
+        # the whole instance (circuit + sampling) reproduces together. Nothing
+        # may consume the global RNG between here and the draws.
+        inst_seed = resolve_instance_seed(master_seed, instance_id)
+        if inst_seed is not None:
+            random.seed(inst_seed)
+            np.random.seed(inst_seed)
         h_x = (1 - epsilon) * np.pi
         init_bit_array = build_init_bit_array(initial_state, num_qubits)
         aer_threading = dict(max_parallel_threads=1, max_parallel_experiments=1,
@@ -345,8 +376,10 @@ def run_one_instance(args_tuple):
             print(f"{tag} duration-aware relaxation: gate relaxation resident "
                   f"in noise model; idle/delay relaxation via custom pass")
 
-        print(f"{tag} running...")
-        job = simulator.run(run_circuits, shots=num_shots, memory=True)
+        seed_note = "entropy (not reproducible)" if inst_seed is None else inst_seed
+        print(f"{tag} running... (seed: {seed_note})")
+        job = simulator.run(run_circuits, shots=num_shots, memory=True,
+                            seed_simulator=inst_seed)
         result = job.result()
 
         autocorrelators = np.zeros(num_max_kicks)
@@ -379,6 +412,12 @@ def run_one_instance(args_tuple):
                 "Jz_angles": Jz_angles.tolist(), "hz_angles": hz_angles.tolist(),
                 "autocorrelators": autocorrelators.tolist(),
                 "counts_per_kick": counts_per_kick, "elapsed_seconds": elapsed,
+                # Reproducibility provenance: master_seed is the run-wide knob;
+                # instance_seed is the resolved per-instance seed actually used
+                # for both circuit draws and seed_simulator (null = fresh
+                # entropy, run not reproducible).
+                "master_seed": master_seed,
+                "instance_seed": inst_seed,
             }, f, indent=2)
 
         print(f"{tag} wrote {dat_path}")
@@ -419,8 +458,25 @@ def main():
     parser.add_argument("--cz-time-ns", type=float, default=None)
     parser.add_argument("--measure-time-ns", type=float, default=None)
     parser.add_argument("--iqm-device", choices=["aphrodite", "apollo"], default="aphrodite")
+    parser.add_argument(
+        "--master-seed", default="0",
+        help="Run-wide RNG seed for reproducibility. An integer (default 0) "
+             "makes every instance's circuit draws AND shot/noise sampling "
+             "reproducible (instance k derives an independent seed via "
+             "numpy SeedSequence); change it for a fresh independent ensemble. "
+             "Pass 'random' for fresh OS entropy each run (NOT reproducible).")
     parser.add_argument("--single-instance-id", type=int, default=None)
     args = parser.parse_args()
+
+    # master_seed: int, or the literal string "random" -> None (fresh entropy).
+    if str(args.master_seed).lower() == "random":
+        master_seed = "random"
+    else:
+        try:
+            master_seed = int(args.master_seed)
+        except ValueError:
+            sys.exit(f"ERROR: --master-seed must be an integer or 'random', "
+                     f"got {args.master_seed!r}")
 
     needs_cal = args.noise_source in ("device-calibrated",)
     if needs_cal:
@@ -457,6 +513,8 @@ def main():
     print(f"num_max_kicks : {args.num_max_kicks}")
     print(f"epsilon       : {args.epsilon}")
     print(f"initial_state : {args.initial_state}")
+    print(f"master_seed   : {master_seed}"
+          + ("  (fresh entropy; NOT reproducible)" if master_seed == "random" else ""))
     if args.noise_source == "device-calibrated":
         print(f"t2_mode       : {args.t2_mode}")
         print(f"noise         : {noise_spec.describe()}")
@@ -468,7 +526,7 @@ def main():
     worker_args = [
         (i, args.noise_source, args.calibration, args.output_dir, args.num_qubits,
          args.num_shots, args.num_max_kicks, args.epsilon, args.initial_state,
-         args.t2_mode, durations, args.iqm_device, noise_spec)
+         args.t2_mode, durations, args.iqm_device, noise_spec, master_seed)
         for i in range(args.num_instances)]
 
     if args.single_instance_id is not None:
