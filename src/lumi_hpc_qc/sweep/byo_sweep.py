@@ -312,8 +312,9 @@ def cross_grid_identity_check(
     extract_disorder_params: Callable[[Any], Any],
     primary_axis: str | None = None,
 ) -> None:
-    """§7.5.4 default-ON: within one seed, build the min and max grid points and
-    assert their disorder-bearing structure is identical. Hard-fail on drift.
+    """§7.5.4 default-ON: within one seed, build the two highest grid points on
+    the primary axis and assert their disorder-bearing structure is identical.
+    Hard-fail on drift.
 
     `extract_disorder_params` pulls the disorder-derived structure from a built
     circuit (in the engine: the rz/rzz angle parameters). Kept as an argument so
@@ -325,7 +326,14 @@ def cross_grid_identity_check(
         ordered = sorted(grid_points, key=lambda p: p.get(primary_axis, 0))
     else:
         ordered = grid_points
-    lo, hi = ordered[0], ordered[-1]
+    # Compare the two HIGHEST points on the primary axis, not min vs max. For a
+    # depth-like axis (e.g. num_kicks) the minimum can be degenerate: num_kicks=0
+    # builds a circuit with no disorder-bearing gates, whose signature is empty
+    # and would spuriously differ from a populated one (false positive). The two
+    # highest points both fully exercise the per-period disorder, so a pure
+    # factory yields identical signatures while an impure one (build-time RNG, or
+    # disorder that depends on the grid point) yields different ones.
+    lo, hi = ordered[-2], ordered[-1]
     c_lo = build_fn(**assemble_build_kwargs(fixed, instance, lo))
     c_hi = build_fn(**assemble_build_kwargs(fixed, instance, hi))
     p_lo = extract_disorder_params(c_lo)

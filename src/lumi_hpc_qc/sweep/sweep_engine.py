@@ -147,6 +147,16 @@ class SweepExperimentConfig:
     # LHS / parameter sampling (v1.2.0 Item C)
     sampling: SamplingConfig | None = None
 
+    # BYO circuit (SPEC-002 §7.5) — used when experiment_type == "byo_circuit".
+    # The factory's parameters are partitioned across grid (swept), fixed
+    # (constant), and disorder (per-seed supplied data); see §7.5.1-§7.5.5.
+    circuit_script: str = ""
+    circuit_function: str = "build_circuit"
+    fixed: dict[str, Any] = field(default_factory=dict)
+    disorder: dict[str, Any] = field(default_factory=dict)
+    signature_check: bool = True
+    disorder_gates: list[str] = field(default_factory=lambda: ["rz", "rzz"])
+
     # Metadata
     label: str = ""
 
@@ -219,6 +229,17 @@ class SweepTask:
     label: str = ""
     model_params: dict[str, float] = field(default_factory=dict)
 
+    # BYO circuit (SPEC-002 §7.5). circuit_params is the per-task grid point —
+    # kept SEPARATE from the Hamiltonian-routed model_params (§B-4). The build
+    # seam assembles fixed_params ∪ disorder_instance ∪ circuit_params and
+    # spreads them into the factory.
+    circuit_params: dict[str, Any] = field(default_factory=dict)
+    circuit_script: str = ""
+    circuit_function: str = "build_circuit"
+    fixed_params: dict[str, Any] = field(default_factory=dict)
+    disorder_instance: dict[str, Any] = field(default_factory=dict)
+    disorder_gates: tuple[str, ...] = ("rz", "rzz")
+
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
     """Expand sweep config into individual tasks.
@@ -279,6 +300,14 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             max_placements = int(exp.placement.split("_")[1])
         else:
             placement_strategy = str(exp.placement)
+
+        # ── BYO circuit expansion (SPEC-002 §7.5): seed OUTER, grid INNER ──
+        if exp.experiment_type == "byo_circuit":
+            task_counter = _expand_byo_experiment(
+                exp, config, seed_values, noise_envs,
+                placement_strategy, max_placements, tasks, task_counter,
+            )
+            continue
 
         # Resolve topologies for each qubit size
         for qsize in exp.qubit_sizes:
@@ -348,6 +377,116 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                 ))
 
     return tasks
+
+
+def _expand_byo_experiment(
+    exp: SweepExperimentConfig,
+    config: SweepConfig,
+    seed_values: list[int],
+    noise_envs: list,
+    placement_strategy: str,
+    max_placements: int | None,
+    tasks: list[SweepTask],
+    task_counter: int,
+) -> int:
+    """Expand one ``byo_circuit`` experiment into tasks (SPEC-002 §7.5).
+
+    Seed is the OUTER axis, the parameter grid the INNER axis. Per-seed disorder
+    is resolved ONCE and the identical realization is attached to every grid
+    point in that seed, so the cross-grid invariant is structural (§7.5.4). The
+    factory signature is validated against grid ∪ fixed ∪ disorder keys, and a
+    default-ON cross-grid identity check confirms the factory does not draw
+    build-time randomness. Raises ValueError on any of these (submit-time,
+    before execution), consistent with the F-6 fail-loud precedent.
+    """
+    # Local imports: these pull qiskit (circuit_loader); keep them off the
+    # module import path so non-BYO sweeps don't pay for them.
+    from lumi_hpc_qc.sweep.byo_sweep import (
+        expand_circuit_grid, resolve_disorder, validate_factory_signature,
+        cross_grid_identity_check,
+    )
+    from lumi_hpc_qc.sweep.circuit_loader import (
+        load_factory, load_circuit, extract_disorder_signature,
+    )
+
+    if "num_qubits" not in exp.fixed:
+        raise ValueError("byo_circuit requires fixed.num_qubits")
+    num_qubits = int(exp.fixed["num_qubits"])
+
+    grid_points = expand_circuit_grid(exp.grid)
+
+    # Resolve per-seed disorder once (file load is RNG-free; generate is a
+    # serial pre-pass). initial_state, if present, lives in the disorder block.
+    resolved_disorder, _disorder_meta = resolve_disorder(
+        exp.disorder, seed_values,
+        num_qubits=num_qubits,
+        configured_initial_state=exp.disorder.get("initial_state"),
+    )
+
+    # Signature check against the actual disorder field names (§7.5.1, F3).
+    disorder_keys: set[str] = set()
+    if resolved_disorder:
+        disorder_keys = set(next(iter(resolved_disorder.values())).keys())
+    factory = load_factory(exp.circuit_script, exp.circuit_function)
+    validate_factory_signature(
+        factory,
+        grid_keys=set(exp.grid),
+        fixed_keys=set(exp.fixed),
+        disorder_keys=disorder_keys,
+        allow_kwargs=not exp.signature_check,
+    )
+
+    # Default-ON cross-grid disorder-identity backstop (§7.5.4). Build the min
+    # and max grid points for one representative seed and confirm the
+    # disorder-bearing gates are identical — impurity (build-time RNG) is a
+    # property of the factory, so one seed suffices.
+    if len(grid_points) >= 2 and resolved_disorder:
+        gate_names = tuple(exp.disorder_gates)
+        primary_axis = next(iter(exp.grid), None)
+        rep_instance = resolved_disorder[seed_values[0]]
+
+        def _build(**kw):
+            return load_circuit(
+                script_file=exp.circuit_script,
+                script_function=exp.circuit_function,
+                script_params=kw,
+            ).circuit
+
+        cross_grid_identity_check(
+            _build,
+            fixed=exp.fixed,
+            instance=rep_instance,
+            grid_points=grid_points,
+            extract_disorder_params=lambda qc: extract_disorder_signature(qc, gate_names),
+            primary_axis=primary_axis,
+        )
+
+    # Expand: cal × seed (OUTER) × grid point (INNER).
+    gate_names = tuple(exp.disorder_gates)
+    for cal_path in config.calibrations:
+        for seed in seed_values:
+            instance = resolved_disorder[seed]
+            for grid_point in grid_points:
+                task_counter += 1
+                tasks.append(SweepTask(
+                    task_id=f"T{task_counter:06d}",
+                    qubit_size=num_qubits,
+                    seed=seed,
+                    calibration_path=cal_path,
+                    calibration_id=_calibration_id(cal_path),
+                    experiment_type="byo_circuit",
+                    noise_configs=noise_envs,
+                    placement_strategy=placement_strategy,
+                    max_placements=max_placements,
+                    label=exp.label,
+                    circuit_params=dict(grid_point),
+                    circuit_script=exp.circuit_script,
+                    circuit_function=exp.circuit_function,
+                    fixed_params=dict(exp.fixed),
+                    disorder_instance=instance,
+                    disorder_gates=gate_names,
+                ))
+    return task_counter
 
 
 def _calibration_id(path: str) -> str:
@@ -473,6 +612,12 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             placement=exp_dict.get("placement", "all_valid"),
             grid=exp_dict.get("grid", {}),
             label=exp_dict.get("label", ""),
+            circuit_script=exp_dict.get("circuit_script", ""),
+            circuit_function=exp_dict.get("circuit_function", "build_circuit"),
+            fixed=exp_dict.get("fixed", {}),
+            disorder=exp_dict.get("disorder", {}),
+            signature_check=exp_dict.get("signature_check", True),
+            disorder_gates=exp_dict.get("disorder_gates", ["rz", "rzz"]),
         )
 
         # Parse seed_list (v1.4.0 — explicit seed list)
@@ -549,6 +694,32 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
     return config
 
 
+def _validate_byo_experiment(prefix: str, exp: SweepExperimentConfig) -> list[str]:
+    """Cheap, pre-submit structural checks for a byo_circuit experiment.
+
+    The heavy checks (factory signature against the resolved disorder keys, and
+    the cross-grid identity backstop) run in ``_expand_byo_experiment`` and
+    raise; here we surface the fast structural problems as collected errors so
+    the config-error path reports them cleanly with everything else.
+    """
+    errors: list[str] = []
+    if not exp.circuit_script:
+        errors.append(f"{prefix}: byo_circuit requires 'circuit_script'")
+    elif not Path(exp.circuit_script).exists():
+        errors.append(f"{prefix}: circuit_script not found: {exp.circuit_script}")
+    if "num_qubits" not in exp.fixed:
+        errors.append(f"{prefix}: byo_circuit requires fixed.num_qubits")
+    if not exp.disorder:
+        errors.append(
+            f"{prefix}: byo_circuit requires a 'disorder' block (source: file|generate)"
+        )
+    elif exp.disorder.get("source", "file") == "file" and not exp.disorder.get("file"):
+        errors.append(
+            f"{prefix}: byo_circuit disorder source 'file' requires 'disorder.file'"
+        )
+    return errors
+
+
 def validate_sweep_config(config: SweepConfig) -> list[str]:
     """Validate a SweepConfig for completeness and consistency.
 
@@ -565,10 +736,15 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
 
     for i, exp in enumerate(config.experiments):
         prefix = f"experiment[{i}]"
-        if not exp.hamiltonians:
-            errors.append(f"{prefix}: no hamiltonians specified")
-        if not exp.qubit_sizes:
-            errors.append(f"{prefix}: no qubit_sizes specified")
+        if exp.experiment_type == "byo_circuit":
+            # RED-RESP §3.1: byo_circuit is exempt from hamiltonians/qubit_sizes;
+            # num_qubits comes from `fixed`. Validate the BYO fields instead.
+            errors.extend(_validate_byo_experiment(prefix, exp))
+        else:
+            if not exp.hamiltonians:
+                errors.append(f"{prefix}: no hamiltonians specified")
+            if not exp.qubit_sizes:
+                errors.append(f"{prefix}: no qubit_sizes specified")
         if exp.seeds < 1:
             errors.append(f"{prefix}: seeds must be >= 1, got {exp.seeds}")
 
@@ -1760,6 +1936,33 @@ class SweepEngine:
         circuit = QuantumCircuit(num_qubits)
 
         return circuit, hamiltonian, metadata
+
+    @staticmethod
+    def _build_byo_circuit(task: SweepTask):
+        """Per-task BYO build seam (SPEC-002 §7.5).
+
+        Assembles the factory kwargs as fixed ∪ disorder ∪ grid-point and builds
+        the concrete circuit for this task. The same disorder object was attached
+        to every grid point in the task's seed at expansion time, so the
+        cross-grid invariant already holds (verified once per experiment in
+        _expand_byo_experiment); this method just realizes one point.
+
+        Returns the LoadedCircuit (circuit + extracted connectivity), which the
+        BYO execution path uses for placement (connectivity, not a topology
+        library entry) and counts-based evaluation. Not yet invoked by
+        _execute_group — the BYO execution path lands with Gap B/D3.
+        """
+        from lumi_hpc_qc.sweep.byo_sweep import assemble_build_kwargs
+        from lumi_hpc_qc.sweep.circuit_loader import load_circuit
+
+        build_kwargs = assemble_build_kwargs(
+            task.fixed_params, task.disorder_instance, task.circuit_params,
+        )
+        return load_circuit(
+            script_file=task.circuit_script,
+            script_function=task.circuit_function,
+            script_params=build_kwargs,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
