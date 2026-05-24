@@ -52,3 +52,4 @@ HPCQC-*.zip
 exports/
 dataset/
 sweep_scripts.zip
+fe62378_to_HEAD.diff
