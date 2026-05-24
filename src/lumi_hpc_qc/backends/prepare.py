@@ -188,6 +188,8 @@ def prepare_simulation(
     spec=None,
     calibration_path: str | None = None,
     num_qubits: int = 10,
+    physical_qubits: list[str] | None = None,
+    physical_edges: list | None = None,
     durations=(None, None, None),
     t2_mode: str = "ramsey",
     iqm_device: str = "aphrodite",
@@ -204,6 +206,14 @@ def prepare_simulation(
             (None => full model). Ignored by other sources.
         calibration_path: device-calibrated only -- path to the calibration JSON.
         num_qubits: number of qubits to select / route onto.
+        physical_qubits: device-calibrated only -- F5a per-placement
+            composition. When given (len == num_qubits, names in the
+            calibration), the noise model is built from exactly these qubits in
+            logical order and the circuit is routed onto them (identity
+            initial_layout); logical k -> physical_qubits[k]. None preserves the
+            historical fidelity-driven self-selection (and free layout).
+        physical_edges: device-calibrated only -- optional placement edges,
+            validated as real calibrated two-qubit gates among physical_qubits.
         durations: (single_gate_ns, cz_ns, measure_ns) overrides; any may be
             None to use the calibration/VTT defaults. Device-calibrated only.
         t2_mode: "ramsey" (T2*) or "echo" (Hahn). Device-calibrated only.
@@ -239,6 +249,7 @@ def prepare_simulation(
             )
         return _prepare_device_calibrated(
             circuits, num_qubits=num_qubits, calibration_path=calibration_path,
+            physical_qubits=physical_qubits, physical_edges=physical_edges,
             durations=durations, t2_mode=t2_mode, spec=spec,
             optimization_level=optimization_level, num_processes=num_processes,
             verbose=verbose,
@@ -266,6 +277,7 @@ def _prepare_noiseless(circuits, optimization_level, num_processes):
 def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
                                durations, t2_mode, spec,
                                optimization_level, num_processes,
+                               physical_qubits=None, physical_edges=None,
                                verbose=True):
     # Imported here (not at module top) so callers that only need the noiseless
     # or iqm paths don't pay for the transpiler-internals import.
@@ -276,6 +288,7 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
         calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
         single_gate_time_ns=sg_ns, cz_gate_time_ns=cz_ns, measure_time_ns=me_ns,
         spec=spec,
+        physical_qubits=physical_qubits, physical_edges=physical_edges,
     )
 
     # One tick = 1 ns, so a duration value of N means N nanoseconds.
@@ -310,12 +323,19 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
         instruction_durations=instr_durations,
         dt=dt_s,
     )
+    # F5a: when a placement is given, pin logical k -> relabeled index k so the
+    # routed circuit's qubit indices line up with the placement-keyed noise
+    # model. transpile(initial_layout=None) is exactly today's free-layout
+    # behavior, so the no-placement path (incl. the F4 banked reference) is
+    # byte-identical.
+    initial_layout = list(range(num_qubits)) if physical_qubits is not None else None
     scheduled = transpile(
         circuits,
         target=target,
         scheduling_method="alap",
         optimization_level=optimization_level,
         num_processes=num_processes,
+        initial_layout=initial_layout,
     )
 
     # Circuit-complexity metrics: logical (input) vs native (decomposed + routed
@@ -372,6 +392,7 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
         relax_pass, _, _ = build_relaxation_pass(
             calibration_path, num_qubits=num_qubits, t2_mode=t2_mode,
             dt_seconds=dt_s, target=target,
+            physical_qubits=physical_qubits,
         )
         nm._custom_noise_passes.append(relax_pass)
         relaxation_active = True

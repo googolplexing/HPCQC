@@ -46,7 +46,7 @@ idle qubits that aren't being actively protected) or "echo" (t2_echo_us).
 from __future__ import annotations
 
 from lumi_hpc_qc.backends.noise_model import (
-    _select_qubits,
+    _resolve_selected,
     _load_calibration,
     _extract_edges,
 )
@@ -163,6 +163,8 @@ def build_control_readout_noise_model(
     cz_gate_time_ns: float | None = None,
     measure_time_ns: float | None = None,
     spec=None,
+    physical_qubits: list[str] | None = None,
+    physical_edges: list | None = None,
 ):
     """Build the static noise that is applied during gates and measurement.
 
@@ -195,7 +197,10 @@ def build_control_readout_noise_model(
 
     t2k = _t2_key(t2_mode)
     cal = _load_calibration(calibration_path)
-    selected = _select_qubits(cal, num_qubits)
+    # F5a: when physical_qubits is given, the noise model is composed from
+    # exactly the placement's qubits (and validated against the calibration);
+    # None preserves the historical fidelity-driven self-selection.
+    selected = _resolve_selected(cal, num_qubits, physical_qubits, physical_edges)
     name_to_idx = {qname: i for i, (qname, _) in enumerate(selected)}
     gates_data = cal.get("two_qubit_gates", {})
     sg_ns, cz_ns, me_ns = _resolve_durations(
@@ -337,6 +342,7 @@ def build_relaxation_pass(
     t2_mode: str = _DEFAULT_T2_MODE,
     dt_seconds: float | None = None,
     target=None,
+    physical_qubits: list[str] | None = None,
 ):
     """Build the IDLE decoherence (T1/T2 on delays) as a duration-aware pass.
 
@@ -374,7 +380,10 @@ def build_relaxation_pass(
     from qiskit.circuit import Delay
 
     cal = _load_calibration(calibration_path)
-    selected = _select_qubits(cal, num_qubits)
+    # F5a: same placement as build_control_readout_noise_model, so the idle
+    # relaxation T1/T2 line up with the gate-time/readout noise (both builders
+    # self-select independently otherwise).
+    selected = _resolve_selected(cal, num_qubits, physical_qubits)
 
     # Calibration stores T1/T2 in microseconds; the pass wants seconds.
     t1s_s, t2s_s = _per_qubit_t1_t2_seconds(cal, selected, t2_mode)
