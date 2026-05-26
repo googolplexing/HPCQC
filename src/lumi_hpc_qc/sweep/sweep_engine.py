@@ -1970,18 +1970,24 @@ class SweepEngine:
               f"({qsize}q, {len(connectivity)} 2q-edges, "
               f"{primary_axis}={place_task.circuit_params[primary_axis]})")
 
-        # ── F5a guardrail (D3a / RED-REVIEW §4 Q2): until per-placement
-        #    composition is verified end-to-end, device_calibrated runs on a
-        #    SINGLE (top-fidelity) placement; the run is stamped
-        #    noise_placement_independent so a placement-blind result is never
-        #    read as placement-resolved. noiseless-only groups may use all
-        #    placements. ──
+        # ── F5a guardrail (D3a / RED-REVIEW §4 Q2/Q3): until per-placement
+        #    composition is verified end-to-end, a group containing
+        #    device_calibrated is solved on a SINGLE (top-fidelity) placement.
+        #    The noise_placement_independent flag is PER-ENV, set true ONLY on
+        #    device_calibrated records that ran without per-placement
+        #    composition (RED-REVIEW §4 Q3 — "set true only when
+        #    device_calibrated ran without per-placement composition"). It does
+        #    NOT apply to noiseless records (no per-placement noise to resolve),
+        #    which carry false. ──
         wants_device_cal = any(
             e.source == "device_calibrated"
             for t in tasks for e in t.noise_configs
         )
         max_placements = 1 if wants_device_cal else representative.max_placements
-        noise_placement_independent = bool(wants_device_cal)
+        # The single-placement guardrail is active for this group iff it runs
+        # device_calibrated; that makes each device_calibrated record's noise
+        # placement-independent.
+        guardrail_single_placement = bool(wants_device_cal)
 
         # ── Placements from the built circuit's connectivity (top_1 = highest
         #    score, since find_all_placements returns score-descending). ──
@@ -2097,7 +2103,10 @@ class SweepEngine:
                         "physical_qubit_set": phys_qubits,
                         "env": env.name,
                         "noise_source": env.source,
-                        "noise_placement_independent": noise_placement_independent,
+                        "noise_placement_independent": (
+                            env.source == "device_calibrated"
+                            and guardrail_single_placement
+                        ),
                         "num_kicks": [
                             tk.circuit_params[primary_axis]
                             for tk in seed_tasks_sorted

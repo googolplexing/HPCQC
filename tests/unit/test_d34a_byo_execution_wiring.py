@@ -143,11 +143,16 @@ def test_byo_execute_computes_autocorrelator_device_cal():
         assert len(r["autocorrelator"]) == 4          # one per kick 0..3
         assert r["num_kicks"] == [0, 1, 2, 3]         # ascending grid order
         assert len(r["physical_qubit_set"]) == 4      # q4 placement
-        # device_calibrated -> guardrail on; noiseless -> off
+        # PER-ENV flag (RED §4 Q3): device_calibrated ran single-placement (top_1
+        # guardrail) -> True; noiseless has no per-placement noise to resolve ->
+        # False. Both arms share the one placement (group-level solve), but the
+        # flag describes each record's OWN noise.
         if r["noise_source"] == "device_calibrated":
             assert r["noise_placement_independent"] is True
         else:
             assert r["noise_placement_independent"] is False
+    # both envs ran on the same single placement (group-level top_1 solve)
+    assert len({tuple(r["physical_qubit_set"]) for r in res}) == 1
     # num_kicks=0 autocorrelator is the t=0 reference: polarized init, all-zero
     # bitstring dominates -> A(0) ~ +1.0 (within shot noise).
     dc = next(r for r in res if r["noise_source"] == "device_calibrated")
