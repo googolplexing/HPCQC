@@ -1592,7 +1592,17 @@ class SweepEngine:
         groups: dict[tuple[str, str, str, tuple], list[SweepTask]] = {}
         for task in tasks:
             params_key = tuple(sorted(task.model_params.items())) if task.model_params else ()
-            key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
+            if task.experiment_type == "byo_circuit":
+                # D3.4: BYO tasks have no hamiltonian/topology_name; each
+                # circuit_script is a distinct circuit family whose placements
+                # come from the BUILT circuit's connectivity (not topology_edges).
+                # Group by (script, calibration) so a script's placement solve is
+                # reused across seeds/grid-points. Keep the 4-tuple shape so the
+                # run() unpack (ham,topo,cal,params) stays valid — script goes in
+                # the hamiltonian slot, "byo" in the topology slot for logging.
+                key = (task.circuit_script, "byo", task.calibration_path, params_key)
+            else:
+                key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
             if key not in groups:
                 groups[key] = []
             groups[key].append(task)
@@ -1614,22 +1624,27 @@ class SweepEngine:
         if not tasks:
             return
 
-        # D3.3: _execute_group is the synthetic-channel twin battery
-        # (density_matrix). A device_calibrated env (source != "channels") needs
-        # the BYO statevector counts path, which is not wired until D3.4. Refuse
-        # loudly here rather than silently run device-calibrated noise through
-        # the density_matrix channel battery (wrong physics). Removed when D3.4
-        # lands the BYO execution branch.
+        # D3.4: BYO circuits use a separate counts-based execution path
+        # (placements from the built circuit's connectivity, device_calibrated
+        # statevector, counts -> autocorrelator), not the hamiltonian/⟨H⟩ twin
+        # battery. Dispatch before any hamiltonian/topology work.
+        if tasks[0].experiment_type == "byo_circuit":
+            self._execute_byo_group(tasks, writer, errors)
+            return
+
+        # A device_calibrated (source != "channels") env must not reach the
+        # synthetic-channel twin battery — that would run device-calibrated noise
+        # through the density_matrix channel path (wrong physics). It belongs on
+        # the BYO counts path above. Refuse loudly if it lands here.
         bad_source = sorted({
             e.source for t in tasks for e in t.noise_configs
             if e.source != "channels"
         })
         if bad_source:
             raise NotImplementedError(
-                f"noise source(s) {bad_source} (e.g. 'device_calibrated') require "
-                f"the BYO statevector counts execution path (D3.4), not yet wired. "
-                f"The synthetic-channel battery cannot run them. Request only "
-                f"channel-source envs until D3.4 lands."
+                f"noise source(s) {bad_source} (e.g. 'device_calibrated') are "
+                f"only valid on the BYO counts path (experiment_type=byo_circuit). "
+                f"The synthetic-channel battery cannot run them."
             )
 
         representative = tasks[0]
@@ -1880,6 +1895,95 @@ class SweepEngine:
               f"= {self._progress.hdf5_writes} HDF5 writes "
               f"({self._progress.total_deduplicated} deduplicated)")
         self._timing["hdf5_writes_s"] += time.perf_counter() - t_hdf5_start
+
+    # ── Internal: BYO counts execution (SPEC-002 §7.5 / D3.4) ──
+
+    def _execute_byo_group(
+        self,
+        tasks: list[SweepTask],
+        writer: SweepHDF5Writer,
+        errors: list[str],
+    ) -> None:
+        """Execute a group of byo_circuit tasks (counts -> autocorrelator).
+
+        Unlike the hamiltonian twin battery (_execute_group), the BYO path:
+          - builds each task's circuit via _build_byo_circuit (the Gap A seam),
+          - solves placements from the BUILT circuit's connectivity
+            (extract_connectivity), NOT a topology_library entry,
+          - runs each placement x noise env for COUNTS via prepare_simulation
+            (device_calibrated -> statevector + per-placement F5a noise;
+            noiseless -> statevector), and
+          - computes the counts->autocorrelator observable, stored with the
+            placement + the noise_placement_independent guardrail flag.
+
+        D3.4a (this step): grouping + dispatch + build + placement solve +
+        guardrail resolution. The per-(placement,env) counts run and the
+        autocorrelator are stubbed (D3.4b); storage is D3.4c.
+        """
+        if not tasks:
+            return
+
+        representative = tasks[0]
+        cal_path = representative.calibration_path
+        cal_id, cal_json, device_cal = self._cal_cache[cal_path]
+
+        # ── Build the representative circuit (all tasks in a group share the
+        #    circuit_script; connectivity is identical across seeds/grid since
+        #    it is the factory's 2q pattern). Use it for the placement solve. ──
+        t_build_start = time.perf_counter()
+        loaded = self._build_byo_circuit(representative)
+        qsize = loaded.num_qubits
+        connectivity = loaded.connectivity
+        self._timing["circuit_build_s"] += time.perf_counter() - t_build_start
+        print(f"    BYO: built {representative.circuit_script} "
+              f"({qsize}q, {len(connectivity)} 2q-edges)")
+
+        # ── F5a guardrail (D3a / RED-REVIEW §4 Q2): until per-placement
+        #    composition is verified end-to-end, device_calibrated runs on a
+        #    SINGLE (top-fidelity) placement; the run is stamped
+        #    noise_placement_independent so a placement-blind result is never
+        #    read as placement-resolved. noiseless-only groups may use all
+        #    placements. ──
+        wants_device_cal = any(
+            e.source == "device_calibrated"
+            for t in tasks for e in t.noise_configs
+        )
+        max_placements = 1 if wants_device_cal else representative.max_placements
+        noise_placement_independent = bool(wants_device_cal)
+
+        # ── Placements from the built circuit's connectivity (top_1 = highest
+        #    score, since find_all_placements returns score-descending). ──
+        t_place_start = time.perf_counter()
+        placements = self._solver.find_all_placements(
+            circuit_edges=connectivity,
+            circuit_qubits=qsize,
+            device_ids=[device_cal.device_id],
+            strategy="max_fidelity",
+            max_placements=max_placements,
+        )
+        self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
+        if not placements:
+            errors.append(
+                f"BYO: no valid placements for {representative.circuit_script} "
+                f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
+            )
+            return
+        print(f"    BYO: {len(placements)} placement(s) "
+              f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
+
+        # ── D3.4b: per-(task, placement, env) counts run + autocorrelator.
+        #    D3.4c: storage of counts/autocorrelator + noise_placement_independent
+        #    (+ physical_qubit_set) via the writer. Stubbed until those steps. ──
+        physical_qubit_set = [
+            placements[0].qubit_mapping[i] for i in range(qsize)
+        ]
+        raise NotImplementedError(
+            "BYO counts execution (run-for-counts + autocorrelator) lands in "
+            f"D3.4b; storage in D3.4c. Grouping/build/placement are wired: "
+            f"{len(placements)} placement(s), top-1 physical_qubit_set="
+            f"{physical_qubit_set}, noise_placement_independent="
+            f"{noise_placement_independent}."
+        )
 
     # ── Internal: circuit building ──
 
