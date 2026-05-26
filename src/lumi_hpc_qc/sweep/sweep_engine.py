@@ -1244,6 +1244,13 @@ class SweepEngine:
         # ── Step 3b: Campaign manifest — resume or create (Item 6) ──
         output_dir = Path(self._config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        # D3.4c (Option A) — where _execute_byo_group writes the per-instance +
+        # aggregated_autocorr.dat files (byte-format-identical to
+        # aggregate_floquet.py). Without this set, the .dat sink is dead and the
+        # gate-2 comparison artifact / per-seed average is never emitted by a
+        # real run. Subtree layout (built in _execute_byo_group):
+        #   {byo_dat}/{script_stem}/{phys-qubits}/{env}/aggregated_autocorr.dat
+        self._byo_dat_dir = str(output_dir / "byo_dat")
         manifest_path = output_dir / "campaign_manifest.json"
 
         from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
@@ -2017,9 +2024,11 @@ class SweepEngine:
         #    order, prepare ONE simulation over the list, run with one
         #    seed_simulator = resolve_instance_seed(master_seed, seed), then take
         #    get_autocorrelation per grid point. Average across seeds.
-        #    D3.4c stores the per-(placement,env) autocorrelator + counts +
-        #    noise_placement_independent (+ physical_qubit_set). For now the
-        #    results are computed and returned to a stubbed writer hook. ──
+        #    D3.4c persists the per-(seed,placement,env) autocorrelator vector +
+        #    noise_placement_independent (+ physical_qubit_set) via
+        #    writer.write_byo_result, and aggregates the per-seed series into the
+        #    .dat files. Raw counts are NOT stored (the autocorrelator is the
+        #    result; counts persistence is a later audit/Parquet step). ──
         from lumi_hpc_qc.backends.prepare import prepare_simulation
         from lumi_hpc_qc.sweep.byo_observable import (
             get_autocorrelation, resolve_instance_seed,
