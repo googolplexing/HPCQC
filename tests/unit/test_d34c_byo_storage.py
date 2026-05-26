@@ -119,5 +119,67 @@ def test_noiseless_byo_record_flag_false():
         assert grp.attrs["noise_placement_independent"] == False  # noqa: E712
 
 
+# --------------- WAL consistency + recovery (run-path) -------------------
+# These cover the full run() self-check + crash-recovery, which the unit
+# suite above does not: write_byo_result appends a WAL line AND creates an
+# HDF5 group, so verify_consistency must count BYO groups and BYO WAL lines
+# symmetrically, and recover_from_wal must be able to replay BYO rows.
+
+def test_byo_run_consistency_no_false_positive():
+    """A BYO-only run must NOT report WAL inconsistency. (Regression: BYO WAL
+    lines used to lack group_path -> injected '' into wal_paths while no /byo
+    group was counted -> consistent=False on every BYO run.)"""
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "sweep.h5")
+    with SweepHDF5Writer(path) as w:
+        w.write_byo_result(_byo_record(0, "device_calibrated", "device_calibrated",
+                                       ["QB1", "QB2"], True))
+        w.write_byo_result(_byo_record(1, "noiseless", "channels", ["QB1", "QB2"], False))
+    report = SweepHDF5Writer(path).verify_consistency()
+    assert report["consistent"] is True
+    assert report["wal_entries"] == report["hdf5_groups"] == 2
+    assert report["missing_from_hdf5"] == 0
+
+
+def test_byo_and_energy_consistency():
+    """Mixed BYO + energy run is consistent and counts both trees."""
+    from lumi_hpc_qc.data.hdf5_writer import SweepResultEntry
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "sweep.h5")
+    entry = SweepResultEntry(
+        device_id="q50", device_prefix="q50", seed=0,
+        placement_qubits=["QB1"], calibration_id="cal0", noise_config="noiseless",
+        energy_trajectory=[1.0, 0.5], best_energy=0.5, total_iterations=2,
+        converged=True,
+    )
+    with SweepHDF5Writer(path) as w:
+        w.write(entry)
+        w.write_byo_result(_byo_record(0, "noiseless", "channels", ["QB1", "QB2"], False))
+    report = SweepHDF5Writer(path).verify_consistency()
+    assert report["consistent"] is True
+    assert report["wal_entries"] == report["hdf5_groups"] == 2
+
+
+def test_byo_wal_recovery_reconstructs_group():
+    """If a BYO HDF5 group is lost but its WAL line survives, recover_from_wal
+    rebuilds it byte-for-byte. (Regression: recovery used to skip BYO lines.)"""
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "sweep.h5")
+    gpath = "/byo/floquet_dtc/seeds/seed_0000/placements/QB1-QB2/device_calibrated"
+    with SweepHDF5Writer(path) as w:
+        w.write_byo_result(_byo_record(0, "device_calibrated", "device_calibrated",
+                                       ["QB1", "QB2"], True))
+    # Simulate a group lost after the WAL fsync but before/around the HDF5 flush.
+    with h5py.File(path, "a") as f:
+        del f[gpath]
+        assert gpath not in f
+    recovered = SweepHDF5Writer(path).recover_from_wal()
+    assert recovered == 1
+    with h5py.File(path, "r") as f:
+        assert gpath in f
+        assert list(f[gpath]["autocorrelator"][()]) == [1.0, 0.5, 0.2]
+        assert f[gpath].attrs["seed_simulator"] == 123456
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

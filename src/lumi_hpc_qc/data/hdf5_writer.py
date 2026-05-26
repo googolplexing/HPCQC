@@ -414,18 +414,43 @@ class SweepHDF5Writer:
         if not self._opened:
             raise RuntimeError("Writer not opened. Use 'with' or call open().")
 
+        script_stem = Path(result["script"]).stem if result.get("script") else "byo"
+        phys = "-".join(str(q) for q in result["physical_qubit_set"])
+        # No leading slash — matches SweepResultEntry.group_path ("devices/...")
+        # and the names h5py.visititems reports (root-relative). h5py.create_group
+        # places it at /byo/... regardless, and f["/byo/..."] still resolves it.
+        group_path = (
+            f"byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
+            f"placements/{phys}/{result['env']}"
+        )
+
         # WAL append (crash-safe), tagged so recovery can distinguish BYO rows.
-        wal_line = json.dumps({"_kind": "byo", **_byo_wal_safe(result)}) + "\n"
+        # The computed group_path is stored in the WAL line so it is symmetric
+        # with the energy path (SweepResultEntry.to_wal_dict carries group_path):
+        # both verify_consistency and recover_from_wal key off group_path, so a
+        # BYO line WITHOUT it would be silently dropped by recovery and would
+        # inject "" into verify_consistency's wal_paths (spurious inconsistency).
+        wal_line = json.dumps(
+            {"_kind": "byo", "group_path": group_path, **_byo_wal_safe(result)}
+        ) + "\n"
         self._wal_file.write(wal_line)
         self._wal_file.flush()
         os.fsync(self._wal_file.fileno())
 
-        script_stem = Path(result["script"]).stem if result.get("script") else "byo"
-        phys = "-".join(str(q) for q in result["physical_qubit_set"])
-        group_path = (
-            f"/byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
-            f"placements/{phys}/{result['env']}"
-        )
+        self._write_byo_hdf5_group(result, group_path)
+        self._h5file.flush()
+        self._write_count += 1
+
+    def _write_byo_hdf5_group(
+        self, result: dict[str, Any], group_path: str
+    ) -> None:
+        """Create the BYO HDF5 group (datasets + attrs) at ``group_path``.
+
+        Pure HDF5 write — no WAL append, no flush — so it can be reused by both
+        ``write_byo_result`` (live path) and ``recover_from_wal`` (replay path,
+        which must NOT re-append to the WAL). ``result`` may be either a live
+        ``_byo_results_last`` dict or a WAL-replayed dict (same keys).
+        """
         if group_path in self._h5file:
             del self._h5file[group_path]
         grp = self._h5file.create_group(group_path)
@@ -455,9 +480,6 @@ class SweepHDF5Writer:
         grp.attrs["shots"] = int(result["shots"])
         if result.get("placement_id") is not None:
             grp.attrs["placement_id"] = int(result["placement_id"])
-
-        self._h5file.flush()
-        self._write_count += 1
 
     def create_soft_link(
         self, source_path: str, target_path: str
@@ -508,9 +530,14 @@ class SweepHDF5Writer:
                 if group_path in self._h5file:
                     continue  # Already written
 
-                # Reconstruct entry and write
-                entry = self._wal_dict_to_entry(wal_dict)
-                self._write_hdf5_group(entry)
+                # Reconstruct entry and write. BYO rows (D3.4c) are not
+                # energy-shaped, so they cannot go through _wal_dict_to_entry /
+                # _write_hdf5_group — replay them via the BYO group writer.
+                if wal_dict.get("_kind") == "byo":
+                    self._write_byo_hdf5_group(wal_dict, group_path)
+                else:
+                    entry = self._wal_dict_to_entry(wal_dict)
+                    self._write_hdf5_group(entry)
                 recovered += 1
 
         self._h5file.flush()
@@ -580,7 +607,12 @@ class SweepHDF5Writer:
         hdf5_paths = set()
 
         def collect_groups(name, obj):
-            if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
+            # Energy leaf groups carry "energy_trajectory"; BYO leaf groups
+            # (D3.4c, /byo tree) carry "autocorrelator". Count both so a BYO or
+            # mixed run does not spuriously report WAL inconsistency.
+            if isinstance(obj, h5py.Group) and (
+                "energy_trajectory" in obj or "autocorrelator" in obj
+            ):
                 hdf5_paths.add(name)
 
         h5.visititems(collect_groups)
