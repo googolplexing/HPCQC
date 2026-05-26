@@ -145,3 +145,38 @@ tier (not `device_calibrated`/`noiseless`) under the counts observable.
 **Plan:** give the synthetic-tier path a counts mode parallel to the
 `device_calibrated` counts path built in D3.4, sharing the same
 counts→autocorrelator helper.
+
+## D7 — Echo circuit + multi-observable BYO factory contract (D3.6)
+**Status:** deferred (tracked; surfaced by the researcher's `Floquet_DTC_AK10_echo.py`).
+**What:** the current BYO contract (D3.4) is single-circuit / single-observable:
+one factory builds ONE circuit per grid point, and the engine computes ONE
+counts→autocorrelator per (seed, placement, env). The researcher's going-forward
+script runs TWO circuit families per instance and TWO+ observables:
+  - `build_autocorr_circuit` (forward `num_kicks` Floquet periods) → A(n) via
+    `get_autocorrelation`;
+  - `build_echo_circuit` (forward `num_kicks` + `num_kicks` CONJUGATE periods,
+    a Loschmidt echo) → echo value `sqrt(abs(A_echo(n)))`;
+  - a derived/normalized quantity `A(n) / A_0(n)` combining both.
+  Also feature flags now parameters: `Jz_on`, `hz_on`, `Jz_frozen`/value,
+  `Initial_state`, `backend_code` (maps to noise source).
+**Why deferred (Path 1 decision):** gate-2 (F4 reproduction) is pinned to the
+AK7-shaped bank (single forward circuit, single autocorrelator,
+batched-per-instance, one seed) and does NOT need echo. The single-observable
+path is a strict SUBSET of the echo path, so D3.4b/c built for gate-2 are reused
+verbatim when echo lands — nothing is wasted. Echo is a genuine contract
+extension (multi-circuit-family declaration, configurable observable, cross-grid
+check + placement over two families) that deserves its own design note, not a
+rushed bolt-on into the gate-2 path.
+**Trigger to resolve:** after gate-2 (D3.5) is signed off, and when the
+researcher's standard workflow is the echo/normalized analysis. Confirm whether
+echo is their everyday tool (→ D3.6 is the main event) or occasional.
+**Plan (D3.6):** extend the factory contract so a factory may declare multiple
+named circuit families per grid point (e.g. `{"autocorr": qc1, "echo": qc2}`),
+and make the observable configurable per family (`autocorrelator`,
+`echo=sqrt|A|`, derived `ratio=autocorr/echo`) rather than hardwiring
+`get_autocorrelation`. Reuse the D3.4 counts worker, seeding (one per
+instance), batching (one run per instance over the kick-list), and placement
+unchanged — echo extends, does not replace. New design note: BLUE-DESIGN-D3.6.
+The observable formula is researcher-edited (AK7 vs AK10 differ in
+`get_autocorrelation`'s plus/minus form — mathematically identical, but it
+confirms the observable must be configurable, not frozen).
