@@ -30,6 +30,14 @@ class NoiseConfig:
         coupling_map_source: "calibration" (Q50 topology) or "full" (all-to-all).
         tier: "A" (individual), "B" (combined), "full", or "noiseless".
         description: Human-readable description.
+        source: noise vocabulary / execution path (D3). "channels" (default) =
+            the synthetic depolarizing/T1/T2/readout channels run by the
+            density_matrix twin battery (all 11 environments below).
+            "device_calibrated" = real Q50-calibrated noise built by
+            backends/device_noise via prepare_simulation under a pinned
+            statevector method; executed by the BYO counts path (D3.4), NOT the
+            twin battery. Defaulting to "channels" keeps the 11 environments
+            byte-identical (RED-SPEC-002 preserved).
     """
     name: str
     channels: dict[str, bool] | None = None
@@ -39,6 +47,29 @@ class NoiseConfig:
     coupling_map_source: str = "calibration"
     tier: str = "A"
     description: str = ""
+    source: str = "channels"
+
+    def __post_init__(self):
+        # D3.3: device_calibrated runs through prepare_simulation, which PINS
+        # method="statevector" (backends/prepare.py:410) -- that pin is the D2
+        # correctness fix (deterministic Kraus precompute) AND the scalable
+        # O(2^n) path, not a preference. A NoiseConfig.method on this source is
+        # therefore not consultable; fail loud rather than silently ignore a
+        # caller who set density_matrix expecting a different (state-level)
+        # result. A density_matrix device-calibrated MODE is a separate future
+        # increment (tracked as DEBT, not a knob on this config).
+        if self.source not in ("channels", "device_calibrated"):
+            raise ValueError(
+                f"NoiseConfig.source must be 'channels' or 'device_calibrated', "
+                f"got {self.source!r}"
+            )
+        if self.source == "device_calibrated" and self.method != "statevector":
+            raise ValueError(
+                f"device_calibrated noise pins method='statevector' "
+                f"(the D2 Kraus-precompute fix + the scalable path); "
+                f"got method={self.method!r}. density_matrix device-calibrated "
+                f"simulation is a separate future mode, not a method override."
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -184,6 +215,25 @@ NOISE_ENVIRONMENTS: list[NoiseConfig] = [
         coupling_map_source="calibration",
         tier="full",
         description="All 5 noise channels active",
+    ),
+
+    # ── Device-calibrated (D3) — real Q50 noise, statevector counts path ──
+    # source="device_calibrated" routes to backends/device_noise via
+    # prepare_simulation (statevector pin), executed by the BYO counts path
+    # (D3.4). channels=None: this is NOT a synthetic-channel env. The name is
+    # resolvable + validatable now (D3.3); executing it before D3.4 wires the
+    # BYO branch fails loud in _execute_group (the twin battery cannot run it).
+    NoiseConfig(
+        name="device_calibrated",
+        channels=None,
+        method="statevector",
+        shots=4096,
+        measurement_stats_interval=0,
+        coupling_map_source="calibration",
+        tier="device",
+        description="Real Q50-calibrated noise (device_noise, statevector). "
+                    "Executed by the BYO counts path (D3.4), not the twin battery.",
+        source="device_calibrated",
     ),
 ]
 

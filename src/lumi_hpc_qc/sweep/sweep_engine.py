@@ -259,7 +259,12 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
     for exp in config.experiments:
         # Resolve noise configs
         if exp.noise_configs == "all" or exp.noise_configs == ["all"]:
-            noise_envs = list(NOISE_ENVIRONMENTS)
+            # D3: "all" means the synthetic channel tiers (the historical 11),
+            # NOT device_calibrated. device_calibrated is a different execution
+            # path (statevector counts, D3.4) and must be requested by name, so
+            # adding it to NOISE_ENVIRONMENTS does not silently inject it into
+            # every existing "all" sweep.
+            noise_envs = [e for e in NOISE_ENVIRONMENTS if e.source == "channels"]
         else:
             nc_names = exp.noise_configs if isinstance(exp.noise_configs, list) else [exp.noise_configs]
             # RED-RESP §7.5 F-6: never silently drop unknown noise-config names.
@@ -1608,6 +1613,24 @@ class SweepEngine:
         """
         if not tasks:
             return
+
+        # D3.3: _execute_group is the synthetic-channel twin battery
+        # (density_matrix). A device_calibrated env (source != "channels") needs
+        # the BYO statevector counts path, which is not wired until D3.4. Refuse
+        # loudly here rather than silently run device-calibrated noise through
+        # the density_matrix channel battery (wrong physics). Removed when D3.4
+        # lands the BYO execution branch.
+        bad_source = sorted({
+            e.source for t in tasks for e in t.noise_configs
+            if e.source != "channels"
+        })
+        if bad_source:
+            raise NotImplementedError(
+                f"noise source(s) {bad_source} (e.g. 'device_calibrated') require "
+                f"the BYO statevector counts execution path (D3.4), not yet wired. "
+                f"The synthetic-channel battery cannot run them. Request only "
+                f"channel-source envs until D3.4 lands."
+            )
 
         representative = tasks[0]
         ham_name = representative.hamiltonian
