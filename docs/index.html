@@ -99,6 +99,7 @@
     <li><a href="#plugin-overview">Plugin system</a></li>
     <li><a href="#new-hamiltonian">Adding a Hamiltonian</a></li>
     <li><a href="#byo-guide">BYO circuits</a></li>
+    <li><a href="#byo-parameterized">&nbsp;&nbsp;&mdash; Parameterized factory + sweep</a></li>
   </ul>
   <div class="section-label">Validation</div>
   <ul>
@@ -112,7 +113,7 @@
 
 <!-- ================================================================ -->
 <h1 id="overview">lumi-hpc-qc</h1>
-<p class="version-info">Version 1.1.0 &middot; 2026-04-03 &middot; 100+ Python files &middot; ~16,000 lines &middot; LUMI (CSC Finland) + VTT Q50</p>
+<p class="version-info">Version 1.1.0 &middot; 2026-04-03 &middot; 100+ Python files &middot; ~16,000 lines &middot; LUMI (CSC Finland) + VTT Q50 &middot; <span class="badge badge-warn">+ SPEC-002 §7.5 sweep harness in progress (2026-05-26)</span></p>
 
 <p>A modular framework for running Variational Quantum Algorithms and systematic noise characterisation on the LUMI supercomputer (AMD MI250X GPUs) and the VTT Q50 quantum processor via FiQCI. Researchers define experiments in YAML; the framework handles placement solving, noise decomposition, HDF5 storage, and Parquet export for ML training data.</p>
 
@@ -144,7 +145,20 @@
 <tr><td>Phase C</td><td>Error mitigation (ZNE + readout), multiplexed QPU, seed sweeps</td><td><span class="badge badge-ok">Done</span></td><td>48/48</td></tr>
 <tr><td>Phase D</td><td>Multi-format export, Schema v2, quality gates, measurement stats (V19)</td><td><span class="badge badge-ok">Done</span></td><td>86/86</td></tr>
 <tr><td><strong>Phase E</strong></td><td><strong>Sweep engine — YAML &rarr; placement &rarr; twin sim &rarr; HDF5 &rarr; Parquet</strong></td><td><span class="badge badge-ok">Done</span></td><td><strong>764/764</strong></td></tr>
+<tr><td><strong>SPEC-002 §7.5</strong></td><td><strong>Parameterised BYO sweeps — researcher circuit factory + swept params, device-calibrated noise, counts &rarr; autocorrelator</strong></td><td><span class="badge badge-warn">In progress</span></td><td>D3.1&ndash;D3.3 landed; D3.4 execution + D3.5 reproduction open</td></tr>
 </table>
+
+<div class="callout callout-warn">
+<strong>SPEC-002 §7.5 sweep harness (in progress).</strong> On the
+<code>feature/device-calibrated-noise</code> branch, the parameterised
+bring-your-own-circuit path is being wired: a researcher supplies a pure
+circuit-factory <code>.py</code> plus a sweep YAML of parameter values, and the
+engine sweeps it under real Q50 <code>device_calibrated</code> noise. Landed:
+the build seam (Gap A), per-placement device-calibrated noise composition
+(F5a / D3.2), and <code>device_calibrated</code> routing (D3.3). Open: the BYO
+counts execution branch (D3.4) and the bit-exact Floquet reproduction (D3.5).
+See the <a href="#byo-guide">BYO circuits</a> guide.
+</div>
 
 <!-- ================================================================ -->
 <h2 id="six-layers">6-layer architecture</h2>
@@ -330,7 +344,29 @@ sweep:
 <tr><td><code>noise_gates_readout</code></td><td>1q + 2q + readout</td><td>4096</td><td>20 (Tier B)</td></tr>
 <tr><td><code>noise_full</code></td><td>All 5 channels</td><td>4096</td><td>10</td></tr>
 <tr><td><code>topology_noiseless</code></td><td>None (topology routing only)</td><td>0</td><td>Disabled</td></tr>
+<tr><td><code>device_calibrated</code> <span class="badge badge-warn">D3</span></td><td>Real Q50-calibrated noise (statevector)</td><td>4096</td><td>&mdash;</td></tr>
 </table>
+
+<h4>Noise source axis (SPEC-002 §7.5 / D3)</h4>
+<p>Each <code>NoiseConfig</code> carries a <code>source</code>: <code>"channels"</code>
+(the default — the 11 synthetic depolarizing/T1/T2/readout tiers above, run by the
+density_matrix twin battery) or <code>"device_calibrated"</code> (real Q50 T1/T2/
+readout/CZ calibration, built by <code>backends/device_noise</code> under a pinned
+<code>statevector</code> method). The eleven channel tiers are unchanged.
+<code>device_calibrated</code> is <strong>opt-in by name</strong> &mdash;
+<code>noise_configs: all</code> means the channel tiers only, so it is never
+silently injected into an existing sweep; request it explicitly
+(<code>noise_configs: [device_calibrated, noiseless]</code>).</p>
+<div class="callout callout-warn">
+<strong>device_calibrated pins <code>statevector</code>.</strong> Setting
+<code>method: density_matrix</code> on a <code>device_calibrated</code> config is
+rejected with an explanation: the statevector pin is the Kraus-precompute
+correctness fix (DEBT D2) and the scalable O(2<sup>n</sup>) path, not a
+preference. A density_matrix device-calibrated mode is a separate future
+increment. The <code>device_calibrated</code> name resolves and validates today
+(D3.3); <strong>executing</strong> it requires the BYO counts path (D3.4, in
+progress) &mdash; until then the engine refuses it loudly rather than running it
+through the channel battery.</div>
 
 <!-- ================================================================ -->
 <h2 id="sweep-pipeline">Pipeline stages</h2>
@@ -595,7 +631,12 @@ class MyModelHamiltonian(HamiltonianBuilder):
 <!-- ================================================================ -->
 <h2 id="byo-guide">BYO circuits</h2>
 
-<p>The framework supports three BYO circuit ingestion paths:</p>
+<p>HPCQC ingests researcher-supplied circuits in two modes:</p>
+
+<h3>Mode 1 — fixed circuits (evaluation-only)</h3>
+<p>A single, non-parameterized circuit, run once per placement per noise config
+(no optimizer, no sweep). Used for characterisation — GHZ states, Bell pairs,
+the FiQCI examples. Three ingestion paths:</p>
 
 <h4>Path A — QPY file (primary)</h4>
 <pre>
@@ -605,14 +646,12 @@ with open("my_circuit.qpy", "wb") as f:
     dump([my_circuit], f)
 </pre>
 
-<h4>Path B — Python script</h4>
+<h4>Path B — Python script (no-arg build)</h4>
 <pre>
 # examples/fiqci/build_fiqci_circuits.py
 def build_circuit():
     qc = QuantumCircuit(3)
-    qc.h(0)
-    qc.cx(0, 1)
-    qc.cx(1, 2)
+    qc.h(0); qc.cx(0, 1); qc.cx(1, 2)
     return qc
 </pre>
 
@@ -621,12 +660,85 @@ def build_circuit():
 OPENQASM 3;
 include "stdgates.inc";
 qubit[3] q;
-h q[0];
-cx q[0], q[1];
-cx q[1], q[2];
+h q[0]; cx q[0], q[1]; cx q[1], q[2];
 </pre>
 
-<p>Non-parameterized circuits run in evaluation-only mode: no optimizer, single execution per placement per noise config. Used for characterisation sweeps (GHZ states, Bell pairs, FiQCI examples).</p>
+<h3 id="byo-parameterized">Mode 2 — parameterized circuit factory + sweep YAML <span class="badge badge-warn">SPEC-002 §7.5 / D3 — in progress</span></h3>
+
+<p>The headline researcher workflow: supply a <strong>pure circuit-factory
+<code>.py</code></strong> (a build function that takes all parameters as
+keyword arguments) plus a <strong>sweep YAML</strong> of the parameter values to
+sweep. HPCQC builds one circuit per grid point, solves placements from the
+circuit's own connectivity, runs each under the requested noise (including real
+Q50 <code>device_calibrated</code>), and computes the counts&rarr;autocorrelator
+observable &mdash; averaging across seeds.</p>
+
+<div class="callout callout-warn">
+<strong>Status.</strong> The build seam (Gap A), per-placement device-calibrated
+noise (F5a / D3.2), and <code>device_calibrated</code> routing (D3.3) are
+landed. The counts <strong>execution</strong> branch (D3.4) and the bit-exact
+Floquet reproduction (D3.5) are in progress on
+<code>feature/device-calibrated-noise</code>. The factory contract and YAML
+schema below are stable; end-to-end execution lands with D3.4.</div>
+
+<h4>The factory contract</h4>
+<p>The factory exposes a <strong>pure, keyword-only</strong> build function:</p>
+<pre>
+# examples/byo/floquet_dtc.py
+def build_circuit(*, num_kicks, epsilon, num_qubits,
+                  hz_angles, Jzz_angles, init_bit_array) -&gt; QuantumCircuit:
+    h_x = (1.0 - epsilon) * np.pi          # derived constants computed here
+    qc = QuantumCircuit(num_qubits, num_qubits)
+    for w in range(num_qubits):
+        if init_bit_array[w] == 1: qc.x(w)
+    for _ in range(num_kicks):
+        for w in range(num_qubits):      qc.rx(h_x, w)
+        for w in range(num_qubits):      qc.rz(hz_angles[w], w)
+        for w in range(num_qubits - 1):  qc.rzz(Jzz_angles[w], w, w + 1)
+    qc.measure(range(num_qubits), range(num_qubits))
+    return qc
+</pre>
+<ul>
+<li><strong>Keyword-only</strong> (note the <code>*</code>): the signature is
+validated against your YAML keys at submit time; mismatches fail loud.</li>
+<li><strong>Pure &mdash; no build-time randomness or global state.</strong>
+Disorder enters as arguments, resolved once per seed and shared across the grid.
+A cross-grid identity check builds two grid points and compares their
+disorder-bearing gates; a factory that draws RNG inside the build yields
+differing signatures and the sweep <strong>raises before running</strong>.</li>
+<li><strong><code>num_kicks=0</code> is legal</strong> &mdash; the t=0
+autocorrelator reference (an init-only circuit, empty disorder signature).</li>
+</ul>
+
+<h4>The sweep YAML</h4>
+<pre>
+# examples/byo/floquet_byo_sweep.yaml
+sweep:
+  experiments:
+    - type: byo_circuit
+      circuit_script: examples/byo/floquet_dtc.py
+      circuit_function: build_circuit
+      fixed: {num_qubits: 4, epsilon: 0.03}
+      grid:
+        num_kicks: {range: [0, 60]}          # stop-exclusive -> 0..59; incl. t=0
+      disorder:
+        source: file                          # file | generate
+        file: examples/byo/floquet_disorder_q4.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]               # gates carrying disorder (cross-grid check)
+      seed_list: [0, 1, 2]                    # gate instances -> averaged
+      noise_configs: [device_calibrated, noiseless]   # opt-in by name
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
+</pre>
+
+<p>Migrating an existing research script into this shape (factory + YAML +
+per-seed disorder) is walked through end-to-end in
+<code>examples/byo/MIGRATION_FloquetDTC.md</code> &mdash; taking the standalone
+<code>Floquet_DTC_AK7.py</code> discrete-time-crystal driver to
+<code>floquet_dtc.py</code> + <code>floquet_byo_sweep.yaml</code>, with emphasis
+on the purity refactor (moving the per-instance <code>np.random</code> disorder
+out of the build into per-seed data).</p>
 
 <!-- ================================================================ -->
 <h2 id="phase-e-results">Phase E validation results</h2>
@@ -661,6 +773,18 @@ cx q[1], q[2];
 
 <h3>Container <code>nonlocal</code> limitation</h3>
 <p>The LUMI Singularity container's Python does not support <code>nonlocal</code> in module-scope nested functions. Use mutable list pattern: <code>counter = [0]</code> and <code>counter[0] += 1</code>.</p>
+
+<h3>device_calibrated execution is in progress (D3.4)</h3>
+<p>The <code>device_calibrated</code> noise source is registered and validated
+(D3.3), and per-placement noise composition is wired at the device layer (F5a /
+D3.2), but the BYO counts <strong>execution</strong> branch that runs it is not
+yet landed (D3.4). Requesting <code>device_calibrated</code> in a sweep today
+raises a clear <code>NotImplementedError</code> rather than running it through
+the synthetic-channel battery. Until D3.4 lands, multi-placement
+<code>device_calibrated</code> is additionally guarded to a single
+(<code>top_1</code>) placement with a <code>noise_placement_independent</code>
+flag, so a placement-blind run is never read as placement-resolved. Tracked as
+DEBT D3a.</p>
 
 <!-- ================================================================ -->
 <h2 id="references">References</h2>
