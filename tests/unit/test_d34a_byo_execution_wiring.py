@@ -50,6 +50,7 @@ def _byo_task(seed: int, num_kicks: int, noise_names: list[str]) -> SweepTask:
         disorder_gates=("rz", "rzz"),
         seed=seed,
         calibration_path=_CAL,
+        max_placements=2,   # bound the noiseless-only placement count in tests
         noise_configs=[NOISE_ENV_BY_NAME[n] for n in noise_names],
     )
 

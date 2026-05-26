@@ -1938,16 +1938,37 @@ class SweepEngine:
         cal_path = representative.calibration_path
         cal_id, cal_json, device_cal = self._cal_cache[cal_path]
 
-        # ── Build the representative circuit (all tasks in a group share the
-        #    circuit_script; connectivity is identical across seeds/grid since
-        #    it is the factory's 2q pattern). Use it for the placement solve. ──
+        # Primary grid axis = the (single) key in circuit_params (e.g.
+        # num_kicks). Resolved up front: it's needed both to pick the
+        # placement-defining circuit (below) and to order the autocorrelator
+        # series. Multi-axis BYO counts is a later increment (DEBT).
+        primary_axes = {k for t in tasks for k in t.circuit_params}
+        if len(primary_axes) != 1:
+            errors.append(
+                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
+                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
+                f"increment (DEBT)."
+            )
+            return
+        primary_axis = next(iter(primary_axes))
+
+        # ── Build the placement-defining circuit from the MAXIMAL grid point,
+        #    not tasks[0]. A degenerate low point (e.g. num_kicks=0) builds a
+        #    circuit with NO 2q gates -> empty connectivity -> the solver would
+        #    place disconnected qubits, and the batched higher-kick circuits
+        #    (which DO have 2q gates) then fail to transpile onto that layout.
+        #    The full 2q pattern lives at the high point; connectivity is
+        #    grid-independent above the degenerate point (same lesson as the
+        #    two-highest cross-grid check). ──
+        place_task = max(tasks, key=lambda t: t.circuit_params[primary_axis])
         t_build_start = time.perf_counter()
-        loaded = self._build_byo_circuit(representative)
+        loaded = self._build_byo_circuit(place_task)
         qsize = loaded.num_qubits
         connectivity = loaded.connectivity
         self._timing["circuit_build_s"] += time.perf_counter() - t_build_start
-        print(f"    BYO: built {representative.circuit_script} "
-              f"({qsize}q, {len(connectivity)} 2q-edges)")
+        print(f"    BYO: built {place_task.circuit_script} "
+              f"({qsize}q, {len(connectivity)} 2q-edges, "
+              f"{primary_axis}={place_task.circuit_params[primary_axis]})")
 
         # ── F5a guardrail (D3a / RED-REVIEW §4 Q2): until per-placement
         #    composition is verified end-to-end, device_calibrated runs on a
@@ -2011,22 +2032,14 @@ class SweepEngine:
         for t in tasks:
             by_seed.setdefault(t.seed, []).append(t)
 
-        # Primary grid axis = the (single) key present in circuit_params. The
-        # autocorrelator series must be ordered ascending on it (e.g. num_kicks
-        # 0,1,2,...), matching the banked per-kick .dat order. Multi-axis BYO
-        # grids are not part of the gate-2 reproduction; guard for it.
-        primary_axes = {k for t in tasks for k in t.circuit_params}
-        if len(primary_axes) != 1:
-            errors.append(
-                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
-                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
-                f"increment (DEBT)."
-            )
-            return
-        primary_axis = next(iter(primary_axes))
-
         # The set of distinct noise envs (same across tasks in a group).
         envs = representative.noise_configs
+        # Default shot count for envs whose own shots is 0 (e.g. noiseless on the
+        # counts path). The banked Floquet reference used num_shots per instance;
+        # the gate-2 reproduction passes the matching value via the env shots.
+        # 1000 is a sane default for smoke runs; it is NOT used when an env sets
+        # its own shots (device_calibrated=4096).
+        byo_shots = 1000
         # init_bit_array / num_qubits for the observable (from disorder + fixed).
         init_bit_array = representative.disorder_instance.get("init_bit_array")
         if init_bit_array is None:
@@ -2053,6 +2066,13 @@ class SweepEngine:
 
                 for env in envs:
                     src = _prepare_source(env)
+                    # The counts path requires shots>0. The noiseless env
+                    # carries shots=0 (its ⟨H⟩/statevector default) -> a shots=0
+                    # run returns a statevector, not counts. For BYO counts,
+                    # noiseless must sample shots like any other arm. Use
+                    # env.shots when set, else the experiment's byo_shots (a
+                    # config field; gate-2 sets it explicitly to match the bank).
+                    shots = env.shots if env.shots and env.shots > 0 else byo_shots
                     prep_kwargs = dict(
                         calibration_path=cal_path, num_qubits=qsize,
                         optimization_level=3, num_processes=1, verbose=False,
@@ -2063,7 +2083,7 @@ class SweepEngine:
                         )
                     prep = prepare_simulation(built, src, **prep_kwargs)
                     job = prep.simulator.run(
-                        prep.run_circuits, shots=env.shots, memory=True,
+                        prep.run_circuits, shots=shots, memory=True,
                         seed_simulator=inst_seed,
                     )
                     result = job.result()
@@ -2083,7 +2103,7 @@ class SweepEngine:
                             for tk in seed_tasks_sorted
                         ],
                         "autocorrelator": autocorr,
-                        "shots": env.shots,
+                        "shots": shots,
                         "seed_simulator": inst_seed,
                     })
         self._timing.setdefault("byo_exec_s", 0.0)
