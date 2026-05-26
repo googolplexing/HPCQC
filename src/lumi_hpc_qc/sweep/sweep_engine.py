@@ -239,6 +239,11 @@ class SweepTask:
     fixed_params: dict[str, Any] = field(default_factory=dict)
     disorder_instance: dict[str, Any] = field(default_factory=dict)
     disorder_gates: tuple[str, ...] = ("rz", "rzz")
+    # D3.4b: master_seed from the resolved disorder _meta, so the BYO counts run
+    # can derive seed_simulator = resolve_instance_seed(master_seed, seed) —
+    # identical to the banked floquet_runner_v2 (one seed per instance, driving
+    # both disorder and shots). None -> entropy (not reproducible).
+    master_seed: int | None = None
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -427,6 +432,11 @@ def _expand_byo_experiment(
         num_qubits=num_qubits,
         configured_initial_state=exp.disorder.get("initial_state"),
     )
+    # D3.4b: carry the disorder's master_seed onto each task so the counts run
+    # derives seed_simulator = resolve_instance_seed(master_seed, seed). For
+    # source=file the meta echoes the file's _meta.master_seed; for generate it
+    # is the spec's master_seed. None (absent) -> entropy / not reproducible.
+    disorder_master_seed = _disorder_meta.get("master_seed")
 
     # Signature check against the actual disorder field names (§7.5.1, F3).
     disorder_keys: set[str] = set()
@@ -490,6 +500,7 @@ def _expand_byo_experiment(
                     fixed_params=dict(exp.fixed),
                     disorder_instance=instance,
                     disorder_gates=gate_names,
+                    master_seed=disorder_master_seed,
                 ))
     return task_counter
 
@@ -1971,19 +1982,120 @@ class SweepEngine:
         print(f"    BYO: {len(placements)} placement(s) "
               f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
 
-        # ── D3.4b: per-(task, placement, env) counts run + autocorrelator.
-        #    D3.4c: storage of counts/autocorrelator + noise_placement_independent
-        #    (+ physical_qubit_set) via the writer. Stubbed until those steps. ──
-        physical_qubit_set = [
-            placements[0].qubit_mapping[i] for i in range(qsize)
-        ]
-        raise NotImplementedError(
-            "BYO counts execution (run-for-counts + autocorrelator) lands in "
-            f"D3.4b; storage in D3.4c. Grouping/build/placement are wired: "
-            f"{len(placements)} placement(s), top-1 physical_qubit_set="
-            f"{physical_qubit_set}, noise_placement_independent="
-            f"{noise_placement_independent}."
+        # ── D3.4b: batched-per-seed counts run -> autocorrelator. Mirrors the
+        #    banked floquet_runner_v2 exactly (confirmed by the researcher: one
+        #    seed per instance, one run over the whole kick-list), which is what
+        #    makes the gate-2 reproduction bit-exact. Within each
+        #    (seed, placement, env): build the seed's grid circuits in grid
+        #    order, prepare ONE simulation over the list, run with one
+        #    seed_simulator = resolve_instance_seed(master_seed, seed), then take
+        #    get_autocorrelation per grid point. Average across seeds.
+        #    D3.4c stores the per-(placement,env) autocorrelator + counts +
+        #    noise_placement_independent (+ physical_qubit_set). For now the
+        #    results are computed and returned to a stubbed writer hook. ──
+        from lumi_hpc_qc.backends.prepare import prepare_simulation
+        from lumi_hpc_qc.sweep.byo_observable import (
+            get_autocorrelation, resolve_instance_seed,
         )
+
+        # Source-name mapping: the NoiseConfig name "device_calibrated"
+        # (underscore) -> prepare_simulation's VALID_SOURCES "device-calibrated"
+        # (hyphen); "noiseless" passes through.
+        def _prepare_source(env: NoiseConfig) -> str:
+            return "device-calibrated" if env.source == "device_calibrated" else env.name
+
+        # Tasks in this group are (seed x grid-point) for one script+cal. Group
+        # by seed; within a seed the grid-point tasks share one disorder
+        # instance (identity-shared at expansion, §7.5.4).
+        by_seed: dict[int, list[SweepTask]] = {}
+        for t in tasks:
+            by_seed.setdefault(t.seed, []).append(t)
+
+        # Primary grid axis = the (single) key present in circuit_params. The
+        # autocorrelator series must be ordered ascending on it (e.g. num_kicks
+        # 0,1,2,...), matching the banked per-kick .dat order. Multi-axis BYO
+        # grids are not part of the gate-2 reproduction; guard for it.
+        primary_axes = {k for t in tasks for k in t.circuit_params}
+        if len(primary_axes) != 1:
+            errors.append(
+                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
+                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
+                f"increment (DEBT)."
+            )
+            return
+        primary_axis = next(iter(primary_axes))
+
+        # The set of distinct noise envs (same across tasks in a group).
+        envs = representative.noise_configs
+        # init_bit_array / num_qubits for the observable (from disorder + fixed).
+        init_bit_array = representative.disorder_instance.get("init_bit_array")
+        if init_bit_array is None:
+            errors.append(
+                f"BYO: disorder instance has no init_bit_array "
+                f"(needed for the autocorrelator) — {representative.circuit_script}"
+            )
+            return
+
+        t_exec_start = time.perf_counter()
+        byo_results: list[dict] = []  # one per (seed, placement, env)
+        for placement in placements:
+            phys_qubits = [placement.qubit_mapping[i] for i in range(qsize)]
+            phys_edges = [
+                (phys_qubits[a], phys_qubits[b]) for (a, b) in connectivity
+            ]
+            for seed, seed_tasks in sorted(by_seed.items()):
+                # Build the seed's grid circuits in grid order (primary axis asc).
+                seed_tasks_sorted = sorted(
+                    seed_tasks, key=lambda tk: tk.circuit_params[primary_axis],
+                )
+                built = [self._build_byo_circuit(tk).circuit for tk in seed_tasks_sorted]
+                inst_seed = resolve_instance_seed(representative.master_seed, seed)
+
+                for env in envs:
+                    src = _prepare_source(env)
+                    prep_kwargs = dict(
+                        calibration_path=cal_path, num_qubits=qsize,
+                        optimization_level=3, num_processes=1, verbose=False,
+                    )
+                    if src == "device-calibrated":
+                        prep_kwargs.update(
+                            physical_qubits=phys_qubits, physical_edges=phys_edges,
+                        )
+                    prep = prepare_simulation(built, src, **prep_kwargs)
+                    job = prep.simulator.run(
+                        prep.run_circuits, shots=env.shots, memory=True,
+                        seed_simulator=inst_seed,
+                    )
+                    result = job.result()
+                    autocorr = [
+                        get_autocorrelation(result.get_counts(i), init_bit_array, qsize)
+                        for i in range(len(built))
+                    ]
+                    byo_results.append({
+                        "seed": seed,
+                        "placement_id": placement.placement_id,
+                        "physical_qubit_set": phys_qubits,
+                        "env": env.name,
+                        "noise_source": env.source,
+                        "noise_placement_independent": noise_placement_independent,
+                        "num_kicks": [
+                            tk.circuit_params[primary_axis]
+                            for tk in seed_tasks_sorted
+                        ],
+                        "autocorrelator": autocorr,
+                        "shots": env.shots,
+                        "seed_simulator": inst_seed,
+                    })
+        self._timing.setdefault("byo_exec_s", 0.0)
+        self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
+        print(f"    BYO: computed {len(byo_results)} (seed x placement x env) "
+              f"autocorrelator series")
+
+        # ── D3.4c: persist byo_results via the writer (HDF5 + Parquet, with the
+        #    noise_placement_independent flag + physical_qubit_set). Stubbed
+        #    until D3.4c so D3.4b is verifiable on the compute path alone. ──
+        self._byo_results_last = byo_results  # surfaced for D3.4b verification
+        return
 
     # ── Internal: circuit building ──
 

@@ -113,29 +113,70 @@ def _full_engine_for(tasks):
     return eng
 
 
-def test_byo_execute_builds_and_places_then_stubs():
-    """_execute_byo_group builds the circuit, solves top_1 placement from
-    connectivity, resolves the guardrail, then raises the D3.4b stub carrying
-    the wired physical_qubit_set + noise_placement_independent."""
-    tasks = [_byo_task(0, 5, ["device_calibrated", "noiseless"])]
+def _seed_grid_tasks(seed: int, kicks: list[int], noise_names: list[str],
+                     master_seed: int | None = 0) -> list[SweepTask]:
+    """A seed's worth of BYO tasks across a num_kicks grid (one per kick),
+    sharing one disorder instance — mirrors how expansion attaches them."""
+    out = []
+    for k in kicks:
+        t = _byo_task(seed, k, noise_names)
+        t.master_seed = master_seed
+        out.append(t)
+    return out
+
+
+def test_byo_execute_computes_autocorrelator_device_cal():
+    """D3.4b: _execute_byo_group builds the seed's kick-grid, runs batched under
+    device_calibrated (top_1 + guardrail), and computes an autocorrelator series
+    per (seed, placement, env)."""
+    tasks = _seed_grid_tasks(0, [0, 1, 2, 3], ["device_calibrated", "noiseless"])
     eng = _full_engine_for(tasks)
     errors: list[str] = []
-    with pytest.raises(NotImplementedError) as ei:
-        eng._execute_byo_group(tasks, writer=None, errors=errors)
-    msg = str(ei.value)
-    assert "D3.4b" in msg
-    assert "noise_placement_independent=True" in msg     # device_calibrated -> guardrail on
-    assert "physical_qubit_set=" in msg                  # placement resolved
-    assert errors == []                                  # build+place succeeded
+    eng._execute_byo_group(tasks, writer=None, errors=errors)
+    assert errors == []
+    res = eng._byo_results_last
+    # one record per (seed=1) x (placement=1, top_1) x (env in {device_cal, noiseless})
+    assert len(res) == 2
+    for r in res:
+        assert r["seed"] == 0
+        assert len(r["autocorrelator"]) == 4          # one per kick 0..3
+        assert r["num_kicks"] == [0, 1, 2, 3]         # ascending grid order
+        assert len(r["physical_qubit_set"]) == 4      # q4 placement
+        # device_calibrated -> guardrail on; noiseless -> off
+        if r["noise_source"] == "device_calibrated":
+            assert r["noise_placement_independent"] is True
+        else:
+            assert r["noise_placement_independent"] is False
+    # num_kicks=0 autocorrelator is the t=0 reference: polarized init, all-zero
+    # bitstring dominates -> A(0) ~ +1.0 (within shot noise).
+    dc = next(r for r in res if r["noise_source"] == "device_calibrated")
+    assert dc["autocorrelator"][0] > 0.8              # A(0) near +1
 
 
-def test_byo_noiseless_only_no_placement_independent_flag():
-    """A noiseless-only BYO group does not set the device-cal guardrail."""
-    tasks = [_byo_task(0, 5, ["noiseless"])]
+def test_byo_noiseless_only_no_guardrail():
+    """A noiseless-only BYO group runs all placements (no device-cal guardrail)
+    and does not stamp noise_placement_independent."""
+    tasks = _seed_grid_tasks(0, [0, 1, 2], ["noiseless"])
     eng = _full_engine_for(tasks)
-    with pytest.raises(NotImplementedError) as ei:
-        eng._execute_byo_group(tasks, writer=None, errors=[])
-    assert "noise_placement_independent=False" in str(ei.value)
+    errors: list[str] = []
+    eng._execute_byo_group(tasks, writer=None, errors=errors)
+    assert errors == []
+    res = eng._byo_results_last
+    assert all(r["noise_placement_independent"] is False for r in res)
+    assert all(r["noise_source"] == "channels" for r in res)  # noiseless is channels-source
+
+
+def test_byo_seed_simulator_is_per_instance_derived():
+    """The seed_simulator used is resolve_instance_seed(master_seed, seed) —
+    the bank's per-instance derivation, not the raw seed."""
+    from lumi_hpc_qc.sweep.byo_observable import resolve_instance_seed
+    tasks = _seed_grid_tasks(2, [0, 1], ["noiseless"], master_seed=0)
+    eng = _full_engine_for(tasks)
+    eng._execute_byo_group(tasks, writer=None, errors=[])
+    res = eng._byo_results_last
+    expected = resolve_instance_seed(0, 2)
+    assert all(r["seed_simulator"] == expected for r in res)
+    assert expected != 2                              # derived, not the raw seed
 
 
 if __name__ == "__main__":
