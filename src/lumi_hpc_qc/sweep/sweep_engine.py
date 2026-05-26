@@ -2099,6 +2099,7 @@ class SweepEngine:
                     ]
                     byo_results.append({
                         "seed": seed,
+                        "script": representative.circuit_script,
                         "placement_id": placement.placement_id,
                         "physical_qubit_set": phys_qubits,
                         "env": env.name,
@@ -2120,10 +2121,37 @@ class SweepEngine:
         print(f"    BYO: computed {len(byo_results)} (seed x placement x env) "
               f"autocorrelator series")
 
-        # ── D3.4c: persist byo_results via the writer (HDF5 + Parquet, with the
-        #    noise_placement_independent flag + physical_qubit_set). Stubbed
-        #    until D3.4c so D3.4b is verifiable on the compute path alone. ──
-        self._byo_results_last = byo_results  # surfaced for D3.4b verification
+        # ── D3.4c (Option A): persist each (seed × placement × env) result as a
+        #    BYO-native HDF5 group (write_byo_result), then aggregate the
+        #    per-seed series for each (placement, env) into the .dat files
+        #    (aggregated_autocorr.dat byte-format-identical to
+        #    aggregate_floquet.py) — the form the gate-2 reproduction compares.
+        #    The 71-col physics-Parquet extension is a separate Red-reviewed
+        #    step (autocorrelator-as-vector is a new result type; RED §4 Q3 was
+        #    aimed at the timing schema, not the physics one). ──
+        from lumi_hpc_qc.sweep.byo_observable import aggregate_byo_autocorr
+
+        if writer is not None:
+            for r in byo_results:
+                writer.write_byo_result(r)
+
+        # Aggregate per (placement, env) across seeds -> mean + sem .dat. The
+        # output dir mirrors the bank: one subdir per (placement, env).
+        out_root = getattr(self, "_byo_dat_dir", None)
+        if out_root is not None:
+            import os
+            by_pe: dict[tuple, list] = {}
+            for r in byo_results:
+                key = (tuple(r["physical_qubit_set"]), r["env"])
+                by_pe.setdefault(key, []).append((r["seed"], r["autocorrelator"]))
+            for (phys, env), series in by_pe.items():
+                sub = os.path.join(
+                    out_root, Path(representative.circuit_script).stem,
+                    "-".join(str(q) for q in phys), env,
+                )
+                aggregate_byo_autocorr(sorted(series), sub)
+
+        self._byo_results_last = byo_results  # also surfaced for verification
         return
 
     # ── Internal: circuit building ──

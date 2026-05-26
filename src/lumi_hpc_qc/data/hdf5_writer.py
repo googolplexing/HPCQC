@@ -39,6 +39,20 @@ import h5py
 import numpy as np
 
 
+def _byo_wal_safe(result: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a BYO result dict to JSON-serializable for the WAL line
+    (numpy ints/floats → python; arrays → lists). Pure; no I/O."""
+    def _coerce(v):
+        if isinstance(v, np.generic):
+            return v.item()
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if isinstance(v, (list, tuple)):
+            return [_coerce(x) for x in v]
+        return v
+    return {k: _coerce(v) for k, v in result.items()}
+
+
 @dataclass
 class SweepResultEntry:
     """One result to write into the HDF5 sweep file.
@@ -377,6 +391,73 @@ class SweepHDF5Writer:
         grp.attrs["packing_co_placements"] = entry.packing_co_placements
         grp.attrs["packing_qubit_utilization"] = entry.packing_qubit_utilization
         grp.attrs["packing_algorithm"] = entry.packing_algorithm
+
+    # ── BYO counts results (SPEC-002 §7.5 / D3.4c, Option A) ──
+    # The BYO counts→autocorrelator observable is a per-kick VECTOR, not an
+    # energy trajectory, so it gets its own group tree under /byo rather than
+    # being forced through the energy-shaped SweepResultEntry. The 71-col
+    # physics-Parquet extension is a separate, Red-reviewed step.
+    def write_byo_result(self, result: dict[str, Any]) -> None:
+        """Write one BYO (seed × placement × env) autocorrelator series.
+
+        Group path:
+          /byo/{script_stem}/seeds/seed_{seed:04d}/
+              placements/{phys_qubits_joined}/{env}
+
+        Datasets:  autocorrelator (float64[N_kicks]), num_kicks (int[N_kicks]),
+                   physical_qubit_set (utf-8[n_qubits]).
+        Attrs:     noise_source, noise_placement_independent, seed,
+                   seed_simulator, shots.
+
+        ``result`` is one dict from SweepEngine._byo_results_last.
+        """
+        if not self._opened:
+            raise RuntimeError("Writer not opened. Use 'with' or call open().")
+
+        # WAL append (crash-safe), tagged so recovery can distinguish BYO rows.
+        wal_line = json.dumps({"_kind": "byo", **_byo_wal_safe(result)}) + "\n"
+        self._wal_file.write(wal_line)
+        self._wal_file.flush()
+        os.fsync(self._wal_file.fileno())
+
+        script_stem = Path(result["script"]).stem if result.get("script") else "byo"
+        phys = "-".join(str(q) for q in result["physical_qubit_set"])
+        group_path = (
+            f"/byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
+            f"placements/{phys}/{result['env']}"
+        )
+        if group_path in self._h5file:
+            del self._h5file[group_path]
+        grp = self._h5file.create_group(group_path)
+
+        grp.create_dataset(
+            "autocorrelator",
+            data=np.array(result["autocorrelator"], dtype=np.float64),
+        )
+        grp.create_dataset(
+            "num_kicks",
+            data=np.array(result["num_kicks"], dtype=np.int64),
+        )
+        dt_str = h5py.string_dtype(encoding="utf-8")
+        grp.create_dataset(
+            "physical_qubit_set",
+            data=np.array([str(q) for q in result["physical_qubit_set"]], dtype=object),
+            dtype=dt_str,
+        )
+
+        grp.attrs["noise_source"] = result["noise_source"]
+        grp.attrs["noise_placement_independent"] = bool(
+            result["noise_placement_independent"]
+        )
+        grp.attrs["seed"] = int(result["seed"])
+        if result.get("seed_simulator") is not None:
+            grp.attrs["seed_simulator"] = int(result["seed_simulator"])
+        grp.attrs["shots"] = int(result["shots"])
+        if result.get("placement_id") is not None:
+            grp.attrs["placement_id"] = int(result["placement_id"])
+
+        self._h5file.flush()
+        self._write_count += 1
 
     def create_soft_link(
         self, source_path: str, target_path: str

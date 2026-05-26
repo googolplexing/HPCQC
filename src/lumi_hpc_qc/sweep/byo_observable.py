@@ -52,3 +52,54 @@ def resolve_instance_seed(master_seed, instance_id):
         return None
     child = np.random.SeedSequence(int(master_seed)).spawn(instance_id + 1)[instance_id]
     return int(child.generate_state(1, dtype=np.uint32)[0])
+
+
+def aggregate_byo_autocorr(per_seed_series, out_dir, *, write_per_instance=True):
+    """Average per-instance autocorrelator vectors and write the .dat files,
+    BYTE-FORMAT-IDENTICAL to the banked floquet_runner_v2 + aggregate_floquet
+    chain (so the gate-2 reproduction compares like-for-like).
+
+    Args:
+      per_seed_series: list of (seed, autocorrelator_list), one per instance.
+                       All vectors must have the same length (the kick grid).
+      out_dir: directory to write into (created if absent).
+      write_per_instance: also emit instance_NN_autocorr.dat (the bank does;
+                          aggregate_floquet reads these).
+
+    Writes:
+      instance_{seed:02d}_autocorr.dat  — "# kick   autocorrelator", "{n:4d} {v:10.4f}"
+      aggregated_autocorr.dat           — "# kick  mean_autocorr  sem",
+                                          "{n:4d} {mean:10.4f} {sem:10.4f}"
+                                          (sem = std(ddof=1)/sqrt(N), matching
+                                          aggregate_floquet.py)
+
+    Returns: (mean_corr, sem_corr) as numpy arrays.
+    """
+    import os
+
+    os.makedirs(out_dir, exist_ok=True)
+    mat = np.array([np.asarray(a, dtype=float) for _, a in per_seed_series])  # (N_inst, N_kicks)
+    n_inst, n_kicks = mat.shape
+    mean_corr = mat.mean(axis=0)
+    # ddof=1 matches aggregate_floquet; for a single instance sem is undefined
+    # (0/0) — emit zeros rather than nan so the .dat stays numeric.
+    if n_inst > 1:
+        sem_corr = mat.std(axis=0, ddof=1) / np.sqrt(n_inst)
+    else:
+        sem_corr = np.zeros(n_kicks)
+
+    if write_per_instance:
+        for seed, autocorr in per_seed_series:
+            path = os.path.join(out_dir, f"instance_{int(seed):02d}_autocorr.dat")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("# kick   autocorrelator\n")
+                for n, v in enumerate(autocorr):
+                    f.write(f"{n:4d} {float(v):10.4f}\n")
+
+    agg_path = os.path.join(out_dir, "aggregated_autocorr.dat")
+    with open(agg_path, "w", encoding="utf-8") as f:
+        f.write("# kick  mean_autocorr  sem\n")
+        for n in range(n_kicks):
+            f.write(f"{n:4d} {mean_corr[n]:10.4f} {sem_corr[n]:10.4f}\n")
+
+    return mean_corr, sem_corr
