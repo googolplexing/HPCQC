@@ -283,12 +283,32 @@ def _p1(counts, qubit):
 
 
 def _run_idle(physical_qubits, *, spec=None):
-    """Prepare + run the excited-idle circuit on the given placement under the
-    device-calibrated statevector path, returning (counts, prep)."""
+    """Run the excited-idle circuit on the placement-keyed statevector sim,
+    returning (counts, prep).
+
+    Why the explicit Delay is NOT handed into prepare_simulation's transpile:
+    the device-calibrated target basis has no `delay`. In production, idle
+    Delays are inserted by the ALAP scheduler AFTER native translation, so an
+    explicit Delay placed in the INPUT circuit dies in BasisTranslator
+    (TranspilerError: cannot translate "delay"). Instead we build the prepared
+    simulator + placement-keyed noise model from a gate-only seed (which
+    transpiles fine; the noise model is built from the calibration + placement,
+    not from the seed's contents), then run the explicit-Delay circuit DIRECTLY
+    on prep.simulator. That is exactly how the idle relaxation pass is meant to
+    be driven: it is a NoiseModel custom pass (op_types=[Delay], dt=1e-9) that
+    Aer runs at simulate time on any circuit containing a Delay, reading each
+    Delay's own duration. Running on the same simulator object keeps the
+    placement-keyed t1s[k]/t2s[k] (= physical_qubits[k]) bound to circuit
+    index k, which is the §2.1 claim under test.
+    """
+    from qiskit import QuantumCircuit
     from lumi_hpc_qc.backends.prepare import prepare_simulation
 
+    seed = QuantumCircuit(4)
+    seed.x(0)
+    seed.measure_all()
     prep = prepare_simulation(
-        [_excited_idle_circuit()], "device-calibrated",
+        [seed], "device-calibrated",
         calibration_path=CALIBRATION, num_qubits=4,
         physical_qubits=physical_qubits, spec=spec, verbose=False,
     )
@@ -297,7 +317,9 @@ def _run_idle(physical_qubits, *, spec=None):
     # exercising what it claims to.
     assert prep.info["selected_qubits"] == physical_qubits
     assert prep.relaxation_active is True
-    job = prep.simulator.run(prep.run_circuits, shots=_SHOTS, seed_simulator=_SIM_SEED)
+    job = prep.simulator.run(
+        _excited_idle_circuit(), shots=_SHOTS, seed_simulator=_SIM_SEED,
+    )
     return job.result().get_counts(0), prep
 
 
@@ -362,6 +384,96 @@ def test_idle_relaxation_magnitude_matches_qubit_t1():
     # cannot confuse 0.086 with 0.905 (they are 0.82 apart).
     assert abs(p0 - exp_qb35) < 0.05, (p0, exp_qb35)
     assert abs(p3 - exp_qb8) < 0.05, (p3, exp_qb8)
+
+
+# ====================================================================
+# §2.1 integration: idle keying through the FULL transpile + ALAP path.
+# ====================================================================
+# Companion to test_idle_relaxation_lands_on_placement_qubit_swap, which drives
+# an EXPLICIT Delay directly on the prepared simulator (clean, but it bypasses
+# prepare_simulation's transpile + ALAP scheduler). This test creates the idle
+# the way PRODUCTION does -- the qubit waits and the ALAP scheduler INSERTS the
+# Delay -- and confirms that scheduler-inserted delay is decohered with the
+# placement-keyed T1/T2 too.
+#
+# The hazard ALAP poses (see BLUE notes): ALAP front-loads idle onto the GROUND
+# state, where relaxation is a no-op, so a naively-excited-then-idle qubit gets
+# its excitation pushed late and never decoheres. We defeat that by trapping the
+# target (logical 0) in |1> between TWO CZ anchors with the worker (logical 1):
+# the worker runs a chain of noiseless `id` time-fillers between the anchors, so
+# the double anchor removes ALL of ALAP's slack and the scheduler MUST pad the
+# target's wait with a Delay equal to the worker-chain duration -- placed ON the
+# excited state. `id` is in the native basis but in none of the noise lists
+# (_TIMED_1Q / _VIRTUAL_1Q / _NATIVE_2Q), so it is a zero-noise 20 ns time-step
+# that leaves the worker in |0>; the CZ anchors are then identities on
+# |1>_target |0>_worker (CZ only phases |11>), so they anchor timing without
+# disturbing populations. optimization_level=0 keeps the id chain from being
+# fused/removed; the keying under test (identity initial_layout + RelaxationNoise
+# on scheduled delays) is independent of optimization level.
+#
+# Placement is a calibrated CZ edge with a ~17x T1 ratio -- QB35 (T1 = 2.04 us,
+# lossy) and QB36 (T1 = 34.9 us, ideal). Worker chain = 250 * 20 ns = 5 us idle.
+
+_WORKER_IDLE_GATES = 250          # * single_gate_time (20 ns) = ~5 us scheduled idle
+PLACEMENT_LOSSY_TARGET = ["QB35", "QB36"]   # idx0 = QB35 (lossy); worker idx1 = QB36
+PLACEMENT_IDEAL_TARGET = ["QB36", "QB35"]   # idx0 = QB36 (ideal); worker swapped
+
+
+def _sandwiched_idle_circuit(n_idle):
+    """Target (logical 0) excited and trapped in |1> between two CZ anchors while
+    the worker (logical 1) runs `n_idle` noiseless `id` gates between them."""
+    from qiskit import QuantumCircuit
+    qc = QuantumCircuit(2)
+    qc.x(0)               # excite target -> |1>
+    qc.cz(0, 1)           # early anchor: tie target to the worker's timeline
+    for _ in range(n_idle):
+        qc.id(1)          # worker busy (noiseless 20 ns each); target waits in |1>
+    qc.cz(0, 1)           # late anchor: target cannot proceed until the worker is done
+    qc.measure_all()
+    return qc
+
+
+def _run_scheduled_idle(physical_qubits):
+    """Run the sandwiched-idle circuit through the FULL device-calibrated path
+    (transpile + ALAP scheduling), so the idle Delay is SCHEDULER-INSERTED, then
+    decohered by the relaxation pass. Returns the counts."""
+    from lumi_hpc_qc.backends.prepare import prepare_simulation
+
+    prep = prepare_simulation(
+        [_sandwiched_idle_circuit(_WORKER_IDLE_GATES)], "device-calibrated",
+        calibration_path=CALIBRATION, num_qubits=2,
+        physical_qubits=physical_qubits, optimization_level=0, verbose=False,
+    )
+    assert prep.info["selected_qubits"] == physical_qubits
+    assert prep.relaxation_active is True
+    job = prep.simulator.run(prep.run_circuits, shots=_SHOTS, seed_simulator=_SIM_SEED)
+    return job.result().get_counts(0)
+
+
+def test_idle_relaxation_tracks_placement_through_full_schedule():
+    """SWAP test through the full transpile+ALAP path (no explicit Delay): the
+    surviving excited population at the target index tracks physical_qubits[0]
+    across a placement swap, when the idle is the one the SCHEDULER inserts.
+
+    [QB35, QB36] -> idx0 = QB35 (T1 = 2.04 us) decays hard during the ~5 us
+    scheduler-inserted idle; [QB36, QB35] -> idx0 = QB36 (T1 = 34.9 us) survives.
+    A placement-independent (mis-keyed) idle pass would give the SAME idx0
+    marginal for both placements; the disjoint bands below forbid that.
+    """
+    pytest.importorskip("qiskit_aer")
+    p0_lossy = _p1(_run_scheduled_idle(PLACEMENT_LOSSY_TARGET), 0)   # QB35 target
+    p0_ideal = _p1(_run_scheduled_idle(PLACEMENT_IDEAL_TARGET), 0)   # QB36 target
+
+    # Disjoint bands. ~5 us idle gives QB35 ~0.13 and QB36 ~0.85 (full model, with
+    # readout); the 0.40/0.60 rails leave ~0.25 of margin on each side -- wide
+    # enough to absorb the exact scheduled idle (the worker chain, ~5 us, plus
+    # CZ/measure alignment) and 3-sigma shot noise (~0.016 at 4096 shots). The
+    # assertion is deliberately ORDINAL, not a precise magnitude (the explicit-
+    # Delay magnitude test above pins the absolute exp(-t/T1) value).
+    assert p0_lossy < 0.40, p0_lossy
+    assert p0_ideal > 0.60, p0_ideal
+    # Across the swap, idx0 survival must move decisively with the physical qubit.
+    assert p0_ideal - p0_lossy > 0.40, (p0_lossy, p0_ideal)
 
 
 if __name__ == "__main__":
