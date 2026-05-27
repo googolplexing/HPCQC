@@ -2016,6 +2016,10 @@ class SweepEngine:
         print(f"    BYO: {len(placements)} placement(s) "
               f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
 
+        # Progress accounting: matches the non-BYO _execute_group convention
+        # (line ~1701) -- count (placement, task) pairs explored.
+        self._progress.total_placements += len(placements) * len(tasks)
+
         # ── D3.4b: batched-per-seed counts run -> autocorrelator. Mirrors the
         #    banked floquet_runner_v2 exactly (confirmed by the researcher: one
         #    seed per instance, one run over the whole kick-list), which is what
@@ -2133,6 +2137,10 @@ class SweepEngine:
                     })
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
+        # Progress accounting: each (seed, placement, env) entry is one
+        # simulator run. Matches the non-BYO _execute_group convention
+        # (line ~1842 increments by battery.simulated_count).
+        self._progress.total_simulations += len(byo_results)
         print(f"    BYO: computed {len(byo_results)} (seed x placement x env) "
               f"autocorrelator series")
 
@@ -2149,6 +2157,9 @@ class SweepEngine:
         if writer is not None:
             for r in byo_results:
                 writer.write_byo_result(r)
+                # Progress accounting: matches non-BYO _execute_group convention
+                # (line ~1898 bumps hdf5_writes per writer.write call).
+                self._progress.hdf5_writes += 1
 
         # Aggregate per (placement, env) across seeds -> mean + sem .dat. The
         # output dir mirrors the bank: one subdir per (placement, env).
@@ -2165,6 +2176,17 @@ class SweepEngine:
                     "-".join(str(q) for q in phys), env,
                 )
                 aggregate_byo_autocorr(sorted(series), sub)
+
+        # Progress accounting: this group's tasks are done. The BYO path
+        # batches all tasks for a (seed, env) into a single simulator run, so
+        # there's no natural per-task completion point inside the loop -- mark
+        # the group's tasks complete here, then fire the progress callback
+        # once for the group. Matches the non-BYO _execute_group convention
+        # (line ~1907 bumps completed_tasks per task; here we bump by the
+        # group's task count in one step).
+        self._progress.completed_tasks += len(tasks)
+        if self._progress_callback:
+            self._progress_callback(self._progress)
 
         self._byo_results_last = byo_results  # also surfaced for verification
         return
