@@ -405,24 +405,28 @@ def test_idle_relaxation_magnitude_matches_qubit_t1():
 # wait with a Delay equal to the worker-chain duration -- placed ON the excited
 # state.
 #
-# Worker time-filler is `sx`, not `id`. A first cut used `id` because it is
-# noiseless (in no _TIMED_1Q / _VIRTUAL_1Q / _NATIVE_2Q list) and leaves the
-# worker in |0>. It failed: both placements measured idx0 ~0.87, consistent
-# with NO scheduler-inserted idle, only the ~140 ns of X + CZ + CZ gate-time
-# relaxation. The most likely cause is RemoveIdentityEquivalent, which checks
-# each op's matrix against I and strips matches -- IGate.to_matrix() IS I, so
-# it gets removed even at optimization_level=0. `sx` is in the native basis
-# (no translation), its matrix is NOT identity (immune to that pass), and
-# Optimize1qGatesDecomposition (the pass that WOULD fuse a chain of sx into a
-# minimal sequence) is the one actually gated by opt level and stays OFF at
-# level 0, so 250 sx gates survive individually with their 20 ns duration each.
-# The trade vs `id`: sx is noised (depolarizing + gate-time thermal), so the
-# worker decoheres during its chain. This does NOT affect target population,
-# because CZ is diagonal in the computational basis: however the worker's
-# diagonal looks at the CZ anchors (|0>, |1>, or any incoherent mixture), CZ_1
-# and CZ_2 leave the target's |1> population invariant. The only thing that
-# can move target P(1) is the thermal channel on the target's own
-# scheduler-inserted Delay -- which is exactly the signal under test.
+# Worker time-filler is `sx` with a `barrier(1)` after each one. A first cut
+# used `id` because it is noiseless (in no _TIMED_1Q / _VIRTUAL_1Q / _NATIVE_2Q
+# list) and leaves the worker in |0>. It failed: both placements measured idx0
+# ~0.87, consistent with NO scheduler-inserted idle, only the ~140 ns of X +
+# CZ + CZ gate-time relaxation. IGate.to_matrix() IS I, so RemoveIdentityEquivalent
+# strips it even at opt 0. Switching to `sx` (matrix != I) failed the SAME way
+# with the SAME 0.87 -- a 1q-fusion pass resynthesized 250 sx into one equivalent
+# gate (sx^250 = X, 20 ns), collapsing the worker timeline to a single gate's
+# worth of time. (Empirically, opt_level=0 does NOT disable 1q fusion in this
+# qiskit; expect Optimize1qGatesDecomposition or similar to run regardless.)
+# The reliable fix is mechanical: a `barrier(1)` after every `sx(1)`. Every 1q
+# optimizer treats barriers as run boundaries, so each sx becomes a length-1
+# run that resynthesizes to itself (sx is already minimal in this basis), and
+# 250 individual sx gates survive into scheduling with 20 ns each. Barriers are
+# zero-duration scheduling markers, so the worker still occupies 250 * 20 ns
+# = 5 us. Trade vs `id`: sx is noised (depolarizing + gate-time thermal), so
+# the worker decoheres during its chain. This DOES NOT affect target population:
+# CZ is diagonal in the computational basis, so however the worker's diagonal
+# looks at the CZ anchors (|0>, |1>, or any incoherent mixture), CZ_1 and CZ_2
+# leave the target's |1> population invariant. The only thing that can move
+# target P(1) is the thermal channel on the target's own scheduler-inserted
+# Delay -- which is exactly the signal under test.
 #
 # Placement is a calibrated CZ edge with a ~17x T1 ratio -- QB35 (T1 = 2.04 us,
 # lossy) and QB36 (T1 = 34.9 us, ideal). Worker chain = 250 * 20 ns = 5 us idle.
@@ -434,14 +438,19 @@ PLACEMENT_IDEAL_TARGET = ["QB36", "QB35"]   # idx0 = QB36 (ideal); worker swappe
 
 def _sandwiched_idle_circuit(n_idle):
     """Target (logical 0) excited and trapped in |1> between two CZ anchors
-    while the worker (logical 1) runs `n_idle` `sx` gates between them. See the
-    header above for why `sx` (matrix != I) and not `id`."""
+    while the worker (logical 1) runs `n_idle` `sx` gates between them, each
+    followed by a `barrier(1)` so 1q-fusion passes cannot resynthesize the
+    chain into a single equivalent gate. See the header above for why."""
     from qiskit import QuantumCircuit
     qc = QuantumCircuit(2)
     qc.x(0)               # excite target -> |1>
     qc.cz(0, 1)           # early anchor: tie target to the worker's timeline
     for _ in range(n_idle):
-        qc.sx(1)          # worker busy (20 ns each, non-identity matrix); target waits in |1>
+        qc.sx(1)          # worker busy (20 ns, non-identity matrix); target waits in |1>
+        qc.barrier(1)     # force each sx to be its own length-1 run -- 1q fusion passes treat
+                          # barriers as run boundaries, so the chain cannot be resynthesized
+                          # into a single equivalent unitary (sx^250 = X, which collapsed
+                          # 250 * 20 ns of worker time to 20 ns in a previous iteration).
     qc.cz(0, 1)           # late anchor: target cannot proceed until the worker is done
     qc.measure_all()
     return qc
