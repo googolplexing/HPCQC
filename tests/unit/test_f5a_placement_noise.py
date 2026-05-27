@@ -400,16 +400,29 @@ def test_idle_relaxation_magnitude_matches_qubit_t1():
 # state, where relaxation is a no-op, so a naively-excited-then-idle qubit gets
 # its excitation pushed late and never decoheres. We defeat that by trapping the
 # target (logical 0) in |1> between TWO CZ anchors with the worker (logical 1):
-# the worker runs a chain of noiseless `id` time-fillers between the anchors, so
-# the double anchor removes ALL of ALAP's slack and the scheduler MUST pad the
-# target's wait with a Delay equal to the worker-chain duration -- placed ON the
-# excited state. `id` is in the native basis but in none of the noise lists
-# (_TIMED_1Q / _VIRTUAL_1Q / _NATIVE_2Q), so it is a zero-noise 20 ns time-step
-# that leaves the worker in |0>; the CZ anchors are then identities on
-# |1>_target |0>_worker (CZ only phases |11>), so they anchor timing without
-# disturbing populations. optimization_level=0 keeps the id chain from being
-# fused/removed; the keying under test (identity initial_layout + RelaxationNoise
-# on scheduled delays) is independent of optimization level.
+# the worker runs a chain of `sx` gates between the anchors, so the double
+# anchor removes ALL of ALAP's slack and the scheduler MUST pad the target's
+# wait with a Delay equal to the worker-chain duration -- placed ON the excited
+# state.
+#
+# Worker time-filler is `sx`, not `id`. A first cut used `id` because it is
+# noiseless (in no _TIMED_1Q / _VIRTUAL_1Q / _NATIVE_2Q list) and leaves the
+# worker in |0>. It failed: both placements measured idx0 ~0.87, consistent
+# with NO scheduler-inserted idle, only the ~140 ns of X + CZ + CZ gate-time
+# relaxation. The most likely cause is RemoveIdentityEquivalent, which checks
+# each op's matrix against I and strips matches -- IGate.to_matrix() IS I, so
+# it gets removed even at optimization_level=0. `sx` is in the native basis
+# (no translation), its matrix is NOT identity (immune to that pass), and
+# Optimize1qGatesDecomposition (the pass that WOULD fuse a chain of sx into a
+# minimal sequence) is the one actually gated by opt level and stays OFF at
+# level 0, so 250 sx gates survive individually with their 20 ns duration each.
+# The trade vs `id`: sx is noised (depolarizing + gate-time thermal), so the
+# worker decoheres during its chain. This does NOT affect target population,
+# because CZ is diagonal in the computational basis: however the worker's
+# diagonal looks at the CZ anchors (|0>, |1>, or any incoherent mixture), CZ_1
+# and CZ_2 leave the target's |1> population invariant. The only thing that
+# can move target P(1) is the thermal channel on the target's own
+# scheduler-inserted Delay -- which is exactly the signal under test.
 #
 # Placement is a calibrated CZ edge with a ~17x T1 ratio -- QB35 (T1 = 2.04 us,
 # lossy) and QB36 (T1 = 34.9 us, ideal). Worker chain = 250 * 20 ns = 5 us idle.
@@ -420,14 +433,15 @@ PLACEMENT_IDEAL_TARGET = ["QB36", "QB35"]   # idx0 = QB36 (ideal); worker swappe
 
 
 def _sandwiched_idle_circuit(n_idle):
-    """Target (logical 0) excited and trapped in |1> between two CZ anchors while
-    the worker (logical 1) runs `n_idle` noiseless `id` gates between them."""
+    """Target (logical 0) excited and trapped in |1> between two CZ anchors
+    while the worker (logical 1) runs `n_idle` `sx` gates between them. See the
+    header above for why `sx` (matrix != I) and not `id`."""
     from qiskit import QuantumCircuit
     qc = QuantumCircuit(2)
     qc.x(0)               # excite target -> |1>
     qc.cz(0, 1)           # early anchor: tie target to the worker's timeline
     for _ in range(n_idle):
-        qc.id(1)          # worker busy (noiseless 20 ns each); target waits in |1>
+        qc.sx(1)          # worker busy (20 ns each, non-identity matrix); target waits in |1>
     qc.cz(0, 1)           # late anchor: target cannot proceed until the worker is done
     qc.measure_all()
     return qc
