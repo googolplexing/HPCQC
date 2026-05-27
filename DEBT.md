@@ -180,3 +180,108 @@ unchanged — echo extends, does not replace. New design note: BLUE-DESIGN-D3.6.
 The observable formula is researcher-edited (AK7 vs AK10 differ in
 `get_autocorrelation`'s plus/minus form — mathematically identical, but it
 confirms the observable must be configurable, not frozen).
+
+## D8 — Hazard class: third-party-library precondition silently violated by an incomplete Target basis
+**Status:** specific instance RESOLVED in this commit; ledger entry RETAINED
+as a hazard-class record so the next instance of the pattern catches at the
+assertion, not at the autocorrelator.
+
+**Class.** A noise pass declared with `op_types=[X]` only fires when the
+scheduled DAG actually contains X-typed instructions. For variable-duration
+idle steps, that requires the upstream scheduling pad pass to be able to
+insert X — which it gates on a Target-supported-instruction check
+(`Target.instruction_supported("delay", qargs=(q,))` for PadDelay). If the
+HPCQC-built Target lacks X in its supported-instruction set, the pad pass
+silently skips insertion on every qubit and the noise pass is starved.
+There is no error and no default-level warning trail (PadDelay's silent-skip
+branch is a `logger.debug` only). Inspection-level review of the
+HPCQC-internal chain (`_resolve_selected`, `initial_layout`,
+`op_types=[Delay]`) can pass while the bug is fully active.
+
+**Concrete instance (this commit fixes it):** the committed
+`_NATIVE_BASIS = ["r","rz","sx","x","cz","id","measure"]` in
+`backends/prepare.py` omitted `"delay"`, so the device-calibrated Target
+did not list delay among its supported instructions. PadDelay therefore
+silently skipped Delay insertion across every device-calibrated run on
+this branch, and the `RelaxationNoisePass(op_types=[Delay])` registered
+by `build_relaxation_pass` (`backends/device_noise.py`) had no Delays to
+act on. The variable idle-time decoherence component documented in the
+prepare/device_noise docstrings was silently inactive in production from
+the day device_noise landed until this commit.
+
+**Caught by:** the D3.2 §2.1 integration test
+`test_idle_relaxation_tracks_placement_through_full_schedule`. All three
+worker-chain variants (`id`, `sx`, `sx`+`barrier(1)`) produced statistically
+indistinguishable target survival (~0.87 across 4096 shots, 0.3σ spread),
+back-solving to gate-time-only |1> exposure (~140-170 ns), independent of
+the worker chain's actual 5 µs duration. The integration test was the
+first one designed to traverse the production scheduler+padding+relaxation
+path; the existing direct-Delay tests bypassed PadDelay by running
+explicit-Delay circuits on `prep.simulator` directly, which is why they
+passed despite the underlying defect. See
+`FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md` for the full code-path trace,
+upstream Qiskit cross-check, and empirical reconciliation arithmetic.
+
+**Mitigations in this commit (defense in depth):**
+  - `prepare.py:50` — `"delay"` added to `_NATIVE_BASIS` (the structural
+    fix).
+  - `prepare.py`, immediately after `Target.from_configuration(...)` —
+    runtime precondition assertion: raises `RuntimeError` if `"delay"` is
+    absent from `target.operation_names`. Converts the implicit upstream
+    library precondition into an explicit in-repo runtime invariant. If
+    a future edit drops `"delay"` from `_NATIVE_BASIS` (or otherwise fails
+    to register it), the prepare pipeline fails loud at Target
+    construction instead of silently producing noise-deficient results.
+  - `tests/unit/test_f5a_placement_noise.py` — new structural regression
+    guard `test_prepare_simulation_inserts_delays_in_scheduled_circuit`:
+    asserts that at least one `Delay` instruction survives into the
+    scheduled circuit emitted by `prepare_simulation` on a multi-gate
+    input. Catches any future regression that re-introduces the silent
+    skip via a different route (e.g. a passmgr config that strips delays
+    post-PadDelay, or a Target construction path that bypasses
+    `_NATIVE_BASIS`).
+  - `tests/unit/test_f5a_placement_noise.py` — strengthened docstring on
+    `test_idle_relaxation_tracks_placement_through_full_schedule`
+    spelling out that the swap differential is the §2.1 index-alignment
+    proof, not just a magnitude band.
+
+**Supersession of pre-fix artifacts.** All device-calibrated artifacts
+produced on this branch BEFORE tag `pre-paddelay-fix` reflect the broken
+regime (idle-time decoherence silently inactive). Specifically invalidated
+and pending re-baseline:
+  - `examples/reference/floquet_dtc_q10_device-cal_agg.dat`
+  - the `device_cal_mean / device_cal_sem` columns of
+    `examples/reference/floquet_dtc_q10_autocorr.csv`
+  - any `/byo` HDF5 device-calibrated autocorrelator persisted from this
+    branch's lifetime.
+The pre-fix tag preserves the broken-regime tree for diagnostic
+comparison. Re-baseline must complete (with the same configuration:
+`master_seed=0, initial_state=3, 40 instances, shots, calibration
+08c3c70f`) before the gate-2 F4 reproduction can re-anchor its
+pre-registered tolerance against the per-kick sem of the corrected CSV.
+Unaffected (verified by code-path inspection): the F4 noiseless baseline
+(`floquet_dtc_q10_noiseless_agg.dat`, `noiseless_mean/sem` columns) routes
+through `_prepare_noiseless`, which bypasses `_NATIVE_BASIS`, the Target,
+and PadDelay entirely; resident gate-time relaxation on `r/sx/x/cz` and
+the depolarizing/readout channels fire on gate ops and are unaffected
+by the Delay-insertion defect.
+
+**Pattern for future D3.x work.** When an HPCQC noise pass depends on a
+downstream-library precondition (this case: RelaxationNoisePass → PadDelay
+→ Target supports `delay`), convert the precondition into an in-repo
+runtime assertion at the construction site. The
+`if "delay" not in target.operation_names: raise RuntimeError(...)` in
+`_prepare_device_calibrated` is the canonical example. Future passes
+should follow the same pattern: any new `op_types=[OtherOp]` registration
+should pair with an assertion that `OtherOp.__name__` is in the relevant
+Target's `operation_names` at the prepare step. The lesson banked is that
+a structurally correct in-repo chain proves nothing if one of its
+preconditions is an implicit assumption about downstream-library behavior;
+preconditions must be made explicit invariants.
+
+**Logging follow-up (low priority).** PadDelay's silent-skip path emits
+only `logger.debug` ("No padding on qubit %d as delay is not supported on
+it"), which is filtered out at default log levels. Worth setting
+Qiskit's `qiskit.transpiler.passes.scheduling` logger to INFO inside the
+container for acceptance/diagnostic runs, so the trace surfaces in slurm
+logs. Not gate-blocking; track here for the next general logging pass.

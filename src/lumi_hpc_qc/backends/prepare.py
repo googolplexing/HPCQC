@@ -47,7 +47,14 @@ from lumi_hpc_qc.backends.device_noise import (
 
 # Native basis for the device-calibrated path. rz is a virtual frame change
 # (zero duration on real hardware); r is PRX; cz is the native entangler.
-_NATIVE_BASIS = ["r", "rz", "sx", "x", "cz", "id", "measure"]
+_NATIVE_BASIS = ["r", "rz", "sx", "x", "cz", "id", "measure", "delay"]
+# "delay" is included so Target.from_configuration registers Delay as a
+# supported variable-width 1-qubit instruction. Without it,
+# PadDelay.__delay_supported(qarg) returns False on every qubit and PadDelay
+# silently SKIPS inserting idle Delay instructions into the scheduled circuit,
+# starving the idle relaxation pass (RelaxationNoisePass with op_types=[Delay])
+# of anything to act on. See FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md
+# for the full code-path trace and validation evidence.
 
 # Each worker stays single-threaded: many workers share a node, so we do not
 # want each spawning its own Aer thread pool.
@@ -323,6 +330,24 @@ def _prepare_device_calibrated(circuits, *, num_qubits, calibration_path,
         instruction_durations=instr_durations,
         dt=dt_s,
     )
+    # Runtime precondition: the Target MUST list "delay" as a supported
+    # instruction or PadDelay (qiskit.transpiler.passes.scheduling.padding.
+    # base_padding.BasePadding.__delay_supported) silently skips Delay
+    # insertion on every qubit, starving the RelaxationNoisePass
+    # (op_types=[Delay]) of anything to act on. This converts a previously-
+    # implicit upstream-library precondition into an in-repo runtime
+    # invariant: if a future edit drops "delay" from _NATIVE_BASIS or
+    # otherwise fails to register it, the pipeline raises here instead of
+    # silently producing noise-deficient results.
+    # See FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md.
+    if "delay" not in target.operation_names:
+        raise RuntimeError(
+            "device-calibrated Target does not list \"delay\" as a supported "
+            "instruction; PadDelay will silently skip Delay insertion and the "
+            "idle relaxation pass (RelaxationNoisePass with op_types=[Delay]) "
+            "will be starved. _NATIVE_BASIS must include \"delay\". "
+            "See FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md."
+        )
     # F5a: when a placement is given, pin logical k -> relabeled index k so the
     # routed circuit's qubit indices line up with the placement-keyed noise
     # model. transpile(initial_layout=None) is exactly today's free-layout

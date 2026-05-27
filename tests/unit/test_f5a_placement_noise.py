@@ -474,14 +474,32 @@ def _run_scheduled_idle(physical_qubits):
 
 
 def test_idle_relaxation_tracks_placement_through_full_schedule():
-    """SWAP test through the full transpile+ALAP path (no explicit Delay): the
-    surviving excited population at the target index tracks physical_qubits[0]
-    across a placement swap, when the idle is the one the SCHEDULER inserts.
+    """SWAP test through the full transpile+ALAP path (no explicit Delay):
+    proves the relaxation pass's T1/T2 keying tracks physical_qubits[k] -- the
+    D3.2 §2.1 index-alignment claim -- not just that *some* T1/T2 is applied.
+
+    Construction: target (logical idx0) is excited and trapped in |1> between
+    two CZ anchors while the worker (logical idx1) runs a busy sx+barrier
+    chain. ALAP scheduling makes the target's wire idle for the worker's chain
+    duration (~5 us); PadDelay materializes that as a Delay on the target's
+    wire; the relaxation pass decoheres it per the physical qubit at idx0.
 
     [QB35, QB36] -> idx0 = QB35 (T1 = 2.04 us) decays hard during the ~5 us
-    scheduler-inserted idle; [QB36, QB35] -> idx0 = QB36 (T1 = 34.9 us) survives.
-    A placement-independent (mis-keyed) idle pass would give the SAME idx0
-    marginal for both placements; the disjoint bands below forbid that.
+    scheduler-inserted idle; [QB36, QB35] -> idx0 = QB36 (T1 = 34.9 us)
+    survives. Both placements run the SAME circuit; the only thing that changes
+    is which physical qubit maps to logical idx0. The swap differential
+    asserted below is the index-alignment proof: if the relaxation pass were
+    keyed to logical index instead of physical qubit, both placements would
+    produce comparable p0 values (same band) since the worker chain is
+    identical in both. A non-trivial differential forces the conclusion that
+    decoherence on logical-index-k is keyed to physical_qubits[k]'s T1/T2.
+    Magnitude bands alone would not separate "lands on the right qubit" from
+    "lands on a qubit with comparable T1/T2"; the swap differential does.
+
+    Precondition: "delay" must be in _NATIVE_BASIS so PadDelay actually inserts
+    the idle Delay -- otherwise PadDelay silently skips and the test sees only
+    gate-time |1> exposure (~140 ns), no idle decay. See
+    FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md.
     """
     pytest.importorskip("qiskit_aer")
     p0_lossy = _p1(_run_scheduled_idle(PLACEMENT_LOSSY_TARGET), 0)   # QB35 target
@@ -495,8 +513,66 @@ def test_idle_relaxation_tracks_placement_through_full_schedule():
     # Delay magnitude test above pins the absolute exp(-t/T1) value).
     assert p0_lossy < 0.40, p0_lossy
     assert p0_ideal > 0.60, p0_ideal
-    # Across the swap, idx0 survival must move decisively with the physical qubit.
+    # The §2.1 index-alignment proof: across the swap, idx0 survival moves
+    # decisively with the physical qubit. A mis-keyed pass would fail this
+    # rail regardless of which T1/T2 it picked, because the chosen T1/T2
+    # cannot simultaneously give p0_lossy < 0.40 AND p0_ideal > 0.60.
     assert p0_ideal - p0_lossy > 0.40, (p0_lossy, p0_ideal)
+
+
+def test_prepare_simulation_inserts_delays_in_scheduled_circuit():
+    """REGRESSION GUARD for FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md.
+
+    If "delay" is ever dropped from _NATIVE_BASIS (or otherwise omitted from
+    the device-calibrated Target's operation_names), PadDelay silently skips
+    Delay insertion on every qubit (BasePadding.__delay_supported returns
+    False), and the scheduled circuit emerging from prepare_simulation will
+    contain zero Delay instructions. The RelaxationNoisePass(op_types=
+    [Delay]) is then starved of anything to act on, and idle-time
+    decoherence is silently dropped from every device-calibrated run.
+
+    The runtime precondition assertion in _prepare_device_calibrated is the
+    loud-fail layer (raises RuntimeError immediately at Target construction
+    time). This test is the structural regression guard at the test-suite
+    layer: it builds a multi-gate circuit guaranteed to produce idle gaps
+    under ALAP scheduling (X on target, CZ entangler, several sx on worker,
+    second CZ anchor, measure), runs it through the full device-calibrated
+    prepare path, and asserts at least one Delay survives into the prepared
+    circuit. If this test fails, the silent-skip defect has been
+    reintroduced by another route (e.g. a passmgr config that strips delays
+    post-PadDelay, or a Target construction path that bypasses
+    _NATIVE_BASIS).
+    """
+    pytest.importorskip("qiskit_aer")
+    from qiskit import QuantumCircuit
+    from lumi_hpc_qc.backends.prepare import prepare_simulation
+
+    qc = QuantumCircuit(2, 2)
+    qc.x(0)                  # target excited to |1>
+    qc.cz(0, 1)              # entangler -- ties target timeline to worker
+    for _ in range(5):
+        qc.sx(1)             # worker busy gates create idle gap on target wire
+        qc.barrier(1)
+    qc.cz(0, 1)              # second anchor
+    qc.measure([0, 1], [0, 1])
+
+    prep = prepare_simulation(
+        [qc], "device-calibrated",
+        calibration_path=CALIBRATION, num_qubits=2,
+        physical_qubits=PLACEMENT_LOSSY_TARGET, optimization_level=0,
+        verbose=False,
+    )
+    scheduled = prep.run_circuits[0]
+    delay_count = sum(
+        1 for inst in scheduled.data if inst.operation.name == "delay"
+    )
+    assert delay_count > 0, (
+        f"Scheduled device-calibrated circuit contains {delay_count} Delay "
+        f"instructions; expected at least one. PadDelay must be silently "
+        f"skipping insertion. Verify \"delay\" is in _NATIVE_BASIS in "
+        f"src/lumi_hpc_qc/backends/prepare.py. "
+        f"See FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md."
+    )
 
 
 if __name__ == "__main__":
