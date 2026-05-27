@@ -198,3 +198,117 @@ build; everything else is configuration.
 *Reference files (all committed): `examples/byo/floquet_dtc.py`,
 `examples/byo/floquet_byo_sweep.yaml`, `examples/byo/floquet_disorder_q4.json`.
 Original: `Floquet_DTC_AK7.py`.*
+
+---
+
+## Step 5 — Scaling to the q10 production configuration
+
+The Step 1–4 walkthrough builds a q4/6-kick/3-seed demo to keep iteration fast.
+The canonical reference ensemble that the banked
+`examples/reference/floquet_dtc_q10_*` artifacts come from is q10 / 60 kicks /
+40 seeds / 1000 shots / `master_seed = 0` / polarized initial state. Scaling
+the demo to that shape is a pure config-and-data edit — the factory is
+unchanged.
+
+Two new files do this:
+
+- **`examples/byo/floquet_disorder_q10.json`** — 40 seeds × 10-qubit disorder,
+  generated deterministically from `np.random.SeedSequence(0).spawn(s+1)[s]`
+  with `pcg64`, matching the seam the sweep engine's `source: generate` path
+  uses (`src/lumi_hpc_qc/sweep/byo_sweep.py::_spawn_rng`). Storing the values
+  as data means the sweep is reproducible regardless of any future changes to
+  the seeding code; the `_meta.note` field in the JSON records the exact
+  reconstruction snippet for re-derivation.
+- **`examples/byo/floquet_dtc_q10_sweep.yaml`** — production-scale config:
+  `num_qubits: 10`, `num_kicks: {range: [0, 60]}`, 40 seeds, 1000 shots,
+  polarized init, and **both `noiseless` and `device_calibrated` in
+  `noise_configs:`** so a single sweep produces both arms in one job.
+
+### What stays the same
+
+The factory (`examples/byo/floquet_dtc.py`), the observable (the engine's
+`get_autocorrelation`), the placement solver, the aggregator — nothing moves.
+The q4 demo and the q10 production config are the same machinery driven by
+different YAML.
+
+### Disorder convention preserved
+
+`Jzz_angles` is sampled at length `num_qubits` even though
+`build_circuit` only consumes the first `num_qubits - 1` entries (one per
+nearest-neighbor bond). The trailing entry is kept to match the q4 example's
+shape and AK7's seed-advance pattern. The unused trailing draw doesn't affect
+physics; the cross-grid disorder-identity check covers it correctly because it
+inspects the materialized `rz`/`rzz` gates in the built circuit, not the
+disorder vectors themselves.
+
+### Two arms in one sweep
+
+`noise_configs: [noiseless, device_calibrated]` runs both arms over the same
+`(seed, num_kicks)` grid. The engine writes the results to separate output
+groups, so the post-hoc analysis can read both without re-running. If you
+want only one arm — e.g., to fast-iterate the noiseless path — comment out the
+other line; the disorder/seed/shot/kick budget is unchanged.
+
+### Running it
+
+The invocation is the same as Step 4, just pointing at the q10 YAML:
+
+```bash
+sbatch --account=project_462001289 --partition=standard --nodes=1 --ntasks-per-node=1 \
+  --cpus-per-task=128 --time=01:00:00 --job-name=floquet_q10_byo \
+  --wrap='cd "$SLURM_SUBMIT_DIR" && source "$SLURM_SUBMIT_DIR/env.sh" && \
+    export SINGULARITYENV_PYTHONPATH="$HPCQC_ROOT/src" && \
+    srun $HPCQC_CPU_WRAPPER $HPCQC_CPU_CONTAINER bash -c \
+      "python3 -m lumi_hpc_qc.sweep.run_sweep examples/byo/floquet_dtc_q10_sweep.yaml"'
+```
+
+`--cpus-per-task=128` matches the canonical 40-instance reference budget (one
+worker per instance, well under 128 cores) and `--time=01:00:00` gives generous
+headroom over the ~30-min noiseless run for the device-calibrated arm.
+
+### Relationship to the floquet_runner.py reference path
+
+The banked references (`examples/reference/floquet_dtc_q10_noiseless_agg.dat`
+and `examples/reference/floquet_dtc_q10_device-cal_agg.dat`) were produced via
+`floquet_runner.py` + `aggregate_floquet.py`, **not** the BYO sweep machinery.
+The two paths share the same physics (rx → rz → rzz Floquet period, polarized
+init, autocorrelator observable) but use different per-seed RNG mechanics:
+`floquet_runner.py` uses `np.random.seed(resolve_instance_seed(0, i))` on the
+legacy global stream; the BYO sweep uses `pcg64` per-seed Generators spawned
+from `SeedSequence(0)`. The resulting disorder values differ numerically per
+seed, so the **aggregated autocorrelator from this YAML will not be
+byte-identical to the banked `aggregated_autocorr.dat`** — but the ensemble
+statistics (mean DTC autocorrelator, period-2 alternating-sign signature,
+sem bands) match within shot noise.
+
+The BYO sweep path additionally goes through `prepare_simulation` and the
+placement solver (one of HPCQC's selling points), so it produces richer
+provenance: per-seed manifests, placement metadata, and the device-calibrated
+arm exercises the F5a placement-keyed noise on the same circuits the noiseless
+arm runs. Use this YAML when you want the production-grade BYO path with
+placement-resolved noise; use `slurm_floquet_40i_60k_1000s.sh` when you want
+bit-identical reproduction of the banked references.
+
+### Adapting for a future researcher script (AK8, AK11, …)
+
+The same six-step pattern (this doc, §0–4 + this §5) applies to any future
+DTC variant from the same family. Only three things change in practice:
+
+1. **The Floquet-period kernel** (the body of `apply_one_floquet_period`) —
+   copy the new researcher script's gate sequence into the factory's
+   inner-loop, line-for-line. Anything random or stateful in the new kernel
+   moves into the `disorder` block; only deterministic `fixed`/`grid` axes stay
+   on the function signature.
+2. **The observable** — if the new variant changes `get_autocorrelation` (e.g.,
+   AK10's sign convention, or an echo-based observable), the BYO factory contract
+   accepts a per-experiment observable function pointer (see DEBT D6/D7 for the
+   echo + multi-observable factory extension). Until that lands, the engine's
+   `get_autocorrelation` matches AK7 byte-for-byte; verify the new variant's
+   formula reduces to it (or extend the contract per D7).
+3. **The disorder JSON** — regenerate with the same `pcg64` + `SeedSequence`
+   pattern but using the new variant's distribution / cardinality. The `_meta`
+   block should record the exact reconstruction snippet so the file is
+   self-describing.
+
+The factory module, the YAML schema, the sbatch wrapper, and the aggregation
+pipeline are unchanged.

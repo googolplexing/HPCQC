@@ -1,0 +1,102 @@
+# Floquet DTC q10 production-scale sweep -- both noiseless and device-calibrated arms.
+#
+# This is the production-scale counterpart to floquet_byo_sweep.yaml (which ships
+# a q4/6-kick/3-seed demo for fast iteration). Same factory, same physics, same
+# disorder convention -- only the dimensions scale up to match the canonical q10
+# reference ensemble (40 instances, 60 kicks, 1000 shots, polarized state,
+# master_seed = 0).
+#
+# Distillation of Floquet_DTC_AK7.py walkthrough lives in docs/MIGRATION_FloquetDTC.md.
+#
+# Run via the BYO sweep entry point (cd HPCQC root on LUMI first):
+#   sbatch --account=project_462001289 --partition=standard --nodes=1 --ntasks-per-node=1 \
+#     --cpus-per-task=128 --time=01:00:00 --job-name=floquet_q10_byo \
+#     --wrap='cd "$SLURM_SUBMIT_DIR" && source "$SLURM_SUBMIT_DIR/env.sh" && \
+#       export SINGULARITYENV_PYTHONPATH="$HPCQC_ROOT/src" && \
+#       srun $HPCQC_CPU_WRAPPER $HPCQC_CPU_CONTAINER bash -c \
+#         "python3 -m lumi_hpc_qc.sweep.run_sweep examples/byo/floquet_dtc_q10_sweep.yaml"'
+#
+# Note on the device-calibrated arm: post the PadDelay-fix merge (commit 90d329d),
+# idle-time relaxation actually fires for device-calibrated runs. The banked
+# examples/reference/floquet_dtc_q10_device-cal_agg.dat reflects the pre-fix
+# regime (preserved at tag pre-paddelay-fix) and is awaiting re-baseline before
+# gate-2 (see DEBT D8 and FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md).
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_q10_production
+      circuit_script: examples/byo/floquet_dtc.py
+      circuit_function: build_circuit
+
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03                 # h_x = (1 - epsilon) * pi (the imperfect-pi kick)
+
+      grid:
+        num_kicks: {range: [0, 60]}   # stop-exclusive -> 0..59, matches the q10 reference
+
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10.json
+        initial_state: 3              # polarized |0..0>, matching AK7's Initial_state == 3
+
+      disorder_gates: [rz, rzz]       # cross-grid identity check excludes the rx drive
+
+      seed_list:                      # 40 disorder realizations, averaged
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+        - 7
+        - 8
+        - 9
+        - 10
+        - 11
+        - 12
+        - 13
+        - 14
+        - 15
+        - 16
+        - 17
+        - 18
+        - 19
+        - 20
+        - 21
+        - 22
+        - 23
+        - 24
+        - 25
+        - 26
+        - 27
+        - 28
+        - 29
+        - 30
+        - 31
+        - 32
+        - 33
+        - 34
+        - 35
+        - 36
+        - 37
+        - 38
+        - 39
+
+      shots: 1000
+
+      # Both noiseless (F4 baseline) and device-calibrated (F5a placement-keyed
+      # noisy) in one sweep. The engine runs each (seed, num_kicks) circuit
+      # under each noise config and writes them separately to the output.
+      noise_configs:
+        - noiseless
+        - device_calibrated
+
+  # Calibration referenced by the device-calibrated arm. The set-id 08c3c70f
+  # corresponds to the 05-24 Q50 calibration (the snapshot the gate-2
+  # reproduction is pinned to). A newer calibration in examples/ would be a
+  # different reference run, not this one.
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
