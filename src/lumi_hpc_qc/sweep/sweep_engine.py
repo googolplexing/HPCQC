@@ -2124,6 +2124,12 @@ class SweepEngine:
                         "autocorrelator": autocorr,
                         "shots": shots,
                         "seed_simulator": inst_seed,
+                        # RED-RESP-D3.4C §3: storing a resolved seed_simulator
+                        # without its parent master_seed is a provenance gap —
+                        # the result can't be traced to the run-wide knob that
+                        # produced it. master_seed is REQUIRED on the record;
+                        # None (entropy / not reproducible) is stored as absent.
+                        "master_seed": representative.master_seed,
                     })
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start

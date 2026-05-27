@@ -209,5 +209,160 @@ def test_prepare_simulation_none_path_unchanged():
     assert prep.info["selected_qubits"] == expected
 
 
+# ====================================================================
+# §2.1 BEHAVIORAL index-alignment — the D3.2 gate (RED-RESP-D3.4C §2).
+# ====================================================================
+# test_relaxation_pass_threads_placement_t1_t2 (above) asserts only that the
+# T1/T2 LIST is built in placement order: exp_t1 is _per_qubit_t1_t2_seconds
+# over the SAME `selected` list, so `t1s == exp_t1` is a tautology about list
+# construction (already covered by test_resolve_uses_given_qubits_in_order).
+# It never proves the load-bearing §2.1 claim: that when the prepared
+# statevector simulator runs the SCHEDULED circuit, idle decoherence on circuit
+# index k actually LANDS on physical_qubits[k]'s T1/T2 — the one place D3's own
+# design said relabeling could leak (RelaxationNoisePass duration resolution).
+#
+# These two tests close that gap behaviorally. They build an idle `Delay` on a
+# chosen logical qubit, run it through prepare_simulation's statevector sim, and
+# read where the decoherence landed from the measured counts:
+#   1. swap test (full model): swapping the placement order moves the surviving
+#      population with it — a placement-INDEPENDENT (mis-keyed / self-selected /
+#      sorted) pass would give the SAME marginal at index k for both orders, so
+#      the wide-margin ordinal bands here cannot pass under a mis-key.
+#   2. magnitude test (thermal-only): the survival at index k matches that
+#      qubit's exp(-t/T1) — "matches THAT qubit's T1", not another index's.
+#
+# Asymmetric placement: QB35 (T1 = 2.04 us) is markedly lossy, QB8 (T1 = 50.3
+# us) near-ideal — a ~25x T1 ratio. A qubit prepared in |1> and idled for ~5 us
+# survives at exp(-t/T1): ~0.09 for QB35 vs ~0.91 for QB8. The end qubits are
+# the distinctive pair Red pointed at (PLACEMENT_Q35 already carries QB35), put
+# at indices 0 and N-1 so the swap moves the signal across the whole register.
+
+PLACEMENT_LOSSY_FIRST = ["QB35", "QB1", "QB2", "QB8"]   # logical 0 lossy, 3 ideal
+PLACEMENT_IDEAL_FIRST = ["QB8", "QB1", "QB2", "QB35"]   # ends swapped
+
+# dt = 1 ns in the device-calibrated path (prepare.py: dt_s = 1e-9), so a delay
+# of 5000 dt ticks is 5 us of idle decoherence — long enough that the idle/delay
+# RelaxationNoisePass (the §2.1 hazard site) dominates over the ~20 ns resident
+# gate-time relaxation on the single X (the idle is >99% of the exposure).
+_IDLE_DELAY_DT = 5000
+_SIM_SEED = 1234          # pin the per-shot Kraus sampling so the test is stable
+_SHOTS = 4096             # 3-sigma shot noise on a ~0.09 marginal is ~0.013
+
+
+def _excited_idle_circuit():
+    """4-qubit circuit: excite logical qubits 0 and 3 (X), idle them for the
+    same long Delay, then measure all.
+
+    Logical 1 and 2 stay in |0>, where amplitude damping is a no-op, so they
+    carry no survival signal and cannot contaminate the ends. Only the excited
+    ends (0 and 3) report a T1-survival fraction, and those are the indices the
+    swap exchanges.
+    """
+    from qiskit import QuantumCircuit
+    qc = QuantumCircuit(4)
+    qc.x(0)
+    qc.x(3)
+    qc.delay(_IDLE_DELAY_DT, 0, unit="dt")
+    qc.delay(_IDLE_DELAY_DT, 3, unit="dt")
+    qc.measure_all()
+    return qc
+
+
+def _p1(counts, qubit):
+    """Marginal P(qubit == 1) from Aer counts.
+
+    Aer is little-endian: in a bitstring, qubit 0 is the RIGHTMOST character, so
+    bit for logical qubit k is bitstr[::-1][k]. (measure_all uses one creg, so
+    keys have no spaces; strip defensively.)
+    """
+    total = sum(counts.values())
+    ones = sum(
+        c for b, c in counts.items() if b.replace(" ", "")[::-1][qubit] == "1"
+    )
+    return ones / total
+
+
+def _run_idle(physical_qubits, *, spec=None):
+    """Prepare + run the excited-idle circuit on the given placement under the
+    device-calibrated statevector path, returning (counts, prep)."""
+    from lumi_hpc_qc.backends.prepare import prepare_simulation
+
+    prep = prepare_simulation(
+        [_excited_idle_circuit()], "device-calibrated",
+        calibration_path=CALIBRATION, num_qubits=4,
+        physical_qubits=physical_qubits, spec=spec, verbose=False,
+    )
+    # The placement must have threaded into the noise model in logical order,
+    # and the idle/delay relaxation pass must be attached, or this test is not
+    # exercising what it claims to.
+    assert prep.info["selected_qubits"] == physical_qubits
+    assert prep.relaxation_active is True
+    job = prep.simulator.run(prep.run_circuits, shots=_SHOTS, seed_simulator=_SIM_SEED)
+    return job.result().get_counts(0), prep
+
+
+def test_idle_relaxation_lands_on_placement_qubit_swap():
+    """SWAP test (full model): the surviving excited population at logical index
+    k tracks physical_qubits[k] across a placement swap.
+
+    Under LOSSY_FIRST = [QB35, QB1, QB2, QB8]: index 0 = QB35 decays hard,
+    index 3 = QB8 survives. Swapping to IDEAL_FIRST flips both ends. A
+    placement-independent (mis-keyed) pass would leave index 0's marginal
+    unchanged across the swap; the disjoint bands below (lossy < 0.40 < 0.60 <
+    ideal) make that impossible to pass.
+    """
+    pytest.importorskip("qiskit_aer")
+    counts_lf, _ = _run_idle(PLACEMENT_LOSSY_FIRST)   # idx0=QB35, idx3=QB8
+    counts_if, _ = _run_idle(PLACEMENT_IDEAL_FIRST)   # idx0=QB8,  idx3=QB35
+
+    p0_lf, p3_lf = _p1(counts_lf, 0), _p1(counts_lf, 3)
+    p0_if, p3_if = _p1(counts_if, 0), _p1(counts_if, 3)
+
+    # Within a placement: the lossy end is far below the ideal end.
+    assert p0_lf < 0.40 < 0.60 < p3_lf, (p0_lf, p3_lf)   # QB35 vs QB8
+    assert p3_if < 0.40 < 0.60 < p0_if, (p0_if, p3_if)   # QB35 vs QB8 (swapped)
+
+    # Across the swap: index 0's survival moves from lossy to ideal (and index 3
+    # the reverse). The mis-key signature would be p0_lf ~= p0_if; assert the
+    # gap is decisive.
+    assert p0_if - p0_lf > 0.40, (p0_lf, p0_if)
+    assert p3_lf - p3_if > 0.40, (p3_lf, p3_if)
+    # The same physical qubit (QB35) at the two different ends agrees, and so
+    # does QB8 — the survival follows the qubit, not the index.
+    assert abs(p0_lf - p3_if) < 0.15, (p0_lf, p3_if)      # both QB35
+    assert abs(p3_lf - p0_if) < 0.15, (p3_lf, p0_if)      # both QB8
+
+
+def test_idle_relaxation_magnitude_matches_qubit_t1():
+    """MAGNITUDE test (thermal-only): the survival at each index matches that
+    qubit's exp(-t/T1) — proving the decoherence is keyed to physical_qubits[k]'s
+    own T1, not merely "some asymmetric value".
+
+    Thermal-only (no readout flip, no depolarizing) so the measured marginal is
+    the clean amplitude-damping survival. Idle exposure = 5000 ns delay (+ ~20 ns
+    X gate, <0.4% of T1 for QB35), so exp(-t/T1) with the calibration's own T1.
+    """
+    pytest.importorskip("qiskit_aer")
+    import math
+    from lumi_hpc_qc.backends.noise_spec import NoiseSpec
+
+    thermal_only = NoiseSpec(
+        single_qubit_depolarizing=False, two_qubit_depolarizing=False,
+        readout=False, thermal_relaxation=True,
+    )
+    counts, _ = _run_idle(PLACEMENT_LOSSY_FIRST, spec=thermal_only)
+
+    cal = _cal()
+    t_s = _IDLE_DELAY_DT * 1e-9          # delay only; gate adds <0.001 abs here
+    exp_qb35 = math.exp(-t_s / (cal["qubits"]["QB35"]["t1_us"] * 1e-6))   # ~0.086
+    exp_qb8 = math.exp(-t_s / (cal["qubits"]["QB8"]["t1_us"] * 1e-6))     # ~0.905
+
+    p0, p3 = _p1(counts, 0), _p1(counts, 3)   # idx0 = QB35, idx3 = QB8
+    # Tolerance absorbs 3-sigma shot noise (~0.013) + the ~20 ns gate term; 0.05
+    # cannot confuse 0.086 with 0.905 (they are 0.82 apart).
+    assert abs(p0 - exp_qb35) < 0.05, (p0, exp_qb35)
+    assert abs(p3 - exp_qb8) < 0.05, (p3, exp_qb8)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

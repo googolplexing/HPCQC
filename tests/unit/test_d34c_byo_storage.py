@@ -65,7 +65,7 @@ def _byo_record(seed, env, source, phys, npi):
         "placement_id": 0, "physical_qubit_set": phys, "env": env,
         "noise_source": source, "noise_placement_independent": npi,
         "num_kicks": [0, 1, 2], "autocorrelator": [1.0, 0.5, 0.2],
-        "shots": 1000, "seed_simulator": 123456,
+        "shots": 1000, "seed_simulator": 123456, "master_seed": 0,
     }
 
 
@@ -86,6 +86,10 @@ def test_write_byo_result_group_shape():
         assert grp.attrs["noise_placement_independent"] == True   # noqa: E712
         assert grp.attrs["noise_source"] == "device_calibrated"
         assert grp.attrs["seed_simulator"] == 123456
+        # RED-RESP-D3.4C §3: master_seed stored as the parent provenance knob;
+        # 0 is a valid value and must be present (guards against a truthy check
+        # that would drop master_seed=0, the committed gate-2 value).
+        assert grp.attrs["master_seed"] == 0
         assert [q.decode() if isinstance(q, bytes) else q
                 for q in grp["physical_qubit_set"][()]] == ["QB1", "QB2", "QB3", "QB4"]
 
@@ -179,6 +183,8 @@ def test_byo_wal_recovery_reconstructs_group():
         assert gpath in f
         assert list(f[gpath]["autocorrelator"][()]) == [1.0, 0.5, 0.2]
         assert f[gpath].attrs["seed_simulator"] == 123456
+        # master_seed (RED §3) must survive WAL replay too, not just the live write.
+        assert f[gpath].attrs["master_seed"] == 0
 
 
 if __name__ == "__main__":

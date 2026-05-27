@@ -407,7 +407,7 @@ class SweepHDF5Writer:
         Datasets:  autocorrelator (float64[N_kicks]), num_kicks (int[N_kicks]),
                    physical_qubit_set (utf-8[n_qubits]).
         Attrs:     noise_source, noise_placement_independent, seed,
-                   seed_simulator, shots.
+                   seed_simulator, master_seed, shots.
 
         ``result`` is one dict from SweepEngine._byo_results_last.
         """
@@ -477,6 +477,13 @@ class SweepHDF5Writer:
         grp.attrs["seed"] = int(result["seed"])
         if result.get("seed_simulator") is not None:
             grp.attrs["seed_simulator"] = int(result["seed_simulator"])
+        # RED-RESP-D3.4C §3: master_seed is the parent knob seed_simulator is
+        # derived from (seed_simulator = resolve_instance_seed(master_seed,
+        # seed)). Store it whenever known (0 is a valid value -> `is not None`)
+        # so a stored result is traceable to the run that produced it. Absent
+        # only when the disorder carried no master_seed (entropy / unrepeatable).
+        if result.get("master_seed") is not None:
+            grp.attrs["master_seed"] = int(result["master_seed"])
         grp.attrs["shots"] = int(result["shots"])
         if result.get("placement_id") is not None:
             grp.attrs["placement_id"] = int(result["placement_id"])
