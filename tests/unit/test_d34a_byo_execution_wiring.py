@@ -25,7 +25,7 @@ import pytest
 
 pytest.importorskip("qiskit")
 
-from lumi_hpc_qc.sweep.sweep_engine import SweepEngine, SweepTask
+from lumi_hpc_qc.sweep.sweep_engine import SweepEngine, SweepTask, SweepProgress
 from lumi_hpc_qc.sweep.noise_configs import NOISE_ENV_BY_NAME
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -110,6 +110,16 @@ def _full_engine_for(tasks):
     eng._registry.discover()
     eng._cal_cache = {}
     eng._timing = {"circuit_build_s": 0.0, "placement_solving_s": 0.0}
+    # Hygiene: _execute_byo_group reads `self._progress.*` (5x) and
+    # `self._progress_callback` (1x). SweepEngine.__init__ initialises both,
+    # but this helper bypasses __init__ via __new__ (so it can construct
+    # without a full SweepConfig). Without these, every test that calls
+    # _execute_byo_group AttributeErrors on the first progress increment —
+    # surfaced post-W1.3 regression-check (LUMI job 18906639, 3 of 5 d34a
+    # tests). `_byo_dat_dir` already has a `getattr(self, "_byo_dat_dir",
+    # None)` guard in _execute_byo_group, so it does not need initialising.
+    eng._progress = SweepProgress()
+    eng._progress_callback = None
     eng._load_calibration(_CAL)   # real contract: caches + registers device
     return eng
 
