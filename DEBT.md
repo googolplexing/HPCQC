@@ -245,20 +245,33 @@ upstream Qiskit cross-check, and empirical reconciliation arithmetic.
     spelling out that the swap differential is the §2.1 index-alignment
     proof, not just a magnitude band.
 
-**Supersession of pre-fix artifacts.** All device-calibrated artifacts
-produced on this branch BEFORE tag `pre-paddelay-fix` reflect the broken
-regime (idle-time decoherence silently inactive). Specifically invalidated
-and pending re-baseline:
-  - `examples/reference/floquet_dtc_q10_device-cal_agg.dat`
-  - the `device_cal_mean / device_cal_sem` columns of
-    `examples/reference/floquet_dtc_q10_autocorr.csv`
-  - any `/byo` HDF5 device-calibrated autocorrelator persisted from this
-    branch's lifetime.
-The pre-fix tag preserves the broken-regime tree for diagnostic
-comparison. Re-baseline must complete (with the same configuration:
-`master_seed=0, initial_state=3, 40 instances, shots, calibration
-08c3c70f`) before the gate-2 F4 reproduction can re-anchor its
-pre-registered tolerance against the per-kick sem of the corrected CSV.
+**Supersession of pre-fix artifacts (scope corrected — see
+`FINDING-PADDELAY-SCOPE-v1_0.md`).** The blast radius first recorded here was
+over-broad. Two architecturally disjoint idle-decoherence pipelines exist: the
+reference path (`floquet_runner.py:_prepare_device_circuits` +
+`device_noise.build_relaxation_pass`, an Aer-side `NoiseModel` custom pass) and
+the sweep BYO path (`prepare.prepare_simulation` -> `PadDelay` +
+`RelaxationNoisePass`). The `_NATIVE_BASIS`/`PadDelay` defect lived ONLY in the
+sweep BYO path; the reference path never consumed `prepare.py` and never had
+the bug. Empirically confirmed: a post-fix device-calibrated re-baseline
+(job 18874828, same config `master_seed=0, initial_state=3, 40 instances,
+calibration 08c3c70f`) reproduced
+`examples/reference/floquet_dtc_q10_device-cal_agg.dat` byte-identically
+(SHA256 `aa7084f2...`). Corrected scope:
+  - NOT invalidated (runner-produced, unaffected by the bug):
+    `examples/reference/floquet_dtc_q10_device-cal_agg.dat` and the
+    `device_cal_mean / device_cal_sem` columns of
+    `examples/reference/floquet_dtc_q10_autocorr.csv`. These remain the
+    authoritative D3.5 gate-2 anchor; NO re-baseline is required.
+  - Would be invalidated (under-decohered) ONLY if produced through the sweep
+    BYO path pre-fix -- i.e. any such `/byo` HDF5 device-calibrated
+    autocorrelator. No sweep-BYO-produced device-calibrated artifacts are
+    committed, so nothing requires re-baselining in practice.
+The pre-fix tag `pre-paddelay-fix` still preserves the broken-regime tree for
+diagnostic comparison of the sweep BYO path. D3.5 gate-2 is therefore a
+meaningful test of the fix: it compares the post-fix sweep BYO aggregate
+against the unchanged runner-produced reference, and convergence within
+per-kick sem is the success criterion (not a re-baseline gate).
 Unaffected (verified by code-path inspection): the F4 noiseless baseline
 (`floquet_dtc_q10_noiseless_agg.dat`, `noiseless_mean/sem` columns) routes
 through `_prepare_noiseless`, which bypasses `_NATIVE_BASIS`, the Target,
@@ -285,3 +298,39 @@ it"), which is filtered out at default log levels. Worth setting
 Qiskit's `qiskit.transpiler.passes.scheduling` logger to INFO inside the
 container for acceptance/diagnostic runs, so the trace surfaces in slurm
 logs. Not gate-blocking; track here for the next general logging pass.
+
+## D9 - Hazard class: two disjoint pipelines apply the same idle-decoherence physics through different code
+**Status:** open (tracked; not blocking). Surfaced by
+`FINDING-PADDELAY-SCOPE-v1_0.md` while explaining why the PadDelay fix left the
+committed reference byte-identical.
+
+**What.** Idle-time thermal relaxation is implemented twice, on two paths that
+share no code:
+  - reference path -- `floquet_runner.py:_prepare_device_circuits` does its own
+    transpile + ALAP scheduling and attaches relaxation via
+    `device_noise.build_relaxation_pass`, registered as an Aer-side
+    `NoiseModel` custom noise pass (runs at simulate time on any circuit that
+    already contains Delays);
+  - sweep BYO path -- `prepare.prepare_simulation` builds a device-calibrated
+    `Target` from `_NATIVE_BASIS`, schedules with Qiskit `PadDelay`, and applies
+    relaxation with `RelaxationNoisePass(op_types=[Delay])`.
+They use different scheduling mechanisms, different decoherence-application
+mechanisms, and do not share `_NATIVE_BASIS`.
+
+**Why it is a hazard.** The two paths form an *unintended* consistency check.
+A defect in one path's idle-decoherence (e.g. D8's `_NATIVE_BASIS`/`PadDelay`
+silent skip) is invisible in the other path's output, so a bug can ship in one
+while the other looks healthy. A divergence between them is ambiguous: it could
+be a genuine physics-modeling difference or a regression in one path, and
+nothing in the repo disambiguates which. Today the only place the two are
+cross-checked is D3.5 gate-2 (sweep BYO aggregate vs runner-produced reference).
+
+**Trigger to resolve.** After D3.5 gate-2 is signed off (the one live
+cross-check between the paths), schedule a consolidation discussion. Open
+question: consolidate onto a single shared scheduler + idle-decoherence
+implementation used by both `floquet_runner.py` and the sweep BYO path, or keep
+them separate and treat gate-2 as a deliberate periodic cross-check (if kept
+separate, add an explicit recurring cross-check rather than relying on gate-2
+incidentally).
+
+**Not blocking** the echo workstream (D7) or gate-2 itself.

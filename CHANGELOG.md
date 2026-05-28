@@ -3,6 +3,116 @@
 
 # Changelog
 
+## Unreleased — `feature/device-calibrated-noise` (2026-05-27)
+
+### Fixed
+
+**PadDelay idle-decoherence in sweep BYO path** (commit `90d329d`)
+- Added `"delay"` to `_NATIVE_BASIS` in `src/lumi_hpc_qc/backends/prepare.py:50`
+  so the device-calibrated `Target` constructed for the sweep BYO simulation
+  path includes the `delay` operation. Without it, Qiskit's
+  `PadDelay.__delay_supported(q)` returned `False` on every qubit, silently
+  skipping Delay insertion during ALAP scheduling; the downstream
+  `RelaxationNoisePass(op_types=[Delay])` then had no `Delay` instructions to
+  attach a thermal-relaxation channel to, dropping all idle-time decoherence
+  on this path.
+- Added a runtime precondition assertion in `_prepare_device_calibrated` that
+  raises `RuntimeError` if `"delay" not in target.operation_names`,
+  converting the implicit upstream-library precondition into an explicit
+  in-repo invariant.
+- Strengthened `test_idle_relaxation_tracks_placement_through_full_schedule`
+  so its swap-differential is the explicit asymmetric-T1/T2 index-alignment
+  proof referenced in the review's §2.1. Added regression test
+  `test_prepare_simulation_inserts_delays_in_scheduled_circuit` asserting at
+  least one `Delay` survives into `prep.run_circuits[0]` for a multi-gate
+  circuit, guarding against silent regressions of the
+  `_NATIVE_BASIS`/`PadDelay` interaction.
+- Pre-fix state tagged at `pre-paddelay-fix` (commit `fe22fe5`). `DEBT.md` D8
+  records the hazard class ("third-party library precondition becomes in-repo
+  invariant"). See `FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md` (discovery)
+  and `RED-VERIFY-PADDELAY-IDLE-NOT-INSERTED-v1_0.md` (verification + merge
+  conditions, all four §5 conditions closed before merge).
+
+**Scope clarification — PadDelay fix blast radius does NOT include the
+reference path** (documented in `FINDING-PADDELAY-SCOPE-v1_0.md`)
+- The verification doc's §6 anticipated that "all device-calibrated reference
+  artifacts on this branch invalidated and must be re-baselined post-fix".
+  Empirical verification narrowed this: the device-calibrated re-baseline run
+  (job 18874828, post-fix HEAD `f0ce463`, calibration `08c3c70f`, 40 inst ×
+  60 kicks × 1000 shots) produced an aggregated autocorrelator
+  **byte-identical** (SHA256
+  `aa7084f2df8a7cb16ae981ed03aed7e726f6f5f893fd52006a19dd1bda5841a3`) to the
+  pre-fix banked reference at
+  `examples/reference/floquet_dtc_q10_device-cal_agg.dat`.
+- Cause: `floquet_runner.py` (the reference pipeline) uses its own
+  `_prepare_device_circuits()` for scheduling and
+  `device_noise.build_relaxation_pass()` (registered as a NoiseModel custom
+  noise pass on Aer side) for idle decoherence — it does NOT consume
+  `prepare.py`'s `_NATIVE_BASIS` / `PadDelay` / `RelaxationNoisePass` chain.
+  The bug was confined to the sweep BYO path (`sweep_engine.py` via
+  `prepare_simulation`).
+- Effect: no committed reference artifacts require re-baselining. The
+  reference at `examples/reference/floquet_dtc_q10_device-cal_agg.dat`
+  remains the authoritative target for D3.5 gate-2 tolerance anchoring. The
+  noiseless companion reference at SHA256
+  `d280052001129511b0a379ddd4a37d1ad709c109b156331a8905297540fc39b8` is
+  likewise stable (secondary consistency check; noiseless has no decoherence
+  channel to exercise either way).
+- The PadDelay fix at `90d329d` is still correct and still necessary for the
+  sweep BYO path; D3.5 gate-2 — which compares sweep-BYO-aggregated
+  autocorrelator vs the reference — is now a meaningful test of the fix.
+
+**Sweep BYO counter accounting** (commit `f0ce463`)
+- `_execute_byo_group` in `src/lumi_hpc_qc/sweep/sweep_engine.py` now
+  increments `total_placements`, `total_simulations`, `hdf5_writes`, and
+  `completed_tasks` per the non-BYO `_execute_group` conventions at the
+  analogous logical steps. Pre-fix, the BYO sweep path completed correctly
+  (WAL ↔ HDF5 consistency verified, e.g. q4 smoke job 18874760 reported
+  1287 ↔ 1287 groups) but `SweepResult` reported zeros for every counter,
+  breaking any downstream accounting that read from it (manifests, benchmark
+  Parquet, programmatic post-run checks). No correctness change to the
+  simulation product; reporting only.
+- Verification: re-run of the same q4 smoke at `f0ce463` produced exactly
+  the predicted counts (Tasks 18/18, Placements processed 7722, Simulations
+  1287, HDF5 writes 1287, Errors 0) in 158.1s, within noise of the same
+  smoke's pre-fix runtime (159.6s). No measurable performance overhead from
+  the four `+=` operations.
+
+### Added
+
+**Sweep CLI entry point** (commit `543110b`)
+- New module `src/lumi_hpc_qc/sweep/run_sweep.py` — thin CLI wrapper that
+  parses a YAML config path off `argv`, loads it, validates the top-level
+  `sweep:` key, dispatches to `sweep_engine.run_sweep_from_dict`, and
+  returns `0`/`1` based on `SweepResult.total_errors`. Makes the invocation
+  pattern documented in `docs/MIGRATION_FloquetDTC.md` Steps 4–5
+  (`python3 -m lumi_hpc_qc.sweep.run_sweep <config.yaml>`) actually work
+  without doc edits.
+
+**BYO production-scale q10 configuration** (commit `6de2ccc`)
+- `examples/byo/floquet_dtc_q10_sweep.yaml` — q10 / 60-kick / 40-seed /
+  1000-shot configuration with both `noiseless` and `device_calibrated`
+  arms, pinned to calibration `examples/q50_calibration_20260524_08c3c70f.json`.
+- `examples/byo/floquet_disorder_q10.json` — 40 seeds × q10 disorder
+  instances, generated deterministically via
+  `np.random.SeedSequence(0).spawn(s+1)[s]` with PCG64, polarized initial
+  state (`[0]*10`); `_meta.note` records the reconstruction snippet.
+- `Floquet_DTC_AK7.py` at repo root — researcher's reference factory source
+  (kept verbatim from the researcher; physics matches `examples/byo/floquet_dtc.py`
+  line-for-line).
+- `docs/MIGRATION_FloquetDTC.md` — Step 5 addendum on q10 scale-up,
+  documenting the relationship to the `floquet_runner.py` reference path
+  (the BYO q10 sweep is NOT bit-identical to the runner-banked reference
+  because of different per-seed RNG mechanics) and the pattern for future
+  researcher-script variants (AK8, AK11, …).
+
+### Internal
+
+- Re-baseline run artifacts: `results/floquet_device_calibrated_20260527_212801_job18874828/`
+  (40 per-instance autocorr.dat + JSON logs; `aggregated_autocorr.dat`
+  byte-identical to banked reference). Preserved alongside `sweep_output.18874504-old/`
+  (q4 smoke from pre-counter-fix HEAD) for future diff/audit.
+
 ## 1.4.0 (2026-04-10)
 
 ### Global Pool Packing, Seed Lists, Parquet 67→71 (RED-RESP-V140-DESIGN-v1.0 REVISED)
