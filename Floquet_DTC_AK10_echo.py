@@ -1,3 +1,5 @@
+
+
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -92,12 +94,12 @@ def apply_one_floquet_period(qc, hz_angles, Jzz_angles):
 
     # Nearest-neighbour ZZ interactions
     for wire in range(num_qubits - 1):
-        qc.rzz(Jzz_angles[wire], wire, wire + 1)
+        qc.rzz(Jzz_angles[wire]/2, wire, wire + 1)
 
 def apply_one_Floquet_period_conjugate(qc, hz_angles, Jzz_angles):
     # Nearest-neighbour ZZ interactions
     for wire in range(num_qubits - 1):
-        qc.rzz(-Jzz_angles[wire], wire, wire + 1)
+        qc.rzz(-Jzz_angles[wire]/2, wire, wire + 1)
 
     # Random longitudinal z fields
     for wire in range(num_qubits):

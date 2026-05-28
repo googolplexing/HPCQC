@@ -48,27 +48,29 @@ from qiskit import QuantumCircuit
 
 
 def _apply_forward_period(qc, h_x, num_qubits, hz_angles, Jzz_angles):
-    """One forward Floquet period: rx(h_x) -> rz(hz) -> rzz(Jzz).
+    """One forward Floquet period: rx(h_x) -> rz(hz) -> rzz(Jzz/2).
 
     Inlines AK10.apply_one_floquet_period exactly (same gate order, same
-    angle signs).
+    angle signs). The Jzz coupling is applied as Jzz/2 per period, matching
+    the researcher's corrected Floquet_DTC_AK10_echo.py (the /2 is a build-time
+    rescaling; the disorder JSON's drawn Jzz_angles are unchanged).
     """
     for w in range(num_qubits):
         qc.rx(h_x, w)
     for w in range(num_qubits):
         qc.rz(hz_angles[w], w)
     for w in range(num_qubits - 1):
-        qc.rzz(Jzz_angles[w], w, w + 1)
+        qc.rzz(Jzz_angles[w] / 2, w, w + 1)
 
 
 def _apply_conjugate_period(qc, h_x, num_qubits, hz_angles, Jzz_angles):
-    """One time-reversed Floquet period: rzz(-Jzz) -> rz(-hz) -> rx(-h_x).
+    """One time-reversed Floquet period: rzz(-Jzz/2) -> rz(-hz) -> rx(-h_x).
 
     Inlines AK10.apply_one_Floquet_period_conjugate exactly: gates in reverse
     order with negated angles. This is the dagger of _apply_forward_period.
     """
     for w in range(num_qubits - 1):
-        qc.rzz(-Jzz_angles[w], w, w + 1)
+        qc.rzz(-Jzz_angles[w] / 2, w, w + 1)
     for w in range(num_qubits):
         qc.rz(-hz_angles[w], w)
     for w in range(num_qubits):
