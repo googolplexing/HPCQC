@@ -53,3 +53,11 @@ exports/
 dataset/
 sweep_scripts.zip
 fe62378_to_HEAD.diff
+
+# Local artifacts at repo root (root-anchored so the evidence/W1/ slurm-*.out
+# corpus banked for RED-RESP-W1 is NOT shadowed by these patterns). Covers
+# raw SLURM stdout dropped in the repo root by interactive runs, delivery
+# patch files staged for manual application, and analysis-generated images.
+/slurm-*.out
+/*.patch
+/*.png
