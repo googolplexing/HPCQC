@@ -1,0 +1,24 @@
+sweep:
+  output_dir: sweep_output_cfg1_smoke
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_q10_cfg1_smoke
+      circuit_script: examples/byo/floquet_dtc.py
+      circuit_function: build_circuit
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03
+      grid:
+        num_kicks: {range: [0, 8]}
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      seed_list: [0, 1]
+      shots: 100
+      noise_configs:
+        - noiseless
+        - device_calibrated
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
