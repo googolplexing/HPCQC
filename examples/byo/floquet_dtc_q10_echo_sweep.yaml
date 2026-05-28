@@ -1,0 +1,100 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Standalone AK10 echo fidelity study (SPEC-002 §7.5, DEBT D7).
+# Faithful replication of Floquet_DTC_AK10_echo.py as a BYO circuit family.
+#
+# AK10 parameters reproduced exactly:
+#   num_qubits        = 10
+#   num_max_kicks     = 40        -> grid num_kicks range [0, 40) = 0..39
+#   num_shots         = 100
+#   num_gate_instances= 10        -> seed_list 0..9 (disorder from JSON below)
+#   epsilon           = 0.03
+#   Initial_state     = 3         (polarized, all-zero init)
+#   Jz_on/hz_on=True, Jz_frozen=False (random Jzz in [-1.5pi,-0.5pi],
+#                                      random hz in [-pi,pi])
+#   backend_code      = 1 (AerSimulator, noiseless)  -> 'noiseless' arm
+#
+# This config defines TWO observables (autocorrelator + echo) and ONE derived
+# ratio A(0)A(T)/A_0, per the multi-observable design
+# (DESIGN-MULTI-OBSERVABLE-BYO-ECHO-v1_0.md, Option A). The 'observables',
+# 'derived' surface requires the staged engine increments 3-5 from that design;
+# until those land, this YAML is the executable spec the increments are
+# verified against. The single-observable arms can be run TODAY by splitting
+# into two experiments (Option B fallback) -- see the commented block at the
+# bottom.
+#
+# NOTE: This is a STANDALONE study, NOT the D3.5 gate-2 comparison. The banked
+# device-cal reference (60k/1000s/40seed, SeedSequence RNG, no echo arm) is a
+# different experiment. Disorder here uses AK10's default_rng(1234) stream
+# (frozen into floquet_disorder_q10_echo_ak10.json), deliberately NOT the
+# repo's SeedSequence convention, to match AK10's exact numbers.
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_echo_ak10
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      observables:
+        - {name: autocorr, function: build_circuit}
+        - {name: echo,     function: build_circuit_echo}
+      derived:
+        # A_0 = sqrt(|echo|); headline DTC signal = autocorr / A_0.
+        - {name: ratio, expr: "autocorr / sqrt(abs(echo))"}
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03
+      grid:
+        num_kicks: {range: [0, 40]}        # stop-exclusive -> 0..39 (AK10 num_max_kicks=40)
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # AK10 num_gate_instances=10
+      shots: 100                                    # AK10 num_shots=100
+      # !! FIDELITY WARNING: as of HEAD f0ce463 the BYO path does NOT read
+      #    this 'shots' field -- sweep_engine.py:2061 hardcodes byo_shots=1000
+      #    as the fallback for envs whose shots==0 (the noiseless arm). To
+      #    replicate AK10's 100 shots faithfully, the engine must wire this
+      #    field into byo_shots (staged increment 0 in the design doc).
+      #    Until then this runs at 1000 shots, NOT 100 -- an AK10 fidelity
+      #    break. device_calibrated arm uses env.shots (4096) regardless;
+      #    that too departs from AK10 (which is AerSimulator/noiseless only).
+      noise_configs: [noiseless, device_calibrated]
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
+
+# ──────────────────────────────────────────────────────────────────────────
+# OPTION B FALLBACK (runnable on the CURRENT engine, no multi-observable code):
+# Split the two observables into two independent single-observable experiments
+# and compute the ratio offline. Uncomment to use before increments 3-5 land.
+# The autocorr and echo experiments MUST share seed_list, disorder file, grid,
+# shots, calibration, and noise_configs so the offline join is well-defined.
+#
+# sweep:
+#   experiments:
+#     - type: byo_circuit
+#       label: floquet_dtc_echo_ak10_autocorr
+#       circuit_script: examples/byo/floquet_dtc_echo.py
+#       circuit_function: build_circuit
+#       fixed: {num_qubits: 10, epsilon: 0.03}
+#       grid: {num_kicks: {range: [0, 40]}}
+#       disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+#       disorder_gates: [rz, rzz]
+#       seed_list: [0,1,2,3,4,5,6,7,8,9]
+#       shots: 100
+#       noise_configs: [noiseless, device_calibrated]
+#     - type: byo_circuit
+#       label: floquet_dtc_echo_ak10_echo
+#       circuit_script: examples/byo/floquet_dtc_echo.py
+#       circuit_function: build_circuit_echo
+#       fixed: {num_qubits: 10, epsilon: 0.03}
+#       grid: {num_kicks: {range: [0, 40]}}
+#       disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+#       disorder_gates: [rz, rzz]
+#       seed_list: [0,1,2,3,4,5,6,7,8,9]
+#       shots: 100
+#       noise_configs: [noiseless, device_calibrated]
+#   calibrations:
+#     - examples/q50_calibration_20260524_08c3c70f.json
