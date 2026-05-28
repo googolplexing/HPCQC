@@ -113,7 +113,7 @@
 
 <!-- ================================================================ -->
 <h1 id="overview">lumi-hpc-qc</h1>
-<p class="version-info">Version 1.1.0 &middot; 2026-04-03 &middot; 100+ Python files &middot; ~16,000 lines &middot; LUMI (CSC Finland) + VTT Q50 &middot; <span class="badge badge-warn">+ SPEC-002 §7.5 sweep harness in progress (2026-05-26)</span></p>
+<p class="version-info">Version 1.1.0 &middot; 2026-05-28 &middot; 100+ Python files &middot; ~16,000 lines &middot; LUMI (CSC Finland) + VTT Q50 &middot; <span class="badge badge-warn">+ SPEC-002 §7.5 sweep harness: BYO counts execution landed; gate-2 verification + W1 (engine-internal parallelism) in design with Team Red (RED-RESP-W1-…-v1.4)</span></p>
 
 <p>A modular framework for running Variational Quantum Algorithms and systematic noise characterisation on the LUMI supercomputer (AMD MI250X GPUs) and the VTT Q50 quantum processor via FiQCI. Researchers define experiments in YAML; the framework handles placement solving, noise decomposition, HDF5 storage, and Parquet export for ML training data.</p>
 
@@ -145,19 +145,28 @@
 <tr><td>Phase C</td><td>Error mitigation (ZNE + readout), multiplexed QPU, seed sweeps</td><td><span class="badge badge-ok">Done</span></td><td>48/48</td></tr>
 <tr><td>Phase D</td><td>Multi-format export, Schema v2, quality gates, measurement stats (V19)</td><td><span class="badge badge-ok">Done</span></td><td>86/86</td></tr>
 <tr><td><strong>Phase E</strong></td><td><strong>Sweep engine — YAML &rarr; placement &rarr; twin sim &rarr; HDF5 &rarr; Parquet</strong></td><td><span class="badge badge-ok">Done</span></td><td><strong>764/764</strong></td></tr>
-<tr><td><strong>SPEC-002 §7.5</strong></td><td><strong>Parameterised BYO sweeps — researcher circuit factory + swept params, device-calibrated noise, counts &rarr; autocorrelator</strong></td><td><span class="badge badge-warn">In progress</span></td><td>D3.1&ndash;D3.3 landed; D3.4 execution + D3.5 reproduction open</td></tr>
+<tr><td><strong>SPEC-002 §7.5</strong></td><td><strong>Parameterised BYO sweeps — researcher circuit factory + swept params, device-calibrated noise, counts &rarr; autocorrelator</strong></td><td><span class="badge badge-warn">In progress</span></td><td>D3.1&ndash;D3.4 landed; gate-2 verification + W1 (engine-internal parallelism) in design with Team Red</td></tr>
 </table>
 
 <div class="callout callout-warn">
 <strong>SPEC-002 §7.5 sweep harness (in progress).</strong> On the
 <code>feature/device-calibrated-noise</code> branch, the parameterised
-bring-your-own-circuit path is being wired: a researcher supplies a pure
+bring-your-own-circuit path is wired end-to-end: a researcher supplies a pure
 circuit-factory <code>.py</code> plus a sweep YAML of parameter values, and the
 engine sweeps it under real Q50 <code>device_calibrated</code> noise. Landed:
 the build seam (Gap A), per-placement device-calibrated noise composition
-(F5a / D3.2), and <code>device_calibrated</code> routing (D3.3). Open: the BYO
-counts execution branch (D3.4) and the bit-exact Floquet reproduction (D3.5).
-See the <a href="#byo-guide">BYO circuits</a> guide.
+(F5a / D3.2), <code>device_calibrated</code> routing (D3.3), and the BYO counts
+execution branch at <code>_execute_byo_group</code> (D3.4). Open: gate-2
+verification (the 2-seed canary is banked at <code>evidence/W1/gate2_canary/</code>;
+the 40-seed full run awaits the W1 engine); engine-internal fork-per-(seed,&nbsp;arm)
+parallelism (<strong>W1</strong>, in design per
+<code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code>); and D3.5 bit-exact
+Floquet reproduction. Until W1 lands, multi-seed BYO sweeps execute serially in
+<code>_execute_byo_group</code>; the shell fork-per-seed launcher in
+<code>gate2_launch.sh</code> is workaround tooling pending W1 and should not be
+used for production multi-seed runs (it OOM'd at the 40-seed scale &mdash; see
+<a href="#known-issues">Known issues</a>). See the
+<a href="#byo-guide">BYO circuits</a> guide.
 </div>
 
 <!-- ================================================================ -->
@@ -268,15 +277,38 @@ See the <a href="#byo-guide">BYO circuits</a> guide.
 <!-- ================================================================ -->
 <h2 id="design-decisions">Design decisions</h2>
 
+<h3>Phase E (formalized at v1.1.0)</h3>
+
 <table>
 <tr><th>Decision</th><th>Why</th><th>Evidence</th></tr>
 <tr><td>VF2 subgraph isomorphism via rustworkx</td><td>Exact placement enumeration for arbitrary circuits on arbitrary topologies</td><td>487 placements for 4q on Q50 in &lt;1s</td></tr>
-<tr><td>WAL (write-ahead log) for HDF5</td><td>h5py crash recovery depends on Lustre metadata semantics — WAL is independent</td><td>E3 kill-9 recovery test</td></tr>
+<tr><td>WAL (write-ahead log) for HDF5; single-writer invariant</td><td>h5py crash recovery depends on Lustre metadata semantics — WAL is independent. Workers return vectors + provenance; the parent writes HDF5/WAL serially. Workers never touch HDF5 (fork-unsafe).</td><td>E3 kill-9 recovery test; <code>sweep_engine.py</code> :1813–1825 (poisoned-mutex rationale, verbatim), :1847 (serial-HDF5 comment)</td></tr>
 <tr><td>Compute fingerprints during execution, not export</td><td>Export reads only HDF5 attributes — O(N) metadata scan, never opens datasets</td><td>974 rows exported in 1.9s</td></tr>
 <tr><td>Noiseless deduplication across calibrations</td><td>Noiseless results depend on topology, not calibration — skip redundant sims</td><td>1,512 skipped in VE18 (18% savings)</td></tr>
-<tr><td>CPU ≤8q, GPU ≥10q routing</td><td>Density matrix fits in CPU cache at ≤8q; GPU setup overhead exceeds sim time</td><td>128-way parallel = sequential results</td></tr>
-<tr><td>11 noise environments with tiered intervals</td><td>Individual channels (Tier A) need high resolution; combined (Tier B) need less</td><td>~350 MB/day storage budget</td></tr>
+<tr><td>CPU ≤8q, GPU ≥10q routing (channel-tier path)</td><td>Density matrix fits in CPU cache at ≤8q; GPU setup overhead exceeds sim time. Applies to the 11-environment twin battery. The BYO counts path routes differently — see the W1 table below.</td><td>128-way parallel = sequential results</td></tr>
+<tr><td>11 noise environments with tiered intervals; <code>device_calibrated</code> as a 12th opt-in source axis</td><td>Individual channels (Tier A) need high resolution; combined (Tier B) need less. <code>device_calibrated</code> is opt-in by name (not part of <code>noise_configs: all</code>), pins <code>statevector</code>, and runs only on the BYO counts path.</td><td>~350 MB/day storage budget; SPEC-002 §7.5 / D3.3</td></tr>
 <tr><td>Mixed-experiment packing</td><td>Non-overlapping circuits share QPU submissions — 2× science per QPU second</td><td>Δ=0.0015 TFIM, Δ=0.0146 GHZ vs independent</td></tr>
+</table>
+
+<h3>SPEC-002 §7.5 / W1 (in design with Team Red, <code>feature/device-calibrated-noise</code>)</h3>
+
+<p style="font-size:14px;color:var(--fg2);margin-top:-8px">
+The decisions below are accepted by Team Red in
+<code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code> (with the three
+modifications noted as F3, F5, F6). They land with the W1 engine increment;
+gate-2 is the acceptance run.
+</p>
+
+<table>
+<tr><th>Decision</th><th>Why</th><th>Evidence / acceptance</th></tr>
+<tr><td>Engine-internal fork-per-(seed,&nbsp;arm) for BYO execution (W1)</td><td>Lift the runner's economy into the sweep engine: one shared import heap + setup via <code>forkserver</code>, then per-unit workers. The previous shell fork-per-seed workaround paid private interpreter+import + redundant 30,750-placement enumeration + both-arms per process, and OOM'd at 40 seeds; the runner's <code>forkserver</code> Pool ran the same scale fine because the import heap is CoW-shared.</td><td>RED-RESP-W1 v1.4 Asks 1+2 ACCEPTED w/ MODS; Q1 (forkserver) ACCEPT; runner parallel efficiency ≈ 90.3 % (CPU 24,937 s / 40 × 690 s); ≥ 10× CoW saving at the 40-way binding peak (runner cgroup <code>MaxRSS</code> = 20.18 GiB vs canary's 2.77 GiB ÷ 2 per process)</td></tr>
+<tr><td>Per-arm work-unit granularity, with arm-independent disorder</td><td>Unit = <code>(seed, arm)</code> (runner granularity), not both-arms-per-worker — lighter, uniform workers; the heavy device-calibrated arm is separable from the cheap noiseless arm; better packing under the memory cap. Both arms of seed&nbsp;<em>N</em> must be handed the <strong>same resolved <code>disorder_instance</code> + <code>master_seed</code></strong>; workers re-build circuits but must never re-draw disorder per arm — else same-disorder/different-noise <code>z</code>-scores stop being meaningful.</td><td>Q4 ACCEPT w/ F6 restatement; invariant verified at <code>sweep_engine.py</code> :2106, :2108 (<code>built</code> and <code>inst_seed</code> computed per-seed, outside the env loop; <code>resolve_instance_seed</code> at <code>byo_observable.py</code>:45 byte-identical to <code>floquet_runner_v2</code>'s)</td></tr>
+<tr><td>Lazy / bounded placement solve, with deterministic total order</td><td>For <code>top_1</code>/<code>top_N</code>, score-as-you-iterate the <code>rx.vf2_mapping</code> generator without materializing the full ~30,750 list (placement enumeration was a redundant per-process cost at the 40-way scale). <code>all_valid</code> retains full enumeration. The lazy and full paths must select the <strong>byte-identical</strong> placement (same physical-qubit mapping, same order) — requires an explicit deterministic total order, e.g. <code>(score, sorted(physical_indices))</code>, applied on <em>both</em> paths so they cannot disagree on ties.</td><td>Q5 ACCEPT conditioned on F5; current sort key at <code>placement_solver.py</code>:247 (<code>sort(key=lambda p: p.score, reverse=True)</code>) is score-only, ties resolved by implicit iteration order; fix lands with W1</td></tr>
+<tr><td>Configurable <code>optimization_level</code> (CFG-2), provenanced</td><td>Promote <code>optimization_level</code> from hardcoded <code>3</code> (runner <code>floquet_runner.py</code>:331, BYO <code>sweep_engine.py</code>:2124) to a YAML field, default <code>3</code>. It is <strong>physics-affecting under noise</strong>: changing it changes the transpiled gate set and scheduling, which changes the noise channels applied, which changes the result. The resolved value is recorded per result and surfaced in a one-line health note when non-default. Gate-2 pins <code>3</code> (reference lineage).</td><td>Q3 ACCEPT (closes RED-AUDIT G5)</td></tr>
+<tr><td>Calibration-set pin discipline</td><td>Per-result provenance includes <code>calibration_set_id</code>. Gate-2 is anchored to calibration <code>08c3c70f</code>; newer Q50 snapshots that land in <code>examples/</code> (e.g. <code>q50_calibration_20260528_56b813f9.json</code>) must not silently inherit into gate-2 runs.</td><td>Q3 discipline note in RED-RESP-W1 v1.4</td></tr>
+<tr><td>Allocation-aware worker cap (with fail-loud on forced-serial)</td><td><code>min(units, usable_cores, floor(safe_mem / per_unit_peak_RSS))</code>, <strong>arm-aware</strong>. Both resource terms read from the job's runtime allocation — cgroup <code>memory.max</code> / <code>--mem</code> for memory, <code>len(os.sched_getaffinity(0))</code> / <code>$SLURM_CPUS_*</code> for cores (collapsed to <strong>physical</strong> for compute-bound Aer workers) — <em>not</em> node-level <code>RealMemory</code>/<code>scontrol</code>. LUMI's partition zoo is heterogeneous (224 GiB → 4 TiB per node; ~56 → 128 physical cores; many partitions are shared with partial billing), and the OOM-killer enforces the cgroup limit, not <code>RealMemory</code>. <code>per_unit_peak_RSS</code> from a <strong>runtime 1-unit probe</strong> (a banked constant is fallback only). The engine warns/raises if <code>cpu_workers&nbsp;&gt;&nbsp;1</code> but execution is about to run serial, or if the computed cap collapses to <code>1</code> on a multi-core reservation.</td><td>Q6 ACCEPT, allocation-aware (RED-RESP-W1 v1.2 correction); sub-question → runtime 1-unit probe; W2/D10 fail-loud</td></tr>
+<tr><td>Single execution path; no lean/full toggle</td><td>The HDF5/WAL/manifest/parquet machinery stays. It is not the OOM/overhead driver (writes are serial, parent-side, small, once-per-result); it is contractual (the <code>/byo</code> HDF5 group is the provenance home per RED-RESP-D3.4C); and a second code path is the D9/D10 disjoint-pipeline hazard. If anything is ever made optional it is the benchmark parquet alone, default-on, opt-out explicit.</td><td>Q7 ACCEPT</td></tr>
+<tr><td>Gate-2 acceptance: split bar (W1 numerical equivalence + gate-2 physics)</td><td>Two distinct targets. <strong>W1 numerical equivalence</strong>: per-(seed,&nbsp;arm) <code>.dat</code> byte-matches the canary at the published SHAs (<code>f5578984…2409</code> seed&nbsp;00, <code>622721c6…1c9b</code> seed&nbsp;01) — same sweep-BYO pipeline, so byte-identity is the right bar. <strong>Gate-2 physics</strong>: <em>statistical</em> per-kick agreement vs the runner reference using <code>z_comb = sqrt(ref_sem² + cand_sem²)</code> (0 kicks beyond 5σ; investigate any beyond 3σ) — the sweep-BYO and runner idle-decoherence pipelines are D9-disjoint (<code>prepare.py</code> <code>PadDelay</code> + <code>RelaxationNoisePass</code> vs <code>build_relaxation_pass</code> as an Aer custom pass), so Aer consumes its RNG stream differently and per-seed bit-identity is not the right bar across them.</td><td>Q8 MODIFIED per F3; <code>z_comb</code> already computed by <code>gate2_combine_compare.py</code>; canary oracles banked at <code>evidence/W1/gate2_canary/</code></td></tr>
 </table>
 
 <!-- ================================================================ -->
@@ -296,6 +328,24 @@ YAML config
   → E2: Tiered execution (CPU ≤8q, GPU ≥10q, 128-way parallel)
   → E3: HDF5 writer (WAL crash safety, noiseless deduplication)
   → E8: Export (61-column Parquet + summary CSV)
+</pre>
+
+<p>The <strong>BYO parameterised branch</strong> (SPEC-002 §7.5) is structurally
+parallel but routes through <code>_execute_byo_group</code> for counts-based
+execution under <code>device_calibrated</code> noise and computes the
+counts&nbsp;→&nbsp;autocorrelator observable:</p>
+
+<pre>
+YAML factory + sweep
+  → Grid expansion (params × seeds × placements)
+  → Lazy/bounded placement solve (top_1 / top_N score-as-iterate; all_valid full)
+  → Engine-internal fork-per-(seed, arm)   <span style="color:var(--fg3)"># W1, in design with Team Red</span>
+       parent: shared setup once (imports, placement, calibration, factory bind)
+       worker (per unit): build → transpile @ optimization_level → noise (device-cal arm)
+                          → run single-thread Aer → return autocorrelator vector + provenance
+  → Parent-serial HDF5/WAL writes (single-writer invariant)
+  → Per-(seed, arm) .dat + aggregated_autocorr.dat
+  → Reference comparison (canary byte-match; gate-2 z_comb vs runner reference)
 </pre>
 
 <!-- ================================================================ -->
@@ -363,24 +413,35 @@ silently injected into an existing sweep; request it explicitly
 rejected with an explanation: the statevector pin is the Kraus-precompute
 correctness fix (DEBT D2) and the scalable O(2<sup>n</sup>) path, not a
 preference. A density_matrix device-calibrated mode is a separate future
-increment. The <code>device_calibrated</code> name resolves and validates today
-(D3.3); <strong>executing</strong> it requires the BYO counts path (D3.4, in
-progress) &mdash; until then the engine refuses it loudly rather than running it
-through the channel battery.</div>
+increment. The <code>device_calibrated</code> name resolves and validates
+(D3.3); the <strong>BYO counts path executes it</strong> at
+<code>_execute_byo_group</code> (D3.4, landed). The channel-tier battery still
+refuses <code>device_calibrated</code> loudly rather than running it through the
+synthetic-channel path.</div>
+
+<h4>Per-experiment configurability (SPEC-002 §7.5)</h4>
+<p>Each experiment accepts two fields tied to the sweep-BYO execution path:</p>
+<table>
+<tr><th>Field</th><th>Type / default</th><th>Notes</th></tr>
+<tr><td><code>shots</code> (CFG-1)</td><td><code>int</code>; default <code>1000</code> via <code>DEFAULT_SMOKE_SHOTS</code> when neither experiment nor env supplies a value</td><td>Resolution precedence: <code>experiment.shots</code> &gt; <code>env.shots</code> &gt; <code>DEFAULT_SMOKE_SHOTS</code>. Resolved value recorded in provenance.</td></tr>
+<tr><td><code>optimization_level</code> (CFG-2)</td><td><code>int</code> (0–3); default <code>3</code></td><td><strong>Physics-affecting under noise.</strong> Changing the level changes the transpiled gate set + scheduling → applied noise → result; not a free performance knob. Resolved value recorded in provenance with a one-line health note when non-default. Gate-2 pins <code>3</code> (reference lineage). <code>num_processes</code> stays tied to the single-thread worker model — not exposed.</td></tr>
+</table>
+<p>See the <a href="#byo-guide">BYO circuits</a> guide for the full BYO sweep YAML
+example carrying both fields.</p>
 
 <!-- ================================================================ -->
 <h2 id="sweep-pipeline">Pipeline stages</h2>
 
 <table>
 <tr><th>Stage</th><th>System</th><th>What it does</th></tr>
-<tr><td>E1</td><td>Placement Solver</td><td>VF2 subgraph isomorphism — finds all valid qubit layouts on the QPU coupling map. Scores by calibration quality.</td></tr>
-<tr><td>E2</td><td>Execution Planner</td><td>Routes ≤8q to CPU (density matrix), ≥10q to GPU. 128-way parallel on LUMI-C.</td></tr>
-<tr><td>E3</td><td>HDF5 Writer</td><td>Write-during-execution with WAL crash safety. Each result flushed immediately.</td></tr>
+<tr><td>E1</td><td>Placement Solver</td><td>VF2 subgraph isomorphism — finds all valid qubit layouts on the QPU coupling map. Scores by calibration quality. <span style="color:var(--fg3)">Lazy/bounded variant (W1) — score-as-iterate for <code>top_1</code>/<code>top_N</code>, deterministic total order on both paths.</span></td></tr>
+<tr><td>E2</td><td>Execution Planner</td><td>Channel-tier battery: routes ≤8q to CPU (density matrix), ≥10q to GPU; 128-way parallel on LUMI-C. <span style="color:var(--fg3)">BYO counts path (SPEC-002 §7.5) routes differently — statevector, single-thread Aer per worker, engine-internal fork-per-(seed,&nbsp;arm) with an allocation-aware worker cap; see the W1 design-decisions table.</span></td></tr>
+<tr><td>E3</td><td>HDF5 Writer</td><td>Write-during-execution with WAL crash safety. Each result flushed immediately. Single-writer invariant: workers return vectors, parent writes serially.</td></tr>
 <tr><td>E4</td><td>Twin Simulator</td><td>Runs each placement through all 11 noise environments. Deduplicates noiseless results across calibrations.</td></tr>
-<tr><td>E5</td><td>BYO Circuits</td><td>Load circuits from QPY/QASM/script. Evaluation-only mode for fixed (non-parameterized) circuits.</td></tr>
+<tr><td>E5</td><td>BYO Circuits</td><td>Mode 1: load fixed circuits from QPY/QASM/script (evaluation-only). Mode 2 (SPEC-002 §7.5): researcher-supplied <strong>parameterised</strong> factory + sweep YAML, executed via <code>_execute_byo_group</code> under <code>device_calibrated</code> noise, computing counts&nbsp;→&nbsp;autocorrelator.</td></tr>
 <tr><td>E6a</td><td>Same-Circuit Packing</td><td>Multiple placements of one circuit in a single device-width QPU submission.</td></tr>
 <tr><td>E6b</td><td>Mixed-Experiment Packing</td><td>Different experiments' circuits share a QPU submission. Non-overlapping qubits and edges verified.</td></tr>
-<tr><td>E7</td><td>Sweep Engine</td><td>Top-level orchestrator: YAML &rarr; grid &rarr; placements &rarr; twin battery &rarr; HDF5.</td></tr>
+<tr><td>E7</td><td>Sweep Engine</td><td>Top-level orchestrator: YAML &rarr; grid &rarr; placements &rarr; twin battery <em>or</em> BYO counts execution &rarr; HDF5. Two execution branches: <code>_execute_group</code> (channel-tier battery, clean-subprocess Pool) and <code>_execute_byo_group</code> (counts path; engine-internal parallelism via W1, in design).</td></tr>
 <tr><td>E8</td><td>Sweep Export</td><td>HDF5 &rarr; 61-column Parquet (metadata scan, no dataset reads) + summary CSV.</td></tr>
 <tr><td>E9</td><td>Synthetic Calibration</td><td>CLI tool for generating perturbed calibrations: 7 perturbation types, batch generation.</td></tr>
 <tr><td>E10</td><td>Validation</td><td>End-to-end: FiQCI GHZ BYO &rarr; placement &rarr; twin sim &rarr; HDF5 &rarr; Parquet. Physics verified.</td></tr>
@@ -397,6 +458,20 @@ sweep_output/
     sweep.csv         ← summary CSV for quick inspection
     sweep.h5.wal      ← write-ahead log (crash recovery)
 </pre>
+
+<h3>Provenance (per-result HDF5 attributes)</h3>
+<p>Every result written to <code>sweep.h5</code> carries the provenance keys
+required for reproducibility and audit (RED-RESP-D3.4C; Q3 discipline note in
+RED-RESP-W1 v1.4). For BYO sweeps under the <code>/byo</code> group:</p>
+<table>
+<tr><th>Attribute</th><th>What it records</th></tr>
+<tr><td><code>master_seed</code></td><td>The sweep-level master seed (YAML <code>master_seed</code>); same value reproduces the whole disorder ensemble.</td></tr>
+<tr><td><code>seed_simulator</code></td><td>Per-(seed) Aer RNG seed = <code>resolve_instance_seed(master_seed, seed)</code>; arm-independent, so both arms of seed&nbsp;<em>N</em> draw the same disorder.</td></tr>
+<tr><td><code>physical_qubit_set</code></td><td>The placement's physical-qubit mapping (e.g. <code>QB11-QB5-QB6-QB7-QB13-QB21-QB29-QB28-QB27-QB26</code>), in logical order; F5a per-placement noise keys on this.</td></tr>
+<tr><td><code>shots</code></td><td>Resolved per-execution shot count (CFG-1 precedence: experiment &gt; env &gt; default).</td></tr>
+<tr><td><code>optimization_level</code></td><td>Resolved transpile level (CFG-2; default <code>3</code>). Physics-affecting under noise; surfaces a health note when non-default.</td></tr>
+<tr><td><code>calibration_set_id</code></td><td>Hash/ID of the calibration JSON consumed (e.g. <code>08c3c70f</code>). Gate-2 is anchored to <code>08c3c70f</code>; new snapshots in <code>examples/</code> must not silently inherit.</td></tr>
+</table>
 
 <h3>Parquet schema (61 columns)</h3>
 
@@ -534,6 +609,26 @@ sbatch tests/slurm_e10.sh    # E10: end-to-end validation (57 checks, ~11s)
 sbatch tests/slurm_e6b.sh    # E6b: mixed-experiment packing (50 checks, ~4s)
 </pre>
 
+<h3>BYO parameterised sweeps (SPEC-002 §7.5)</h3>
+<p>After preparing a factory <code>.py</code> + sweep YAML (see the
+<a href="#byo-guide">BYO circuits</a> guide), the sweep is invoked through the
+same <code>run_sweep</code> entry point. The full sbatch incantation (account,
+partition, container wrappers, srun) lives as a copyable header comment at the
+top of each sweep YAML, so the invocation stays next to the config it runs:</p>
+<pre>
+# from the HPCQC repo root on LUMI
+source env.sh
+python -m lumi_hpc_qc.sweep.run_sweep examples/byo/floquet_byo_sweep.yaml
+</pre>
+<p>A device-calibrated arm requires the q10 production config and the matching
+pinned calibration; see <code>examples/byo/floquet_dtc_q10_sweep.yaml</code>'s
+header for the full sbatch wrapper. Engine-internal parallelism for multi-seed
+sweeps is in design (<strong>W1</strong>, per RED-RESP-W1 v1.4); until W1 lands,
+a multi-seed BYO sweep runs serially in <code>_execute_byo_group</code> — do not
+reach for the shell fork-per-seed launcher in <code>gate2_launch.sh</code>, which
+is workaround tooling that OOM'd at the 40-seed scale (see
+<a href="#known-issues">Known issues</a>).</p>
+
 <!-- ================================================================ -->
 <h2 id="synthetic-cal">Synthetic calibrations</h2>
 
@@ -663,7 +758,7 @@ qubit[3] q;
 h q[0]; cx q[0], q[1]; cx q[1], q[2];
 </pre>
 
-<h3 id="byo-parameterized">Mode 2 — parameterized circuit factory + sweep YAML <span class="badge badge-warn">SPEC-002 §7.5 / D3 — in progress</span></h3>
+<h3 id="byo-parameterized">Mode 2 — parameterized circuit factory + sweep YAML <span class="badge badge-warn">SPEC-002 §7.5 / D3 — execution landed; W1 in design</span></h3>
 
 <p>The headline researcher workflow: supply a <strong>pure circuit-factory
 <code>.py</code></strong> (a build function that takes all parameters as
@@ -675,11 +770,17 @@ observable &mdash; averaging across seeds.</p>
 
 <div class="callout callout-warn">
 <strong>Status.</strong> The build seam (Gap A), per-placement device-calibrated
-noise (F5a / D3.2), and <code>device_calibrated</code> routing (D3.3) are
-landed. The counts <strong>execution</strong> branch (D3.4) and the bit-exact
-Floquet reproduction (D3.5) are in progress on
-<code>feature/device-calibrated-noise</code>. The factory contract and YAML
-schema below are stable; end-to-end execution lands with D3.4.</div>
+noise (F5a / D3.2), <code>device_calibrated</code> routing (D3.3), and the
+<strong>BYO counts execution branch</strong> at <code>_execute_byo_group</code>
+(D3.4) are landed. The live open items are: <strong>gate-2 verification</strong>
+(the 2-seed canary is banked in-tree at <code>evidence/W1/gate2_canary/</code>;
+the 40-seed full run awaits the W1 engine); <strong>W1</strong> &mdash;
+engine-internal fork-per-(seed,&nbsp;arm) parallelism (in design with Team Red
+per <code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code>; acceptance bar
+split per F3 = canary byte-match + statistical <code>z_comb</code> vs the runner
+reference); and <strong>D3.5</strong> bit-exact Floquet reproduction. The
+factory contract and YAML schema below are stable; W1 changes the engine, not
+the contract.</div>
 
 <h4>The factory contract</h4>
 <p>The factory exposes a <strong>pure, keyword-only</strong> build function:</p>
@@ -728,6 +829,8 @@ sweep:
       disorder_gates: [rz, rzz]               # gates carrying disorder (cross-grid check)
       seed_list: [0, 1, 2]                    # gate instances -> averaged
       noise_configs: [device_calibrated, noiseless]   # opt-in by name
+      shots: 1000                             # CFG-1: experiment-level shot count
+      optimization_level: 3                   # CFG-2: physics-affecting under noise; default 3
   calibrations:
     - examples/q50_calibration_20260524_08c3c70f.json
 </pre>
@@ -774,17 +877,64 @@ out of the build into per-seed data).</p>
 <h3>Container <code>nonlocal</code> limitation</h3>
 <p>The LUMI Singularity container's Python does not support <code>nonlocal</code> in module-scope nested functions. Use mutable list pattern: <code>counter = [0]</code> and <code>counter[0] += 1</code>.</p>
 
-<h3>device_calibrated execution is in progress (D3.4)</h3>
-<p>The <code>device_calibrated</code> noise source is registered and validated
-(D3.3), and per-placement noise composition is wired at the device layer (F5a /
-D3.2), but the BYO counts <strong>execution</strong> branch that runs it is not
-yet landed (D3.4). Requesting <code>device_calibrated</code> in a sweep today
-raises a clear <code>NotImplementedError</code> rather than running it through
-the synthetic-channel battery. Until D3.4 lands, multi-placement
-<code>device_calibrated</code> is additionally guarded to a single
-(<code>top_1</code>) placement with a <code>noise_placement_independent</code>
-flag, so a placement-blind run is never read as placement-resolved. Tracked as
-DEBT D3a.</p>
+<h3>BYO sweep engine is currently serial; engine-internal parallelism (W1) in design</h3>
+<p>The BYO counts execution branch at <code>_execute_byo_group</code> is wired
+end-to-end (D3.4 landed) and executes <code>device_calibrated</code> through the
+sweep-BYO pipeline (<code>prepare.py</code> <code>PadDelay</code> +
+<code>RelaxationNoisePass</code>) — but its placement&nbsp;×&nbsp;seed&nbsp;×&nbsp;env
+loop is serial, and the configured <code>cpu_workers</code> is not honored on
+this path today. The engine-internal fork-per-(seed,&nbsp;arm) design (W1) is in
+review with Team Red per
+<code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code>; until it lands,
+multi-seed BYO sweeps run serially. <strong>Do not</strong> use the shell
+fork-per-seed launcher in <code>gate2_launch.sh</code> as a substitute — it pays
+private interpreter + import heap, full placement enumeration, and both-arm
+work per process, and OOM-killed at the 40-seed scale (LUMI job
+<code>18899724</code>, cgroup limit exceeded at 98&nbsp;s during startup). The
+runner reference (<code>floquet_runner.py</code>) demonstrates the economy W1
+imports into the engine: <code>forkserver</code> Pool, single-arm per worker,
+CoW-shared import heap; ≥&nbsp;10× memory saving at the 40-way binding peak vs
+the workaround, ~&nbsp;90.3 % parallel efficiency.</p>
+
+<h3>Gate-2 reference lineage and acceptance bar (FINDING-PADDELAY-SCOPE)</h3>
+<p>The banked reference at
+<code>examples/reference/floquet_dtc_q10_device-cal_agg.dat</code> was produced
+by the <strong>disjoint runner pipeline</strong>
+(<code>aggregate_floquet.py</code> + <code>build_relaxation_pass</code> as an Aer
+custom pass) and is byte-identical pre/post the PadDelay-fix merge (commit
+<code>90d329d</code>): the runner's idle-decoherence path was always wired and
+unaffected by the PadDelay scope. The reference is authoritative for gate-2; no
+re-baseline is required. <strong>Gate-2 acceptance is statistical per kick</strong>
+(<code>z_comb</code> against the reference <code>sem</code>; 0 kicks beyond 5σ,
+investigate any beyond 3σ) &mdash; the sweep-BYO and runner idle-decoherence
+pipelines are D9-disjoint, so Aer consumes its RNG stream differently and
+per-seed byte-identity across them is not the right bar (Red F3). <strong>W1
+numerical equivalence</strong> is a separate, byte-identical check against the
+in-tree canary at <code>evidence/W1/gate2_canary/</code> (same pipeline; byte
+match is achievable and required). See
+<code>FINDING-PADDELAY-SCOPE-v1_0.md</code> and
+<code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code>.</p>
+
+<h3>Calibration-set pin discipline</h3>
+<p>Gate-2 is anchored to calibration <code>08c3c70f</code> (the
+<code>examples/q50_calibration_20260524_08c3c70f.json</code> used for the banked
+reference). Newer Q50 snapshots that land in <code>examples/</code> (e.g. a
+<code>q50_calibration_20260528_56b813f9.json</code> observed untracked alongside
+the §5 corpus commit) <strong>must not silently inherit</strong> into gate-2
+runs. The resolved <code>calibration_set_id</code> is part of the per-result
+provenance so a future run cannot drift the pin unobserved.</p>
+
+<h3>Multi-node BYO scale-out is out of W1 scope</h3>
+<p>W1 is single-node engine parallelism (<code>forkserver</code> shared memory,
+up to the allocation's physical-core count). Scale-out beyond a single LUMI
+node — 256+ seeds, deeper kicks that raise the per-unit memory binding peak — is
+a separate launcher concern. The proposed shape is a Slurm <strong>job-array</strong>
+(one array task per seed-chunk; Slurm packs per node under the memory bound and
+spreads across nodes), reading each task's allocation/cgroup rather than
+assuming the <code>standard</code> partition's shape (LUMI's partition zoo
+spans 224&nbsp;GiB → 4&nbsp;TiB per node; many partitions are shared with
+partial billing). The combine/aggregate side already pools arbitrary seed sets
+across directories, so the boundary is clean. Tracked separately.</p>
 
 <!-- ================================================================ -->
 <h2 id="references">References</h2>
@@ -799,8 +949,15 @@ DEBT D3a.</p>
 <li>Wiersema et al., PRX Quantum 1, 020319 (2020) — local minima in HVA</li>
 </ul>
 
+<h4>SPEC-002 §7.5 / W1 dialogue (in-tree correspondence)</h4>
+<ul>
+<li><code>BLUE-PROPOSAL-W1-BYO-PARALLELISM-AND-OOM-ROOTCAUSE-v1.1</code> — Blue's W1 design proposal: root-cause of the 40-seed OOM, engine-internal fork-per-(seed,&nbsp;arm), the four design refinements (configurable opt-level, lazy/bounded placement, per-arm units, machinery stays), and the two correctness invariants (per-arm seed/disorder, lazy-placement identical-selection). Asks Red for sequencing (W1 before gate-2) and acceptance of §5 plus Q1–Q8.</li>
+<li><code>RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4</code> — Red's response: ACCEPTED w/ MODIFICATIONS (F3 split acceptance bar, F5 deterministic total order on placement, F6 disorder-sharing restatement). Q6 corrected to allocation-aware (cgroup/SLURM-env, not node-level <code>scontrol</code>); runtime 1-unit probe. Evidence corpus banked in-tree at <code>evidence/W1/</code> (canary SHAs, runner-vs-reference attestation, <code>sacct</code> figures, <code>scontrol</code> partition map).</li>
+<li><code>FINDING-PADDELAY-SCOPE-v1_0.md</code> — establishes the disjoint D9 idle-decoherence pipelines (sweep-BYO <code>PadDelay</code> + <code>RelaxationNoisePass</code> vs runner <code>build_relaxation_pass</code>); proves the runner reference is byte-identical pre/post the PadDelay-fix merge and is authoritative for gate-2.</li>
+</ul>
+
 <hr style="margin-top:60px;border:none;border-top:1px solid var(--border)">
-<p style="font-size:12px;color:var(--fg3);margin-top:16px">lumi-hpc-qc v1.1.0 &middot; Generated 2026-04-03 &middot; CSC / LUMI / FiQCI / EuroHPC</p>
+<p style="font-size:12px;color:var(--fg3);margin-top:16px">lumi-hpc-qc v1.1.0 &middot; Generated 2026-04-03; W1-era reconciliation 2026-05-28 &middot; CSC / LUMI / FiQCI / EuroHPC</p>
 
 </main>
 
