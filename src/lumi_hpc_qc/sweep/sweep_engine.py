@@ -116,6 +116,14 @@ class QPUConfig:
     queue_prefetch: bool = False
 
 
+# CFG-1 / W3: smoke-run shot default for the BYO sampling path. Used only when an
+# env carries shots == 0 (e.g. noiseless) AND no experiment-level shots is set.
+# Named (not a bare literal mid-function) so the smoke default is visible and
+# overridable. Execution-site precedence: experiment shots > env.shots >
+# DEFAULT_SMOKE_SHOTS.
+DEFAULT_SMOKE_SHOTS = 1000
+
+
 @dataclass
 class SweepExperimentConfig:
     """One experiment block from the sweep YAML.
@@ -137,6 +145,12 @@ class SweepExperimentConfig:
     # Noise scope
     noise_configs: str | list[str] = "all"  # "all" or explicit list
     measurement_stats_interval_override: int | None = None  # Override per-env default
+    # CFG-1 / W3: experiment-level shot count. When set, PINS the shot count for
+    # every sampling arm of this experiment, overriding each env's intrinsic
+    # NoiseConfig.shots (e.g. pins device_calibrated's 4096 down to a banked
+    # reference's 1000 — the gate-2 precondition). None -> per-env shots, with
+    # DEFAULT_SMOKE_SHOTS as the shots==0-env fallback (prior behavior).
+    shots: int | None = None
 
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
@@ -244,6 +258,10 @@ class SweepTask:
     # identical to the banked floquet_runner_v2 (one seed per instance, driving
     # both disorder and shots). None -> entropy (not reproducible).
     master_seed: int | None = None
+    # CFG-1 / W3: experiment-level shots carried onto each task so the BYO
+    # execution site can pin the shot count without re-reading the experiment
+    # config. None -> per-env shots (prior behavior).
+    experiment_shots: int | None = None
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -501,6 +519,7 @@ def _expand_byo_experiment(
                     disorder_instance=instance,
                     disorder_gates=gate_names,
                     master_seed=disorder_master_seed,
+                    experiment_shots=exp.shots,
                 ))
     return task_counter
 
@@ -624,6 +643,9 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             noise_configs=exp_dict.get("noise_configs", "all"),
             measurement_stats_interval_override=exp_dict.get(
                 "measurement_stats_interval", None
+            ),
+            shots=(
+                int(exp_dict["shots"]) if exp_dict.get("shots") is not None else None
             ),
             placement=exp_dict.get("placement", "all_valid"),
             grid=exp_dict.get("grid", {}),
@@ -2053,12 +2075,14 @@ class SweepEngine:
 
         # The set of distinct noise envs (same across tasks in a group).
         envs = representative.noise_configs
-        # Default shot count for envs whose own shots is 0 (e.g. noiseless on the
-        # counts path). The banked Floquet reference used num_shots per instance;
-        # the gate-2 reproduction passes the matching value via the env shots.
-        # 1000 is a sane default for smoke runs; it is NOT used when an env sets
-        # its own shots (device_calibrated=4096).
-        byo_shots = 1000
+        # CFG-1 / W3 shot resolution. Precedence: an experiment-level `shots`
+        # (SweepExperimentConfig.shots), when set, PINS every sampling arm here,
+        # overriding each env's intrinsic NoiseConfig.shots (so device_calibrated's
+        # 4096 is pinned down to the reference's 1000 for gate-2). When unset
+        # (None), fall back to per-env shots, with DEFAULT_SMOKE_SHOTS for envs
+        # whose intrinsic shots is 0 (e.g. the noiseless counts arm). All tasks in
+        # this group share one experiment, so the representative carries the value.
+        exp_shots = representative.experiment_shots
         # init_bit_array / num_qubits for the observable (from disorder + fixed).
         init_bit_array = representative.disorder_instance.get("init_bit_array")
         if init_bit_array is None:
@@ -2088,10 +2112,13 @@ class SweepEngine:
                     # The counts path requires shots>0. The noiseless env
                     # carries shots=0 (its ⟨H⟩/statevector default) -> a shots=0
                     # run returns a statevector, not counts. For BYO counts,
-                    # noiseless must sample shots like any other arm. Use
-                    # env.shots when set, else the experiment's byo_shots (a
-                    # config field; gate-2 sets it explicitly to match the bank).
-                    shots = env.shots if env.shots and env.shots > 0 else byo_shots
+                    # noiseless must sample shots like any other arm.
+                    # CFG-1 precedence: experiment shots > env.shots > DEFAULT_SMOKE_SHOTS.
+                    shots = (
+                        exp_shots if exp_shots is not None
+                        else (env.shots if env.shots and env.shots > 0
+                              else DEFAULT_SMOKE_SHOTS)
+                    )
                     prep_kwargs = dict(
                         calibration_path=cal_path, num_qubits=qsize,
                         optimization_level=3, num_processes=1, verbose=False,
