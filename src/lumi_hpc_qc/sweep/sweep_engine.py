@@ -152,6 +152,18 @@ class SweepExperimentConfig:
     # DEFAULT_SMOKE_SHOTS as the shots==0-env fallback (prior behavior).
     shots: int | None = None
 
+    # CFG-2 / W1.2: experiment-level transpile optimization_level. Default 3
+    # when unset, mirroring the historical hardcode. **Physics-affecting under
+    # noise** — changing the level changes the transpiled gate set + scheduling,
+    # which changes the noise channels applied, which changes the result; it is
+    # NOT a free performance knob. A one-line health note is emitted at the
+    # end of any BYO group running at a non-default level. Resolved value is
+    # recorded per-result for provenance. Per RED-RESP-W1-PARALLELISM-AND-
+    # OOM-ROOTCAUSE-v1.4 Q3 ACCEPT: gate-2 pins 3 (the banked-reference lineage);
+    # `num_processes` stays tied to the single-thread worker model and is not
+    # exposed. None -> 3 (default).
+    optimization_level: int | None = None
+
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
 
@@ -262,6 +274,10 @@ class SweepTask:
     # execution site can pin the shot count without re-reading the experiment
     # config. None -> per-env shots (prior behavior).
     experiment_shots: int | None = None
+    # CFG-2 / W1.2: experiment-level transpile optimization_level carried onto
+    # each task so the BYO execution site uses the resolved value. None -> 3
+    # (default; the historical hardcode and the gate-2 reference pin).
+    optimization_level: int | None = None
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -520,6 +536,7 @@ def _expand_byo_experiment(
                     disorder_gates=gate_names,
                     master_seed=disorder_master_seed,
                     experiment_shots=exp.shots,
+                    optimization_level=exp.optimization_level,
                 ))
     return task_counter
 
@@ -611,6 +628,45 @@ def _generate_lhs_samples(
 # Config parsing
 # ═══════════════════════════════════════════════════════════════════════
 
+def _parse_optimization_level(raw: Any) -> int | None:
+    """Parse and validate the experiment-level optimization_level (CFG-2).
+
+    Returns None when the YAML omits the field (resolved to default 3 at the
+    execution site); returns the int 0..3 when supplied. Raises ValueError on
+    any value outside that range, a non-integer literal, or a float — fail-fast
+    at parse time rather than letting Qiskit's transpile() surface the error
+    mid-run, and never silently truncate (a YAML `optimization_level: 2.5`
+    must NOT become 2).
+
+    Per RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Q3: the resolved value
+    is physics-affecting under noise and must be honored exactly as specified.
+    """
+    if raw is None:
+        return None
+    # Reject floats explicitly — int(2.5) silently truncates to 2, which would
+    # let a typo'd YAML value pass parsing as a different optimization level.
+    # bool is a subclass of int in Python; accepting True/False as 1/0 would
+    # likewise be a soft-accept hazard, so reject it too.
+    if isinstance(raw, float) or isinstance(raw, bool):
+        raise ValueError(
+            f"optimization_level must be an integer 0..3, got {type(raw).__name__} "
+            f"{raw!r}"
+        )
+    try:
+        level = int(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"optimization_level must be an integer 0..3, got {raw!r}"
+        ) from e
+    if level not in (0, 1, 2, 3):
+        raise ValueError(
+            f"optimization_level must be one of 0, 1, 2, 3; got {level}. "
+            f"This is the Qiskit transpile() optimization level and is "
+            f"physics-affecting under noise (see CFG-2 / W1.2)."
+        )
+    return level
+
+
 def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
     """Parse a YAML dict into a SweepConfig.
 
@@ -646,6 +702,9 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             ),
             shots=(
                 int(exp_dict["shots"]) if exp_dict.get("shots") is not None else None
+            ),
+            optimization_level=_parse_optimization_level(
+                exp_dict.get("optimization_level")
             ),
             placement=exp_dict.get("placement", "all_valid"),
             grid=exp_dict.get("grid", {}),
@@ -2083,6 +2142,15 @@ class SweepEngine:
         # whose intrinsic shots is 0 (e.g. the noiseless counts arm). All tasks in
         # this group share one experiment, so the representative carries the value.
         exp_shots = representative.experiment_shots
+        # CFG-2 / W1.2: resolve transpile optimization_level. None -> 3 (the
+        # historical hardcode and the banked-reference / gate-2 pin); explicit
+        # values 0..3 honored (validated at parse time, see
+        # _parse_optimization_level). Physics-affecting under noise — a
+        # one-line health note fires below if the resolved value is non-default.
+        exp_opt_level = (
+            representative.optimization_level
+            if representative.optimization_level is not None else 3
+        )
         # init_bit_array / num_qubits for the observable (from disorder + fixed).
         init_bit_array = representative.disorder_instance.get("init_bit_array")
         if init_bit_array is None:
@@ -2121,7 +2189,7 @@ class SweepEngine:
                     )
                     prep_kwargs = dict(
                         calibration_path=cal_path, num_qubits=qsize,
-                        optimization_level=3, num_processes=1, verbose=False,
+                        optimization_level=exp_opt_level, num_processes=1, verbose=False,
                     )
                     if src == "device-calibrated":
                         prep_kwargs.update(
@@ -2161,6 +2229,11 @@ class SweepEngine:
                         # produced it. master_seed is REQUIRED on the record;
                         # None (entropy / not reproducible) is stored as absent.
                         "master_seed": representative.master_seed,
+                        # CFG-2 / W1.2: record the resolved transpile
+                        # optimization_level so a future run cannot silently
+                        # inherit a different value (physics-affecting under
+                        # noise). Per Q3 ACCEPT in RED-RESP-W1 v1.4.
+                        "optimization_level": exp_opt_level,
                     })
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
@@ -2170,6 +2243,19 @@ class SweepEngine:
         self._progress.total_simulations += len(byo_results)
         print(f"    BYO: computed {len(byo_results)} (seed x placement x env) "
               f"autocorrelator series")
+        # CFG-2 / W1.2: one-line health note when running at a non-default
+        # optimization_level. Per RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4
+        # Q3 ACCEPT, the resolved level is physics-affecting under noise and
+        # must be surfaced so two runs at different levels are never silently
+        # compared as if the difference were physics. Gate-2 pins 3.
+        if exp_opt_level != 3:
+            print(
+                f"    BYO: NOTE: optimization_level = {exp_opt_level} "
+                f"(non-default; default 3). Under noise this changes the "
+                f"transpiled gate set + scheduling and therefore the applied "
+                f"noise model. Two runs at different levels are not directly "
+                f"comparable."
+            )
 
         # ── D3.4c (Option A): persist each (seed × placement × env) result as a
         #    BYO-native HDF5 group (write_byo_result), then aggregate the
