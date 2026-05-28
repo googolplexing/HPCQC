@@ -1,0 +1,27 @@
+# q10 BYO full-depth timing probe: 2 seeds x FULL 60 kicks, both arms.
+# Measures per-seed deep-tail (60-kick) device-calibrated cost on 128 cores
+# to size the full 40x60 gate-2 walltime. Writes to its own output_dir.
+sweep:
+  output_dir: results/probe_q10_2seed_60k
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_q10_probe60k
+      circuit_script: examples/byo/floquet_dtc.py
+      circuit_function: build_circuit
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03
+      grid:
+        num_kicks: {range: [0, 60]}        # FULL depth 0..59
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      seed_list: [0, 1]                     # 2 seeds, full depth
+      shots: 1000
+      noise_configs:
+        - noiseless
+        - device_calibrated
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
