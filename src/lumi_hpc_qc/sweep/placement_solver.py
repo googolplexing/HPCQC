@@ -33,6 +33,35 @@ from lumi_hpc_qc.plugins.calibration_adapters.base import (
 )
 
 
+def _placement_sort_key(p: "Placement") -> tuple[float, list[int]]:
+    """Deterministic total-order key for placement selection (F5 invariant).
+
+    Returns a tuple sortable in ascending order, equivalent to ranking by:
+
+      1. ``score`` descending (best score first; negated so default ascending
+         sort gives the correct direction);
+      2. ``physical_indices`` ascending — tie-break on physical-qubit identity.
+
+    The same key MUST be used by both the eager (``find_all_placements``) and
+    any lazy (``top_1`` / ``top_N`` score-as-iterate, planned for W1.3)
+    selection paths, so they cannot disagree on ties. Required by Red's F5
+    ruling in ``RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4``: the lazy and
+    full-enumerate paths must select the byte-identical placement (same
+    physical-qubit mapping, same order) — otherwise a different lazy traversal
+    would pick a different physical qubit set → different calibration entries
+    → different noise → a silently different result.
+
+    The previous sort-by-score-alone resolved ties via Python's stable sort
+    over the ``rx.vf2_mapping`` iteration order, an implicit undocumented
+    ordering that a different traversal cannot reproduce.
+
+    ``physical_indices`` is already sorted ascending by ``find_all_placements``
+    (sorted at the point of dedup so the ``seen`` set keys on a canonical form),
+    so the tie-break is well-defined.
+    """
+    return (-p.score, p.physical_indices)
+
+
 @dataclass
 class Placement:
     """A single valid physical qubit placement for a circuit.
@@ -147,7 +176,12 @@ class GeneralPlacementSolver:
             call_limit: VF2 backtracking limit (safety valve).
 
         Returns:
-            List of Placement objects, sorted by score descending.
+            List of Placement objects, sorted by ``_placement_sort_key``:
+            score descending, with ties broken by ``physical_indices``
+            ascending. The tie-break is the F5 invariant from
+            ``RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4``: it ensures any
+            lazy/bounded variant using the same key picks the byte-identical
+            placement(s) as full enumerate-then-sort.
         """
         targets = device_ids or list(self._devices.keys())
         all_placements: list[Placement] = []
@@ -244,7 +278,7 @@ class GeneralPlacementSolver:
                 f"for {circuit_qubits}q circuit"
             )
 
-        all_placements.sort(key=lambda p: p.score, reverse=True)
+        all_placements.sort(key=_placement_sort_key)
         if max_placements is not None:
             all_placements = all_placements[:max_placements]
         return all_placements
