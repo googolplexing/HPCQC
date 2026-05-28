@@ -24,6 +24,19 @@
 # The 40-seed aggregate byte-match (the full gate-2 reproduction) is W1.6 /
 # Criterion 3; it uses a different SLURM script and a different walltime.
 #
+# Two-step layout:
+#   (1) Sweep run via the canonical CLI entry point
+#       (python3 -m lumi_hpc_qc.sweep.run_sweep), executed inside the
+#       container after `cd $WORKDIR` so sweep_output/ lands in the
+#       job-isolated workdir.
+#   (2) Byte-match verification via tests/_w1_canary_verify.py (a small
+#       Python helper, name underscore-prefixed so pytest doesn't try to
+#       collect it as a test module).
+#
+# Both steps use the slurm_e1.sh-style invocation (no `-c` or heredocs;
+# the wrapper between srun and the container is fragile with multi-line
+# args — see W1 canary job 18906585's SyntaxError on `\nimport sys`).
+#
 # Usage: sbatch tests/slurm_w1_canary.sh
 # Expected: "W1 CANARY ACCEPTANCE: ALL CHECKS PASSED" on the last line and
 # exit code 0.
@@ -35,7 +48,10 @@ mkdir -p slurm_logs
 
 CANARY_YAML="${HPCQC_ROOT}/examples/byo/floquet_dtc_q10_canary_2seed.yaml"
 ORACLE="${HPCQC_ROOT}/evidence/W1/gate2_canary/sha256_oracle.txt"
-OUTPUT_DIR="${SLURM_SUBMIT_DIR}/sweep_output_w1_canary_${SLURM_JOB_ID}"
+WORKDIR="${SLURM_SUBMIT_DIR}/sweep_output_w1_canary_${SLURM_JOB_ID}"
+VERIFIER="${HPCQC_ROOT}/tests/_w1_canary_verify.py"
+
+mkdir -p "${WORKDIR}"
 
 echo "=== W1 Canary — 2-seed byte-match against in-tree oracle ==="
 echo "Job ID:    ${SLURM_JOB_ID}"
@@ -43,117 +59,35 @@ echo "Node:      $(hostname)"
 echo "Container: ${HPCQC_CPU_CONTAINER}"
 echo "YAML:      ${CANARY_YAML}"
 echo "Oracle:    ${ORACLE}"
-echo "Output:    ${OUTPUT_DIR}"
+echo "Workdir:   ${WORKDIR}"
+echo "Verifier:  ${VERIFIER}"
 echo "Started:   $(date)"
 echo ""
 
-# ── Run the W1 engine on the 2-seed canary YAML ───────────────────────────
 export SINGULARITYENV_PROJECT_DIR="${HPCQC_ROOT}"
 export SINGULARITYENV_PYTHONPATH="${HPCQC_ROOT}/src"
 
-srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" python3 -c "
-import sys, os
-os.chdir('${HPCQC_ROOT}')
-from lumi_hpc_qc.sweep.sweep_engine import run_sweep_from_yaml
-result = run_sweep_from_yaml('${CANARY_YAML}')
-print(f'Sweep finished: sweep_id={result.sweep_id} errors={len(result.errors)}')
-sys.exit(0 if not result.errors else 1)
-"
+# ── (1) Run the sweep on the W1 engine. cd into WORKDIR so sweep_output/
+#    (the engine's default output root) lands in this job's workdir, isolated
+#    from prior runs' sweep_output*/ directories in the submit dir. Uses the
+#    canonical CLI entry point — same shape as the gate-2 yaml header. ──
+cd "${WORKDIR}"
+srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
+    python3 -m lumi_hpc_qc.sweep.run_sweep "${CANARY_YAML}"
 
 echo ""
 echo "=== Byte-match verification ==="
 
-# ── Locate engine outputs + assert byte-match against the oracle. The oracle
-#    pins ONE arm of the canary (selected at banking time). The verifier
-#    walks BOTH arms in the engine output and reports SHA matches; PASS iff
-#    the same arm matches the oracle SHAs for both seeds. ──
-srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" python3 <<EOF
-import hashlib, os, sys, glob
+# ── (2) Verify SHAs against the oracle. The verifier walks WORKDIR for
+#    instance_NN_autocorr.dat files, groups by arm, computes SHA256, and
+#    PASSES iff at least one arm matches both oracle SHAs (the oracle pins
+#    one arm of the 2-seed corpus; the other lands with W1.6). ──
+cd "${SLURM_SUBMIT_DIR}"
+srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
+    python3 "${VERIFIER}" \
+        --workdir "${WORKDIR}" \
+        --oracle "${ORACLE}"
 
-ORACLE = "${ORACLE}"
-SUBMIT = "${SLURM_SUBMIT_DIR}"
-
-# Parse oracle: SHA per (seed-index inferred from filename)
-oracle_sha = {}
-with open(ORACLE) as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        sha, path = line.split(None, 1)
-        # canary_seed_00_instance_00_autocorr.dat -> seed_idx = 0
-        base = os.path.basename(path)
-        # seed_NN pattern
-        import re
-        m = re.search(r"seed_(\d+)_instance", base)
-        if m:
-            oracle_sha[int(m.group(1))] = sha
-print(f"Oracle SHAs: {oracle_sha}")
-
-# Find engine per-instance outputs. The engine writes
-# {byo_dat_dir}/{script_stem}/{phys}/{env}/instance_NN_autocorr.dat
-candidates = glob.glob(
-    os.path.join(SUBMIT, "sweep_output*", "**", "instance_*_autocorr.dat"),
-    recursive=True,
-)
-# Group by (arm, seed_index)
-by_arm = {}
-for path in candidates:
-    parts = path.split(os.sep)
-    # Find the env in the path (one of "noiseless" / "device_calibrated")
-    env = None
-    for p in parts:
-        if p in ("noiseless", "device_calibrated"):
-            env = p
-            break
-    if env is None:
-        continue
-    base = os.path.basename(path)
-    m = re.search(r"instance_(\d+)_autocorr.dat", base)
-    if not m:
-        continue
-    seed_idx = int(m.group(1))
-    by_arm.setdefault(env, {})[seed_idx] = path
-
-print(f"Found arms in engine output: {sorted(by_arm.keys())}")
-
-# Compute SHAs and check against oracle per arm
-def sha256_of(p):
-    h = hashlib.sha256()
-    with open(p, "rb") as f:
-        h.update(f.read())
-    return h.hexdigest()
-
-any_arm_passed = False
-for arm, seeds in by_arm.items():
-    print(f"\n--- arm: {arm} ---")
-    all_match = True
-    for seed_idx in sorted(oracle_sha):
-        eng = seeds.get(seed_idx)
-        if eng is None:
-            print(f"  seed {seed_idx:02d}: MISSING engine output for this arm")
-            all_match = False
-            continue
-        engine = sha256_of(eng)
-        want = oracle_sha[seed_idx]
-        ok = engine == want
-        print(f"  seed {seed_idx:02d}: engine={engine[:16]}.. oracle={want[:16]}.. {'OK' if ok else 'MISMATCH'}")
-        if not ok:
-            all_match = False
-    if all_match:
-        print(f"  >>> arm {arm} matches oracle (W1 byte-match PASSED on this arm)")
-        any_arm_passed = True
-
-if not any_arm_passed:
-    print("\nW1 CANARY ACCEPTANCE: FAILED — no arm matches the oracle SHAs")
-    sys.exit(1)
-
-print("\nW1 CANARY ACCEPTANCE: ALL CHECKS PASSED")
-sys.exit(0)
-EOF
-
-EXIT_CODE=$?
+# set -e ensures we only get here on success (verifier exit 0).
 echo ""
 echo "Finished: $(date)"
-echo "Exit code: ${EXIT_CODE}"
-exit ${EXIT_CODE}
