@@ -12,7 +12,7 @@
 # =============================================================================
 
 # ── SLURM account ──
-export HPCQC_ACCOUNT="${HPCQC_ACCOUNT:-project_462000055}"
+export HPCQC_ACCOUNT="${HPCQC_ACCOUNT:-project_462001289}"
 # SLURM uses SBATCH_ACCOUNT as the default --account for all sbatch calls
 export SBATCH_ACCOUNT="${HPCQC_ACCOUNT}"
 
