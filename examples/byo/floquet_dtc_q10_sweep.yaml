@@ -16,11 +16,17 @@
 #       srun $HPCQC_CPU_WRAPPER $HPCQC_CPU_CONTAINER bash -c \
 #         "python3 -m lumi_hpc_qc.sweep.run_sweep examples/byo/floquet_dtc_q10_sweep.yaml"'
 #
-# Note on the device-calibrated arm: post the PadDelay-fix merge (commit 90d329d),
-# idle-time relaxation actually fires for device-calibrated runs. The banked
-# examples/reference/floquet_dtc_q10_device-cal_agg.dat reflects the pre-fix
-# regime (preserved at tag pre-paddelay-fix) and is awaiting re-baseline before
-# gate-2 (see DEBT D8 and FINDING-PADDELAY-IDLE-NOT-INSERTED-v1_0.md).
+# Note on the device-calibrated arm reference. The banked
+# examples/reference/floquet_dtc_q10_device-cal_agg.dat was produced by the
+# disjoint runner pipeline (aggregate_floquet.py + build_relaxation_pass as
+# an Aer custom pass) and is byte-identical pre/post the PadDelay-fix merge
+# (commit 90d329d): the runner's idle-decoherence path was always wired and
+# unaffected by the PadDelay scope. The reference is authoritative for
+# gate-2; no re-baseline is required. Acceptance is statistical per kick
+# (z_comb against the reference sem) -- the sweep-BYO pipeline (prepare.py
+# PadDelay + RelaxationNoisePass) and the runner are D9-disjoint, so
+# per-seed byte-identity is not the right bar. See FINDING-PADDELAY-SCOPE-v1_0.md
+# and RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 §F3.
 
 sweep:
   experiments:
