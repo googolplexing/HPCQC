@@ -1,0 +1,48 @@
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+
+Lmod is automatically replacing "craype-x86-rome" with "craype-x86-milan".
+
+[gate2] seed 00: results/gate2/configs/seed_00.yaml -> results/gate2/seed_00
+[gate2] seed 01: results/gate2/configs/seed_01.yaml -> results/gate2/seed_01
+[gate2] seed 02: results/gate2/configs/seed_02.yaml -> results/gate2/seed_02
+[gate2] seed 03: results/gate2/configs/seed_03.yaml -> results/gate2/seed_03
+[gate2] seed 04: results/gate2/configs/seed_04.yaml -> results/gate2/seed_04
+[gate2] seed 05: results/gate2/configs/seed_05.yaml -> results/gate2/seed_05
+[gate2] seed 06: results/gate2/configs/seed_06.yaml -> results/gate2/seed_06
+[gate2] seed 07: results/gate2/configs/seed_07.yaml -> results/gate2/seed_07
+[gate2] seed 08: results/gate2/configs/seed_08.yaml -> results/gate2/seed_08
+[gate2] seed 09: results/gate2/configs/seed_09.yaml -> results/gate2/seed_09
+[gate2] seed 10: results/gate2/configs/seed_10.yaml -> results/gate2/seed_10
+[gate2] seed 11: results/gate2/configs/seed_11.yaml -> results/gate2/seed_11
+[gate2] seed 12: results/gate2/configs/seed_12.yaml -> results/gate2/seed_12
+[gate2] seed 13: results/gate2/configs/seed_13.yaml -> results/gate2/seed_13
+[gate2] seed 14: results/gate2/configs/seed_14.yaml -> results/gate2/seed_14
+[gate2] seed 15: results/gate2/configs/seed_15.yaml -> results/gate2/seed_15
+[gate2] seed 16: results/gate2/configs/seed_16.yaml -> results/gate2/seed_16
+[gate2] seed 17: results/gate2/configs/seed_17.yaml -> results/gate2/seed_17
+[gate2] seed 18: results/gate2/configs/seed_18.yaml -> results/gate2/seed_18
+[gate2] seed 19: results/gate2/configs/seed_19.yaml -> results/gate2/seed_19
+[gate2] seed 20: results/gate2/configs/seed_20.yaml -> results/gate2/seed_20
+[gate2] seed 21: results/gate2/configs/seed_21.yaml -> results/gate2/seed_21
+[gate2] seed 22: results/gate2/configs/seed_22.yaml -> results/gate2/seed_22
+[gate2] seed 23: results/gate2/configs/seed_23.yaml -> results/gate2/seed_23
+[gate2] seed 24: results/gate2/configs/seed_24.yaml -> results/gate2/seed_24
+[gate2] seed 25: results/gate2/configs/seed_25.yaml -> results/gate2/seed_25
+[gate2] seed 26: results/gate2/configs/seed_26.yaml -> results/gate2/seed_26
+[gate2] seed 27: results/gate2/configs/seed_27.yaml -> results/gate2/seed_27
+[gate2] seed 28: results/gate2/configs/seed_28.yaml -> results/gate2/seed_28
+[gate2] seed 29: results/gate2/configs/seed_29.yaml -> results/gate2/seed_29
+[gate2] seed 30: results/gate2/configs/seed_30.yaml -> results/gate2/seed_30
+[gate2] seed 31: results/gate2/configs/seed_31.yaml -> results/gate2/seed_31
+[gate2] seed 32: results/gate2/configs/seed_32.yaml -> results/gate2/seed_32
+[gate2] seed 33: results/gate2/configs/seed_33.yaml -> results/gate2/seed_33
+[gate2] seed 34: results/gate2/configs/seed_34.yaml -> results/gate2/seed_34
+[gate2] seed 35: results/gate2/configs/seed_35.yaml -> results/gate2/seed_35
+[gate2] seed 36: results/gate2/configs/seed_36.yaml -> results/gate2/seed_36
+[gate2] seed 37: results/gate2/configs/seed_37.yaml -> results/gate2/seed_37
+[gate2] seed 38: results/gate2/configs/seed_38.yaml -> results/gate2/seed_38
+[gate2] seed 39: results/gate2/configs/seed_39.yaml -> results/gate2/seed_39
+[gate2] launched 40 concurrent single-seed processes; waiting...
+slurmstepd: error: Detected 1 oom_kill event in StepId=18899724.0. Some of the step tasks have been OOM Killed.
+srun: error: nid001009: task 0: Out Of Memory
+srun: Terminating StepId=18899724.0

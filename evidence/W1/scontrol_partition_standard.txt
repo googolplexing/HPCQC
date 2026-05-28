@@ -1,0 +1,13 @@
+PartitionName=standard
+   AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL
+   AllocNodes=ALL Default=NO QoS=N/A
+   DefaultTime=00:01:00 DisableRootJobs=YES ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO
+   MaxNodes=512 MaxTime=2-00:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED MaxCPUsPerSocket=UNLIMITED
+   Nodes=nid[001000-002274,002600-003047]
+   PriorityJobFactor=100 PriorityTier=1 RootOnly=NO ReqResv=NO OverSubscribe=EXCLUSIVE
+   OverTimeLimit=NONE PreemptMode=OFF
+   State=UP TotalCPUs=441088 TotalNodes=1723 SelectTypeParameters=NONE
+   JobDefaults=(null)
+   DefMemPerCPU=UNLIMITED MaxMemPerNode=UNLIMITED
+   TRES=cpu=441088,mem=385952G,node=1723,billing=441088
+
