@@ -1,0 +1,51 @@
+# Floquet DTC q10 W1 canary — 2-seed mini-sweep for W1.3 acceptance.
+#
+# Identical to floquet_dtc_q10_sweep.yaml in every dimension EXCEPT seed_list,
+# which is restricted to [0, 1]. The 2-seed scale lets the W1.3 forkserver
+# rewrite be validated against the in-tree oracle SHAs without committing the
+# 40-seed production walltime (canary MaxRSS measured 2.77 GiB at 2-way per
+# RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 §1.3).
+#
+# Expected byte-match: per-(seed, env) autocorrelator dats produce
+#   seed=0: f5578984383107bc0e3f6eb57be7c8b5c980622f544af5cf1f3d10cdcdc82409
+#   seed=1: 622721c61cb81e4a8fd313b34072173d638d18222c967dd7df1caf0f23ad1c9b
+# against evidence/W1/gate2_canary/sha256_oracle.txt (the W1 canary slurm
+# script tests/slurm_w1_canary.sh runs sha256sum -c against this oracle).
+#
+# Run via tests/slurm_w1_canary.sh (the W1 regression launcher). Not intended
+# for ad-hoc invocation — see that script for the SLURM invocation.
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_q10_w1_canary
+      circuit_script: examples/byo/floquet_dtc.py
+      circuit_function: build_circuit
+
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03                 # h_x = (1 - epsilon) * pi (the imperfect-pi kick)
+
+      grid:
+        num_kicks: {range: [0, 60]}   # stop-exclusive -> 0..59, matches the q10 reference
+
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10.json
+        initial_state: 3              # polarized |0..0>, matching AK7's Initial_state == 3
+
+      disorder_gates: [rz, rzz]       # cross-grid identity check excludes the rx drive
+
+      seed_list:                      # W1 canary: just 2 seeds (vs. 40 in production)
+        - 0
+        - 1
+
+      shots: 1000
+
+      # Both arms — the canary asserts byte-match for each separately.
+      noise_configs:
+        - noiseless
+        - device_calibrated
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json

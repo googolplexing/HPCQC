@@ -2114,16 +2114,29 @@ class SweepEngine:
         #    writer.write_byo_result, and aggregates the per-seed series into the
         #    .dat files. Raw counts are NOT stored (the autocorrelator is the
         #    result; counts persistence is a later audit/Parquet step). ──
-        from lumi_hpc_qc.backends.prepare import prepare_simulation
-        from lumi_hpc_qc.sweep.byo_observable import (
-            get_autocorrelation, resolve_instance_seed,
+        # ── W1.3: dispatch (seed, placement, env) work units to a forkserver
+        #    Pool. The worker module imports qiskit-aer / qiskit / numpy at
+        #    module level so the forkserver server inherits them ONCE and
+        #    forked workers share the resident heap copy-on-write — the same
+        #    pattern as the runner (floquet_runner.py:549-552), endorsed by
+        #    RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Asks 1+2 + Q1
+        #    ACCEPT. Per-process startup overhead becomes constant rather than
+        #    O(workers); the OOM at 98s (LUMI job 18899724) was caused by the
+        #    pre-W1 shell fork-per-seed model paying that startup peak N
+        #    times concurrently, NOT by the runtime cost of the simulation.
+        #
+        #    F6 invariant: workers receive the seed's master_seed +
+        #    disorder_instance and recompute seed_simulator =
+        #    resolve_instance_seed(master_seed, seed) deterministically; env
+        #    name / source is NOT part of the derivation. The disorder
+        #    realization is therefore identical across the two arms of any
+        #    seed (the parent identity-shares disorder_instance at expansion;
+        #    see §7.5.4). The W1 canary at the 2-seed scale asserts byte-match
+        #    against the in-tree oracle evidence/W1/gate2_canary/sha256_oracle.txt.
+        # ──
+        from lumi_hpc_qc.sweep.byo_worker import (
+            WorkerArgs, WorkerResult, run_one_unit,
         )
-
-        # Source-name mapping: the NoiseConfig name "device_calibrated"
-        # (underscore) -> prepare_simulation's VALID_SOURCES "device-calibrated"
-        # (hyphen); "noiseless" passes through.
-        def _prepare_source(env: NoiseConfig) -> str:
-            return "device-calibrated" if env.source == "device_calibrated" else env.name
 
         # Tasks in this group are (seed x grid-point) for one script+cal. Group
         # by seed; within a seed the grid-point tasks share one disorder
@@ -2160,81 +2173,129 @@ class SweepEngine:
             )
             return
 
+        # ── Build the WorkerArgs list (one per (seed, placement, env)). The
+        #    parent does the bookkeeping (placement -> phys_qubits/edges, grid
+        #    sort, shot resolution); the worker does the heavy lifting (build
+        #    circuits, transpile, run, compute observable). ──
         t_exec_start = time.perf_counter()
-        byo_results: list[dict] = []  # one per (seed, placement, env)
+        work_units: list[WorkerArgs] = []
         for placement in placements:
             phys_qubits = [placement.qubit_mapping[i] for i in range(qsize)]
             phys_edges = [
                 (phys_qubits[a], phys_qubits[b]) for (a, b) in connectivity
             ]
             for seed, seed_tasks in sorted(by_seed.items()):
-                # Build the seed's grid circuits in grid order (primary axis asc).
+                # Build the seed's grid points in primary-axis ascending order.
                 seed_tasks_sorted = sorted(
                     seed_tasks, key=lambda tk: tk.circuit_params[primary_axis],
                 )
-                built = [self._build_byo_circuit(tk).circuit for tk in seed_tasks_sorted]
-                inst_seed = resolve_instance_seed(representative.master_seed, seed)
-
+                grid_points_sorted = [
+                    dict(tk.circuit_params) for tk in seed_tasks_sorted
+                ]
+                # F6: disorder is identity-shared across grid points within a
+                # seed (preserved at expansion). Both arms see the SAME dict.
+                disorder_instance = dict(seed_tasks_sorted[0].disorder_instance)
                 for env in envs:
-                    src = _prepare_source(env)
-                    # The counts path requires shots>0. The noiseless env
-                    # carries shots=0 (its ⟨H⟩/statevector default) -> a shots=0
-                    # run returns a statevector, not counts. For BYO counts,
-                    # noiseless must sample shots like any other arm.
-                    # CFG-1 precedence: experiment shots > env.shots > DEFAULT_SMOKE_SHOTS.
+                    # CFG-1 precedence: experiment shots > env.shots >
+                    # DEFAULT_SMOKE_SHOTS. noiseless's intrinsic shots=0 is
+                    # patched up to DEFAULT_SMOKE_SHOTS so it samples counts
+                    # like any other arm (a shots=0 run returns a statevector,
+                    # not counts).
                     shots = (
                         exp_shots if exp_shots is not None
                         else (env.shots if env.shots and env.shots > 0
                               else DEFAULT_SMOKE_SHOTS)
                     )
-                    prep_kwargs = dict(
-                        calibration_path=cal_path, num_qubits=qsize,
-                        optimization_level=exp_opt_level, num_processes=1, verbose=False,
-                    )
-                    if src == "device-calibrated":
-                        prep_kwargs.update(
-                            physical_qubits=phys_qubits, physical_edges=phys_edges,
-                        )
-                    prep = prepare_simulation(built, src, **prep_kwargs)
-                    job = prep.simulator.run(
-                        prep.run_circuits, shots=shots, memory=True,
-                        seed_simulator=inst_seed,
-                    )
-                    result = job.result()
-                    autocorr = [
-                        get_autocorrelation(result.get_counts(i), init_bit_array, qsize)
-                        for i in range(len(built))
-                    ]
-                    byo_results.append({
-                        "seed": seed,
-                        "script": representative.circuit_script,
-                        "placement_id": placement.placement_id,
-                        "physical_qubit_set": phys_qubits,
-                        "env": env.name,
-                        "noise_source": env.source,
-                        "noise_placement_independent": (
+                    work_units.append(WorkerArgs(
+                        seed=seed,
+                        env_name=env.name,
+                        env_source=env.source,
+                        master_seed=representative.master_seed,
+                        placement_id=placement.placement_id,
+                        placement_phys_qubits=phys_qubits,
+                        placement_phys_edges=phys_edges,
+                        calibration_path=cal_path,
+                        shots=shots,
+                        optimization_level=exp_opt_level,
+                        qsize=qsize,
+                        factory_script=representative.circuit_script,
+                        factory_function=representative.circuit_function,
+                        fixed_params=dict(representative.fixed_params),
+                        disorder_instance=disorder_instance,
+                        disorder_gates=tuple(representative.disorder_gates),
+                        init_bit_array=list(init_bit_array),
+                        primary_axis=primary_axis,
+                        grid_points_sorted=grid_points_sorted,
+                        noise_placement_independent=(
                             env.source == "device_calibrated"
                             and guardrail_single_placement
                         ),
-                        "num_kicks": [
-                            tk.circuit_params[primary_axis]
-                            for tk in seed_tasks_sorted
-                        ],
-                        "autocorrelator": autocorr,
-                        "shots": shots,
-                        "seed_simulator": inst_seed,
-                        # RED-RESP-D3.4C §3: storing a resolved seed_simulator
-                        # without its parent master_seed is a provenance gap —
-                        # the result can't be traced to the run-wide knob that
-                        # produced it. master_seed is REQUIRED on the record;
-                        # None (entropy / not reproducible) is stored as absent.
-                        "master_seed": representative.master_seed,
-                        # CFG-2 / W1.2: record the resolved transpile
-                        # optimization_level so a future run cannot silently
-                        # inherit a different value (physics-affecting under
-                        # noise). Per Q3 ACCEPT in RED-RESP-W1 v1.4.
-                        "optimization_level": exp_opt_level,
-                    })
+                    ))
+
+        # ── Worker cap. W1.3 ships a MINIMAL correct cap (min of work-unit
+        #    count and host CPU count). The allocation-aware cap (cgroup
+        #    probe + sequential 1-unit RSS probe per A/B/C in
+        #    BLUE-PROPOSAL-W1 v1.1) lands with W1.4 per Q6 ACCEPT. At the
+        #    2-seed canary scale this minimal cap is sufficient — canary
+        #    MaxRSS measured 2.77 GiB at 2-way (RED-RESP-W1 v1.4 §1.3), the
+        #    224 GiB node accommodates trivially. ──
+        cap = max(1, min(len(work_units), os.cpu_count() or 1))
+        print(
+            f"    BYO: dispatching {len(work_units)} unit(s) to forkserver "
+            f"pool (cap={cap}; W1.4 will replace with allocation-aware sizing)"
+        )
+
+        # ── Forkserver dispatch (mirrors floquet_runner.py:549-552). ──
+        ctx = mp.get_context("forkserver")
+        with ctx.Pool(processes=cap) as pool:
+            worker_results: list[WorkerResult] = list(
+                pool.map(run_one_unit, work_units)
+            )
+
+        # ── Fail-loud on any worker error. A failed worker returns a
+        #    WorkerResult with `error` populated rather than raising — raising
+        #    across Pool.map would poison the pool and abort sibling units
+        #    mid-flight (the runner pattern). Parent aggregates errors and
+        #    emits a single bounded report. ──
+        worker_errors = [r for r in worker_results if r.error]
+        if worker_errors:
+            msg_lines = [
+                f"BYO: {len(worker_errors)} of {len(worker_results)} worker(s) failed:"
+            ]
+            for r in worker_errors[:5]:
+                first_line = r.error.splitlines()[0] if r.error else "unknown"
+                msg_lines.append(
+                    f"  seed={r.seed} env={r.env_name} "
+                    f"placement={r.placement_id}: {first_line}"
+                )
+            if len(worker_errors) > 5:
+                msg_lines.append(f"  ... and {len(worker_errors) - 5} more")
+            errors.append("\n".join(msg_lines))
+            return
+
+        # ── Parent-serial assembly into the byo_results dict schema the
+        #    downstream HDF5 writer + .dat aggregator already consume
+        #    (D3.4c / RED-RESP-D3.4C). Field-for-field identical to the
+        #    pre-W1 serial path's output. ──
+        byo_results: list[dict] = []
+        for r in worker_results:
+            byo_results.append({
+                "seed": r.seed,
+                "script": representative.circuit_script,
+                "placement_id": r.placement_id,
+                "physical_qubit_set": r.physical_qubit_set,
+                "env": r.env_name,
+                "noise_source": r.env_source,
+                "noise_placement_independent": r.noise_placement_independent,
+                "num_kicks": r.num_kicks,
+                "autocorrelator": r.autocorrelator,
+                "shots": r.shots,
+                "seed_simulator": r.seed_simulator,
+                # RED-RESP-D3.4C §3: master_seed REQUIRED on the record.
+                "master_seed": r.master_seed,
+                # CFG-2 / W1.2: resolved opt_level recorded per result.
+                "optimization_level": r.optimization_level,
+            })
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
         # Progress accounting: each (seed, placement, env) entry is one
