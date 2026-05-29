@@ -11,14 +11,21 @@ Module-level imports
 --------------------
 
 Heavy imports (qiskit-aer via prepare_simulation, qiskit via the factory
-loader, numpy via byo_observable) live at module level so the
-``multiprocessing.get_context("forkserver")`` server inherits them ONCE and
-all forked workers share the resident pages copy-on-write — the per-process
-economy that lets the runner survive 40-way parallelism at 224 GiB while
-the previous shell fork-per-seed workaround OOM'd at 98 s (LUMI job
-18899724). Measured at the §5 corpus binding peak: runner cgroup
-``MaxRSS`` 20.18 GiB vs 40× per-process startup peak exceeding 224 GiB —
-≥10× CoW saving (RED-RESP-W1 v1.4 §1.3).
+loader, numpy via byo_observable) live at module level. There is NO
+``set_forkserver_preload`` anywhere in the engine or runner, so the
+forkserver *server* is a lean exec'd interpreter that does not import this
+module — each forked worker imports the heavy stack *after* the fork. The
+memory saving is therefore automatic OS-level shared-library (``.so``) page
+sharing across workers that map the same libraries, NOT a preloaded
+Python-heap copy-on-write of the resident stack. This is empirically
+harmless and runner-identical (proven at 40-way: runner cgroup ``MaxRSS``
+20.18 GiB, RED-RESP-W1 v1.4 §1.3, while the prior shell fork-per-seed
+workaround OOM'd at 98 s — LUMI job 18899724). It is, however, load-bearing
+for the W1.4 cap: because each worker carries its OWN full resident
+footprint post-fork (no near-zero marginal heap), the allocation-aware cap
+sizes every worker at its full ``VmHWM``. (Corrected per
+RED-RESP-W1.3-VERIFY-AND-W1.4-CAP-RULINGS NF5 / D6-i; the previous wording
+asserted a preloaded-heap CoW economy the code does not implement.)
 
 Picklability
 ------------
@@ -61,7 +68,9 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
-# Heavy imports — CoW-shared via forkserver inheritance.
+# Heavy imports. Workers import these FRESH after the forkserver fork (there
+# is no set_forkserver_preload); the saving is automatic OS-level .so page
+# sharing, NOT preloaded-heap CoW. See the module docstring + NF5 / D6-i.
 import numpy as np  # noqa: F401  (transitive: prepare_simulation, byo_observable)
 from lumi_hpc_qc.backends.prepare import prepare_simulation
 from lumi_hpc_qc.sweep.byo_observable import (

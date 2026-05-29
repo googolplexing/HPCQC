@@ -2116,14 +2116,18 @@ class SweepEngine:
         #    result; counts persistence is a later audit/Parquet step). ──
         # ── W1.3: dispatch (seed, placement, env) work units to a forkserver
         #    Pool. The worker module imports qiskit-aer / qiskit / numpy at
-        #    module level so the forkserver server inherits them ONCE and
-        #    forked workers share the resident heap copy-on-write — the same
-        #    pattern as the runner (floquet_runner.py:549-552), endorsed by
-        #    RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Asks 1+2 + Q1
-        #    ACCEPT. Per-process startup overhead becomes constant rather than
-        #    O(workers); the OOM at 98s (LUMI job 18899724) was caused by the
-        #    pre-W1 shell fork-per-seed model paying that startup peak N
-        #    times concurrently, NOT by the runtime cost of the simulation.
+        #    module level, but there is NO set_forkserver_preload: the
+        #    forkserver server is a lean exec'd interpreter and each worker
+        #    imports the heavy stack AFTER the fork. Sharing is automatic
+        #    OS-level .so page sharing, NOT a preloaded-heap copy-on-write —
+        #    the same pattern as the runner (floquet_runner.py:549-552),
+        #    endorsed by RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Asks
+        #    1+2 + Q1 ACCEPT. The OOM at 98s (LUMI job 18899724) was caused by
+        #    the pre-W1 shell fork-per-seed model paying the per-process
+        #    startup peak N times concurrently, NOT by the runtime cost of the
+        #    simulation. Because each worker carries its own full footprint
+        #    post-fork, the W1.4 cap sizes every worker at its full VmHWM
+        #    (RED-RESP-W1.3-VERIFY-AND-W1.4-CAP-RULINGS NF5 / D6-i).
         #
         #    F6 invariant: workers receive the seed's master_seed +
         #    disorder_instance and recompute seed_simulator =
