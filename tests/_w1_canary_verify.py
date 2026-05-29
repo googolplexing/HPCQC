@@ -13,10 +13,19 @@ them by arm (``noiseless`` / ``device_calibrated``), computes SHA-256, and
 compares against the in-tree oracle at
 ``evidence/W1/gate2_canary/sha256_oracle.txt``.
 
-Acceptance bar (RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 §6 / F3):
-PASS iff at least one arm matches the oracle SHAs for both seeds. The oracle
-pins one arm of the 2-seed corpus (banked at session V19); the other arm is
-covered by the full 40-seed gate-2 reproduction at W1.6.
+Acceptance bar (RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 §6 / F3,
+hardened per RED-RESP-W1.3-VERIFY-AND-W1.4-CAP-RULINGS NF3):
+PASS iff (1) the ``device_calibrated`` arm matches the oracle SHAs for BOTH
+seeds, AND (2) the ``noiseless`` arm is present and does NOT match the
+device-cal oracle. The oracle pins the device_calibrated arm of the 2-seed
+corpus (banked at session V19). The old "iff at least one arm matches" bar
+was unsound: it keyed only on a path segment, so an arm-label swap (device-cal
+physics written under ``noiseless/``) would have PASSED while mislabeling
+arms. Requiring the device-cal arm specifically AND noiseless distinctness
+(a noiseless arm matching a device-cal oracle means noise was not applied)
+closes that hole before this becomes the W1.6 standing gate. The full 40-seed
+gate-2 reproduction (per-kick z_comb vs the runner reference) is separate, at
+W1.6 — this verifier is the same-path 2-seed byte-match regression.
 
 Exit code: 0 on PASS, 1 on FAIL.
 
@@ -145,9 +154,16 @@ def main() -> int:
               "no instance_NN_autocorr.dat files found under workdir.")
         return 1
 
-    any_arm_passed = False
-    for arm, seeds in sorted(by_arm.items()):
+    def _arm_matches_oracle(arm: str) -> tuple[bool, bool]:
+        """Return (present, matches_all_seeds) for one arm vs the oracle.
+
+        ``present`` is True if the arm has at least one .dat for an oracle seed.
+        ``matches_all_seeds`` is True only if every oracle seed is present AND
+        byte-matches. Per-seed lines are printed for the audit trail.
+        """
+        seeds = by_arm.get(arm, {})
         print(f"\n--- arm: {arm} ---")
+        present = False
         all_match = True
         for seed_idx in sorted(oracle_sha):
             engine_path = seeds.get(seed_idx)
@@ -155,6 +171,7 @@ def main() -> int:
                 print(f"  seed {seed_idx:02d}: MISSING engine output for this arm")
                 all_match = False
                 continue
+            present = True
             engine_sha = _sha256_of(engine_path)
             want_sha = oracle_sha[seed_idx]
             ok = engine_sha == want_sha
@@ -163,17 +180,39 @@ def main() -> int:
                   f"engine={engine_sha[:16]}.. oracle={want_sha[:16]}.. {mark}")
             if not ok:
                 all_match = False
-        if all_match:
-            print(f"  >>> arm {arm} matches oracle "
-                  f"(W1 byte-match PASSED on this arm)")
-            any_arm_passed = True
+        return present, (present and all_match)
 
-    if not any_arm_passed:
-        print("\nW1 CANARY ACCEPTANCE: FAILED — "
-              "no arm matches the oracle SHAs for both seeds.")
+    # NF3: the oracle pins the device_calibrated arm. Two specific assertions
+    # replace the old "iff any arm matches" (which an arm-label swap could fool):
+    #   (1) device_calibrated MUST match both seeds; and
+    #   (2) noiseless MUST be present and MUST NOT match the device-cal oracle
+    #       (a noiseless arm matching it means noise was not applied).
+    dc_present, dc_matches = _arm_matches_oracle("device_calibrated")
+    nl_present, nl_matches = _arm_matches_oracle("noiseless")
+
+    failures: list[str] = []
+    if not dc_present:
+        failures.append("device_calibrated arm is MISSING (expected the heavy "
+                        "arm the oracle pins).")
+    elif not dc_matches:
+        failures.append("device_calibrated arm does NOT byte-match the oracle "
+                        "for both seeds (the same-path reproduction regressed).")
+    if not nl_present:
+        failures.append("noiseless arm is MISSING (expected both arms to run; "
+                        "its presence + distinctness proves arm labelling).")
+    elif nl_matches:
+        failures.append("noiseless arm MATCHES the device-cal oracle — noise "
+                        "was not applied, or arms are mislabelled (NF3).")
+
+    if failures:
+        print("\nW1 CANARY ACCEPTANCE: FAILED —")
+        for f in failures:
+            print(f"  - {f}")
         return 1
 
     print("\nW1 CANARY ACCEPTANCE: ALL CHECKS PASSED")
+    print("  device_calibrated: byte-match on both seeds; "
+          "noiseless: present and distinct (noise applied).")
     return 0
 
 

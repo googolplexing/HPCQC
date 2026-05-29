@@ -94,8 +94,10 @@ echo "=== Byte-match verification ==="
 # ── (2) Verify SHAs against the oracle. The verifier walks OUTPUT_DIR
 #    recursively for instance_NN_autocorr.dat files, groups by arm
 #    (noiseless / device_calibrated path segment), computes SHA256, and
-#    PASSES iff at least one arm matches both oracle SHAs (the oracle pins
-#    one arm of the 2-seed corpus; the other arm lands with W1.6). ──
+#    PASSES iff the device_calibrated arm byte-matches the oracle on BOTH
+#    seeds AND the noiseless arm is present and does NOT match it (NF3 —
+#    the old "any arm matches" bar could be fooled by an arm-label swap).
+#    The 40-seed z_comb gate-2 reproduction is separate, at W1.6. ──
 srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
     python3 "${VERIFIER}" \
         --workdir "${OUTPUT_DIR}" \
