@@ -3,9 +3,79 @@
 
 # Changelog
 
-## Unreleased — `feature/device-calibrated-noise` (2026-05-27)
+## Unreleased — `feature/device-calibrated-noise` (2026-05-29)
 
 ### Fixed
+
+**W1.3 — engine-internal forkserver BYO worker COMPLETE (4/4)** (commits `6bb08ee`, `aa76b57`)
+- `_execute_byo_group` in `src/lumi_hpc_qc/sweep/sweep_engine.py` now dispatches
+  each `(seed, placement, env)` work unit to a `multiprocessing` `forkserver`
+  `Pool` over `byo_worker.run_one_unit`
+  (`src/lumi_hpc_qc/sweep/byo_worker.py`), replacing the pre-W1 serial
+  triple-nested loop. This lifts the runner's parallel economy into the sweep
+  engine to fix the BYO-sweep OOM before gate-2
+  (`RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4`, Asks 1+2 ACCEPTED; Q1
+  forkserver ACCEPT).
+- **Daemonic-children fix — the criterion-4 blocker** (commits `6bb08ee` →
+  `aa76b57`). The `device_calibrated` arm's `NoiseModel` carries a custom pass
+  (`RelaxationNoisePass` in `nm._custom_noise_passes`); Aer applies custom
+  noise passes via Qiskit's transpiler at `simulator.run()` time over the
+  grid-circuit list. With `QISKIT_IN_PARALLEL` unset, Qiskit's `parallel_map`
+  tried to spawn its own worker `Pool` across that list — but each unit already
+  runs inside a daemonic `forkserver` `Pool` child, which Python forbids from
+  having children, raising `AssertionError: daemonic processes are not allowed
+  to have children`. The `noiseless` arm has no custom pass, so the failure was
+  `device_calibrated`-only; it had been masked by the earlier `os`-shadow
+  `UnboundLocalError`, which aborted before the `Pool` was created. Fix mirrors
+  the proven runner exactly: `run_one_unit` hard-sets `QISKIT_IN_PARALLEL=TRUE`
+  and `OMP_NUM_THREADS=1` before any Qiskit/Aer call (runner
+  `floquet_runner.py:289`); `_execute_byo_group` `setdefault`s both before the
+  `forkserver` server starts (the sole `ctx.Pool` site, so direct callers such
+  as the d34a unit test are covered too; runner `floquet_runner.py:501`).
+  `QISKIT_IN_PARALLEL=TRUE` makes `parallel_map` run serially in-process, so
+  the execution topology matches the runner that generated the byte-match
+  oracle — no numerical change, byte-match preserved.
+- **Acceptance (criterion 4 — 2-seed canary byte-match):** LUMI job 18915670,
+  `tests/slurm_w1_canary.sh` on
+  `examples/byo/floquet_dtc_q10_canary_2seed.yaml` (10q, 60 kicks, 1000 shots,
+  seeds [0, 1], both arms). The `device_calibrated` arm reproduced the in-tree
+  oracle (`evidence/W1/gate2_canary/sha256_oracle.txt`) **bit-exact on both
+  seeds** — seed 0
+  `f5578984383107bc0e3f6eb57be7c8b5c980622f544af5cf1f3d10cdcdc82409`, seed 1
+  `622721c61cb81e4a8fd313b34072173d638d18222c967dd7df1caf0f23ad1c9b`. Result
+  `W1 CANARY ACCEPTANCE: ALL CHECKS PASSED`, exit 0. The `noiseless` arm is run
+  but not byte-gated (the oracle is `device_calibrated`-only), so its
+  `MISMATCH` lines are expected: the oracle's kick-0 autocorrelator 0.9692 < 1.0
+  is device readout/relaxation error, which a noiseless arm cannot reproduce.
+- W1.3 acceptance now 4/4 (criteria 1–3 pre-shipped at `b82c6e8`: stack apply
+  clean; 12 W1.3 unit tests; no BYO-seam regression). On-stack confirmation
+  before the canary: d34a 5/5 (LUMI 18915638), including
+  `test_byo_execute_computes_autocorrelator_device_cal` (the test that
+  reproduced the daemonic error at 4q/3-kicks); E5 51/51 (LUMI 18915671) — no
+  regression.
+- **Resource data points (input to W1.4 allocation-aware cap):** canary `sacct`
+  MaxRSS = 3.67 GiB at 4-way (2 `device_calibrated` + 2 `noiseless`) on the
+  224 GiB node; Elapsed 00:11:17, sweep 660.9 s — consistent with the runner's
+  ~690 s per-instance device-calibrated wall (90.3% parallel efficiency,
+  24,937 CPU-s / 40 × 690 s). The `standard` partition is node-exclusive:
+  `AllocCPUS=256` billed while only 4 of 128 physical cores worked — the
+  core-hour inefficiency W1.4's allocation-aware cap targets (production = 40
+  seeds × 2 arms = 80 units to pack per node).
+- Preceding W1 steps already landed at `b82c6e8`: W1.1 deterministic placement
+  total order (`_placement_sort_key`, 6 unit tests, LUMI 18905322); W1.2
+  configurable transpile `optimization_level` + provenance (CFG-2, 14 unit
+  tests, LUMI 18905870).
+- `DEBT.md` candidates recorded for later repo hygiene (non-blocking): (1) the
+  W1 canary verifier `tests/_w1_canary_verify.py` compares every arm against
+  the `device_calibrated`-only oracle and passes if any arm matches, so the
+  `noiseless` `MISMATCH` lines are misleading and an arm-label swap could mask
+  a regression — it should assert the `device_calibrated` arm specifically;
+  (2) the `forkserver` `Pool` sets no `set_forkserver_preload`, so the
+  `byo_worker` docstring's "server inherits the heavy stack once, CoW-shared
+  across workers" economy does not hold as written (workers import the stack
+  fresh). The runner has the identical pattern and is proven at 40-way, so this
+  is not a regression, but it must be revisited when validating the W1.4
+  RSS-probe / OOM numbers, since the CoW assumption underpins the memory model.
 
 **PadDelay idle-decoherence in sweep BYO path** (commit `90d329d`)
 - Added `"delay"` to `_NATIVE_BASIS` in `src/lumi_hpc_qc/backends/prepare.py:50`
