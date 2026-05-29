@@ -24,18 +24,25 @@
 # The 40-seed aggregate byte-match (the full gate-2 reproduction) is W1.6 /
 # Criterion 3; it uses a different SLURM script and a different walltime.
 #
-# Two-step layout:
-#   (1) Sweep run via the canonical CLI entry point
-#       (python3 -m lumi_hpc_qc.sweep.run_sweep), executed inside the
-#       container after `cd $WORKDIR` so sweep_output/ lands in the
-#       job-isolated workdir.
-#   (2) Byte-match verification via tests/_w1_canary_verify.py (a small
-#       Python helper, name underscore-prefixed so pytest doesn't try to
-#       collect it as a test module).
+# Path discipline:
+#   - The canary YAML uses repo-relative paths (circuit_script:
+#     examples/byo/..., calibrations: examples/q50_..., disorder file:
+#     examples/byo/...). The engine resolves these CWD-relative, NOT
+#     relative to the YAML's location. So this script `cd`s to
+#     $SLURM_SUBMIT_DIR (= $HPCQC_ROOT for repo-root submissions, the
+#     project's convention).
+#   - The canary YAML pins `output_dir: sweep_output/w1_canary`. The engine
+#     writes EVERYTHING (per-instance dats, HDF5, campaign manifest, sweep
+#     timing) under that path. The verifier reads from exactly that path —
+#     no globbing across unrelated sweep_output dirs, no mtime-based
+#     discovery, no risk of stale prior-run files showing up.
+#   - Pre-run `rm -rf "${OUTPUT_DIR}"` guarantees a deterministic workdir.
+#     This is essential — otherwise the engine's campaign_manifest resume
+#     would skip the canary seeds if a prior partial run left a manifest.
 #
-# Both steps use the slurm_e1.sh-style invocation (no `-c` or heredocs;
-# the wrapper between srun and the container is fragile with multi-line
-# args — see W1 canary job 18906585's SyntaxError on `\nimport sys`).
+# Invocation idiom: srun ... python3 path/to/script.py (no -c, no heredoc;
+# the wrapper between srun and the singularity container is fragile with
+# multi-line args — see LUMI job 18906585's SyntaxError).
 #
 # Usage: sbatch tests/slurm_w1_canary.sh
 # Expected: "W1 CANARY ACCEPTANCE: ALL CHECKS PASSED" on the last line and
@@ -48,10 +55,11 @@ mkdir -p slurm_logs
 
 CANARY_YAML="${HPCQC_ROOT}/examples/byo/floquet_dtc_q10_canary_2seed.yaml"
 ORACLE="${HPCQC_ROOT}/evidence/W1/gate2_canary/sha256_oracle.txt"
-WORKDIR="${SLURM_SUBMIT_DIR}/sweep_output_w1_canary_${SLURM_JOB_ID}"
 VERIFIER="${HPCQC_ROOT}/tests/_w1_canary_verify.py"
-
-mkdir -p "${WORKDIR}"
+# Engine writes here because the canary YAML pins output_dir to this path.
+# This MUST match the YAML's `output_dir:` value (CWD-relative from
+# $SLURM_SUBMIT_DIR).
+OUTPUT_DIR="${SLURM_SUBMIT_DIR}/sweep_output/w1_canary"
 
 echo "=== W1 Canary — 2-seed byte-match against in-tree oracle ==="
 echo "Job ID:    ${SLURM_JOB_ID}"
@@ -59,33 +67,38 @@ echo "Node:      $(hostname)"
 echo "Container: ${HPCQC_CPU_CONTAINER}"
 echo "YAML:      ${CANARY_YAML}"
 echo "Oracle:    ${ORACLE}"
-echo "Workdir:   ${WORKDIR}"
+echo "OutputDir: ${OUTPUT_DIR}"
 echo "Verifier:  ${VERIFIER}"
 echo "Started:   $(date)"
 echo ""
 
+# Pre-run determinism: wipe any prior canary output so the verifier sees only
+# files produced by THIS sweep, AND the engine starts without a stale
+# campaign manifest that would trigger resume-mode (and skip seeds).
+rm -rf "${OUTPUT_DIR}"
+
 export SINGULARITYENV_PROJECT_DIR="${HPCQC_ROOT}"
 export SINGULARITYENV_PYTHONPATH="${HPCQC_ROOT}/src"
 
-# ── (1) Run the sweep on the W1 engine. cd into WORKDIR so sweep_output/
-#    (the engine's default output root) lands in this job's workdir, isolated
-#    from prior runs' sweep_output*/ directories in the submit dir. Uses the
-#    canonical CLI entry point — same shape as the gate-2 yaml header. ──
-cd "${WORKDIR}"
+# ── (1) Sweep run from the repo root (SLURM_SUBMIT_DIR), so the YAML's
+#    repo-relative paths (examples/byo/..., examples/q50_...) resolve.
+#    Engine writes to $SLURM_SUBMIT_DIR/sweep_output/w1_canary/ because the
+#    YAML pins output_dir to "sweep_output/w1_canary". ──
+cd "${SLURM_SUBMIT_DIR}"
 srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
     python3 -m lumi_hpc_qc.sweep.run_sweep "${CANARY_YAML}"
 
 echo ""
 echo "=== Byte-match verification ==="
 
-# ── (2) Verify SHAs against the oracle. The verifier walks WORKDIR for
-#    instance_NN_autocorr.dat files, groups by arm, computes SHA256, and
+# ── (2) Verify SHAs against the oracle. The verifier walks OUTPUT_DIR
+#    recursively for instance_NN_autocorr.dat files, groups by arm
+#    (noiseless / device_calibrated path segment), computes SHA256, and
 #    PASSES iff at least one arm matches both oracle SHAs (the oracle pins
-#    one arm of the 2-seed corpus; the other lands with W1.6). ──
-cd "${SLURM_SUBMIT_DIR}"
+#    one arm of the 2-seed corpus; the other arm lands with W1.6). ──
 srun "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
     python3 "${VERIFIER}" \
-        --workdir "${WORKDIR}" \
+        --workdir "${OUTPUT_DIR}" \
         --oracle "${ORACLE}"
 
 # set -e ensures we only get here on success (verifier exit 0).

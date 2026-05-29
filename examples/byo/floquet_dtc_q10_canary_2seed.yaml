@@ -16,6 +16,21 @@
 # for ad-hoc invocation — see that script for the SLURM invocation.
 
 sweep:
+  # W1.3 path isolation: pin output_dir so the engine writes the per-instance
+  # autocorrelator dats + HDF5 + campaign manifest to a known, canary-specific
+  # subdir. The W1 verifier (tests/_w1_canary_verify.py) reads from exactly
+  # this path. Engine path resolution: SweepConfig.output_dir defaults to
+  # "sweep_output" (sweep_engine.py:215); _byo_dat_dir is computed as
+  # output_dir/"byo_dat" (sweep_engine.py:1334); aggregate_byo_autocorr writes
+  # instance_NN_autocorr.dat under _byo_dat_dir/<script_stem>/<phys>/<env>/.
+  # The output_dir is resolved CWD-relative — the canary script `cd`s to
+  # $SLURM_SUBMIT_DIR (= $HPCQC_ROOT) so this lands in the repo root.
+  #
+  # Note: sweep_id is NOT a path-control knob (it lives only in metadata —
+  # HDF5 attrs, sweep_timing.json, log lines). For predictable file paths we
+  # need output_dir, not sweep_id.
+  output_dir: sweep_output/w1_canary
+
   experiments:
     - type: byo_circuit
       label: floquet_dtc_q10_w1_canary
