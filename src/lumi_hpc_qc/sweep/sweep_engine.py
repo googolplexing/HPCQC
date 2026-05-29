@@ -2245,6 +2245,23 @@ class SweepEngine:
             f"pool (cap={cap}; W1.4 will replace with allocation-aware sizing)"
         )
 
+        # ── Defense-in-depth: seed the env BEFORE the forkserver server is
+        #    started (the server is spawned on the first ctx.Pool below, and the
+        #    server — plus every worker forked from it — inherits the parent's
+        #    os.environ at that moment). The worker hard-sets these too
+        #    (byo_worker.run_one_unit), which is the definitive guard; this
+        #    setdefault covers the forkserver server's own process environment.
+        #    setdefault (not =) so an explicit cluster/SLURM value is respected
+        #    at the server level while each worker still forces its own. Lives
+        #    here, at the sole forkserver-Pool creation site, rather than in the
+        #    run_sweep entry point, so it also covers direct callers of
+        #    _execute_byo_group (e.g. the d34a unit test). Mirrors
+        #    floquet_runner main():501. See byo_worker.run_one_unit for the full
+        #    rationale (device_calibrated custom-noise-pass parallel_map → daemonic
+        #    forkserver child → "daemonic processes are not allowed to have children").
+        os.environ.setdefault("QISKIT_IN_PARALLEL", "TRUE")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+
         # ── Forkserver dispatch (mirrors floquet_runner.py:549-552). ──
         ctx = mp.get_context("forkserver")
         with ctx.Pool(processes=cap) as pool:

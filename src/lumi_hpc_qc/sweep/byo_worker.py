@@ -55,6 +55,7 @@ fails the group loudly if any unit failed.
 
 from __future__ import annotations
 
+import os
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -166,6 +167,36 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
     All exceptions are captured into ``WorkerResult.error`` rather than
     raised, to avoid poisoning the pool (see module docstring).
     """
+    # ── W1.3: pin the per-worker execution environment BEFORE any qiskit /
+    #    Aer call. This is the definitive guard, executed inside the worker
+    #    process; ``parallel_map`` / OpenMP read these env vars lazily (at the
+    #    first parallel region, i.e. first compute), so setting them here —
+    #    after the module-level heavy imports but before load_circuit /
+    #    prepare_simulation / simulator.run — takes effect. Mirrors
+    #    floquet_runner.run_one_instance:289.
+    #
+    #    QISKIT_IN_PARALLEL=TRUE — REQUIRED for the device_calibrated arm. That
+    #    arm's NoiseModel carries a custom pass (RelaxationNoisePass appended to
+    #    ``nm._custom_noise_passes`` in backends/prepare.py); Aer applies custom
+    #    noise passes via qiskit's transpiler at ``simulator.run()`` time, over
+    #    the whole grid-circuit list. With this UNSET, qiskit's ``parallel_map``
+    #    tries to spawn its own worker Pool to parallelize across the circuit
+    #    list — but this function already runs inside a daemonic forkserver Pool
+    #    child, and Python forbids daemons from having children, raising
+    #    ``AssertionError: daemonic processes are not allowed to have children``.
+    #    Setting TRUE makes ``parallel_map`` run serially in-process. The
+    #    noiseless arm has no custom pass, so it never hit this — which is why
+    #    the bug presented as device_calibrated-only. (Was previously masked by
+    #    the os-shadow UnboundLocalError, which aborted before the Pool existed.)
+    #
+    #    OMP_NUM_THREADS=1 — single-thread the worker's OpenMP/BLAS so N
+    #    co-resident workers on one node do not oversubscribe cores (proposal
+    #    v1.1: "per worker ... plus OMP_NUM_THREADS=1"). Aer is already pinned
+    #    single-thread via _AER_SINGLE_THREAD; this covers numpy/BLAS and any
+    #    other OpenMP consumer in the worker.
+    os.environ["QISKIT_IN_PARALLEL"] = "TRUE"
+    os.environ["OMP_NUM_THREADS"] = "1"
+
     t0 = time.perf_counter()
 
     def _err_result(msg: str) -> WorkerResult:
