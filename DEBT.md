@@ -334,3 +334,49 @@ separate, add an explicit recurring cross-check rather than relying on gate-2
 incidentally).
 
 **Not blocking** the echo workstream (D7) or gate-2 itself.
+
+## W1.4-1 — Pool sized by the heavy (device-cal) arm for ALL units
+**Status:** deferred (intentionally; RED-RESP-W1.3-VERIFY-AND-W1.4-CAP-RULINGS D2 conservative-now).
+**What.** The W1.4 worker cap sizes the whole forkserver pool by the
+`device_calibrated` per-unit peak and treats every unit as heavy, including the
+lighter `noiseless` arm. The result under-packs noiseless-heavy sweeps (fewer
+concurrent workers than memory would allow) but never OOMs. The footer records
+`all units treated as heavy [device_calibrated], D2 conservative` so the
+under-pack is auditable.
+**Trigger to resolve.** When noiseless-arm wall-clock becomes a measured
+bottleneck on a real sweep, or before any run where the two arms' per-unit peaks
+differ enough that single-pool sizing wastes a non-trivial fraction of the node.
+**Plan.** Split into two pools (or one pool with per-unit memory weights):
+probe each arm's VmHWM separately (the probe already isolates the device-cal
+arm; add a noiseless probe), then size each arm's concurrency against `safe_mem`
+independently. Keep per-unit `run_one_unit` byte-identical so the canary
+byte-match is unaffected.
+
+## W1.4-2 — per_unit_peak does not measure the set_forkserver_preload delta
+**Status:** open (tracked; RED-RESP D6-ii REJECT-for-now).
+**What.** D6 rejected adding `set_forkserver_preload` in W1.4 (it would perturb
+the proven forkserver topology that the 2-seed canary pins). The cap therefore
+sizes each worker at its full standalone `VmHWM`, which is correct for the
+current no-preload topology (NF5). We have not measured what a preloaded server
+would change: the 40-way cgroup peak with vs without preload, and whether the
+`.so`-page sharing already captures most of the benefit.
+**Trigger to resolve.** When packing density becomes the binding constraint on
+throughput (i.e. the memory term, not cores, repeatedly limits the cap on real
+sweeps) and the extra concurrency would matter.
+**Plan.** A dedicated measurement step (NOT on the canary path): run the 40-way
+corpus with and without `set_forkserver_preload`, compare cgroup `memory.peak`,
+and evaluate the same change in `floquet_runner`. If material, design the
+preload as its own reviewed change with its own canary.
+
+## W1.4-3 — per_unit_peak is a single-unit probe, not a marginal-RSS measurement
+**Status:** open (tracked).
+**What.** `per_unit_peak` is one device-cal unit's standalone `VmHWM`. Because
+workers share `.so` pages (NF5), the *marginal* resident cost of the Nth
+concurrent worker is below its standalone peak, so the cap is conservative (it
+over-counts shared pages -> under-packs). Acceptable and safe now; imprecise.
+**Trigger to resolve.** Same as W1.4-2 — when the memory term is the binding
+constraint and density matters.
+**Plan.** Add a sub-second cgroup `memory.peak` sampler + a per-worker PSS
+(proportional set size) read during a calibration run to measure the true
+marginal cost, and feed a marginal figure (not the standalone peak) into the cap
+default. Pairs naturally with the W1.4-2 measurement.

@@ -79,6 +79,7 @@ from lumi_hpc_qc.sweep.byo_observable import (
 )
 from lumi_hpc_qc.sweep.byo_sweep import assemble_build_kwargs
 from lumi_hpc_qc.sweep.circuit_loader import load_circuit
+from lumi_hpc_qc.sweep.worker_cap import read_vmhwm_kib  # D1: stdlib-only peak probe
 
 
 @dataclass
@@ -158,6 +159,11 @@ class WorkerResult:
 
     # Observability
     runtime_s: float = 0.0
+    # D1 (W1.4): kernel high-water mark (VmHWM) in KiB. The worker reads its
+    # OWN peak at the end of run_one_unit and returns it so the parent can size
+    # the main pool from a device_calibrated probe without racing /proc/<child>.
+    # 0 when unread (error path / probe not taken).
+    peak_rss_kib: int = 0
 
     # Error carrying — None on success; populated string on failure.
     # See module docstring on why we don't raise.
@@ -290,6 +296,12 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
         ]
         num_kicks = [g[args.primary_axis] for g in args.grid_points_sorted]
 
+        # D1: read this worker's OWN kernel high-water mark at the very end —
+        # after build/transpile/run, so it captures the unit's true peak — and
+        # return it. The parent sizes the main pool from a device_calibrated
+        # probe's peak (no /proc/<child> race). 0 if /proc + getrusage both fail.
+        peak_rss_kib = read_vmhwm_kib("self") or 0
+
         return WorkerResult(
             seed=args.seed,
             env_name=args.env_name,
@@ -304,6 +316,7 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             optimization_level=args.optimization_level,
             noise_placement_independent=args.noise_placement_independent,
             runtime_s=time.perf_counter() - t0,
+            peak_rss_kib=peak_rss_kib,
             error=None,
         )
 

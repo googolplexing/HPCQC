@@ -1,0 +1,245 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+"""W1.4 — allocation-aware worker cap (worker_cap.py).
+
+Runs on the cheap on-stack gate (no node-exclusive reservation): the cap
+arithmetic + D3 fallback chains are pure/stdlib and exercised with injected
+cgroup/affinity/probe values, so no real /sys or SLURM allocation is needed.
+
+Coverage maps to the rulings:
+  * D5 binding condition — production arithmetic (cap == 66) + historical-OOM
+    (job 18899724 shape: caps DOWN below the old placeholder of 80, and the
+    raise variant when a unit exceeds safe_mem).
+  * D4 fail-loud taxonomy — (a) unit > safe_mem raises; (b) memory-forced
+    serial on a multi-core reservation raises; (c) num_units==1 silent;
+    (d) single physical core silent (NOT a raise).
+  * D3 safe_mem — cgroup v2 / v1 / "max" fall-through / SLURM env / node
+    RealMemory (LOUD-WARN flag) / unavailable.
+  * usable_cores_physical — SMT-2 halving, floor 1, SLURM-env fallback.
+  * D1 — read_vmhwm_kib parses VmHWM and ignores cgroup "max".
+"""
+from __future__ import annotations
+
+import sys
+
+import pytest
+
+from lumi_hpc_qc.sweep import worker_cap as wc
+
+G = wc.GIB
+
+
+# ── D5: production arithmetic ────────────────────────────────────────────────
+
+def test_production_arithmetic_cap_is_66():
+    # safe_mem ~= 200 GiB, per_unit_peak ~= 3 GiB, 80 units, 128 cores/workers.
+    d = wc.compute_worker_cap(
+        cpu_workers=128, num_units=80, usable_cores_physical=128,
+        safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G,
+    )
+    assert d.cap == 66           # floor(200 / 3) = 66 ; two waves over 80 units
+    assert d.mem_term == 66
+    assert d.binding_term == "memory"
+
+
+# ── D5: historical-OOM (job 18899724 shape) ─────────────────────────────────
+
+def test_historical_oom_caps_down_below_placeholder():
+    # The old placeholder cap = min(num_units, os.cpu_count()) launched all 80
+    # units -> 80 * 3 = 240 GiB > safe_mem -> OOM. The allocation-aware cap must
+    # cap DOWN so the in-flight set fits.
+    placeholder = min(80, 256)
+    d = wc.compute_worker_cap(
+        cpu_workers=128, num_units=80, usable_cores_physical=128,
+        safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G,
+    )
+    assert d.cap < placeholder
+    assert d.cap * 3 <= 200            # in-flight set fits safe_mem
+    assert placeholder * 3 > 200       # the placeholder would have OOM'd
+
+
+def test_historical_oom_raises_when_unit_exceeds_safe_mem():
+    # If even a single unit's probed peak exceeds safe_mem, D4(a) raises rather
+    # than silently launching an unrunnable pool.
+    with pytest.raises(wc.ForcedSerialError):
+        wc.compute_worker_cap(
+            cpu_workers=128, num_units=80, usable_cores_physical=128,
+            safe_mem_bytes=200 * G, per_unit_peak_bytes=210 * G,
+        )
+
+
+# ── D4 fail-loud taxonomy ────────────────────────────────────────────────────
+
+def test_d4a_unit_exceeds_safe_mem_raises():
+    with pytest.raises(wc.ForcedSerialError, match="D4.a."):
+        wc.compute_worker_cap(
+            cpu_workers=128, num_units=4, usable_cores_physical=128,
+            safe_mem_bytes=2 * G, per_unit_peak_bytes=3 * G,
+        )
+
+
+def test_d4b_memory_forced_serial_on_multicore_raises():
+    # mem_term == 1 while cores + workers + units all > 1 -> D10 forced-serial.
+    with pytest.raises(wc.ForcedSerialError, match="D4.b./D10"):
+        wc.compute_worker_cap(
+            cpu_workers=128, num_units=80, usable_cores_physical=128,
+            safe_mem_bytes=4 * G, per_unit_peak_bytes=3 * G,
+        )
+
+
+def test_d4c_single_unit_is_silent_cap_one():
+    d = wc.compute_worker_cap(
+        cpu_workers=128, num_units=1, usable_cores_physical=128,
+        safe_mem_bytes=4 * G, per_unit_peak_bytes=3 * G,
+    )
+    assert d.cap == 1
+    assert d.binding_term == "num_units"
+
+
+def test_d4d_single_core_is_silent_cap_one():
+    # cap==1 because the reservation has one physical core — NOT memory-forced.
+    d = wc.compute_worker_cap(
+        cpu_workers=128, num_units=80, usable_cores_physical=1,
+        safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G,
+    )
+    assert d.cap == 1
+    assert d.binding_term == "cores"
+
+
+# ── binding-term provenance ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("kwargs,expected", [
+    (dict(cpu_workers=4, num_units=80, usable_cores_physical=128,
+          safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G), "cpu_workers"),
+    (dict(cpu_workers=128, num_units=3, usable_cores_physical=128,
+          safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G), "num_units"),
+    (dict(cpu_workers=128, num_units=80, usable_cores_physical=8,
+          safe_mem_bytes=200 * G, per_unit_peak_bytes=3 * G), "cores"),
+    (dict(cpu_workers=128, num_units=80, usable_cores_physical=128,
+          safe_mem_bytes=60 * G, per_unit_peak_bytes=3 * G), "memory"),
+])
+def test_binding_term_provenance(kwargs, expected):
+    assert wc.compute_worker_cap(**kwargs).binding_term == expected
+
+
+def test_compute_cap_rejects_nonpositive_peak():
+    with pytest.raises(ValueError):
+        wc.compute_worker_cap(
+            cpu_workers=128, num_units=4, usable_cores_physical=128,
+            safe_mem_bytes=200 * G, per_unit_peak_bytes=0,
+        )
+
+
+# ── D3 safe_mem fallback chain (injected readers) ────────────────────────────
+
+def test_safe_mem_cgroup_v2():
+    safe, src, warned = wc.resolve_safe_mem(
+        env={},
+        cgroup_reader=lambda: (224 * G, "cgroup_v2:memory.max"),
+        meminfo_reader=lambda: 224 * G,
+    )
+    assert src == "cgroup_v2:memory.max"
+    assert not warned
+    # reserve = max(20 GiB, 0.12 * 224 GiB) = 26.88 GiB -> safe ~= 197.1 GiB
+    assert abs(safe - (224 * G - int(0.12 * 224 * G))) < 2
+    assert 196 * G < safe < 198 * G
+
+
+def test_safe_mem_cgroup_v1():
+    safe, src, warned = wc.resolve_safe_mem(
+        env={},
+        cgroup_reader=lambda: (100 * G, "cgroup_v1:memory.limit_in_bytes"),
+        meminfo_reader=lambda: 224 * G,
+    )
+    assert src == "cgroup_v1:memory.limit_in_bytes"
+    assert not warned
+
+
+def test_safe_mem_max_falls_through_to_slurm():
+    # cgroup "max" -> reader returns (None, None); SLURM_MEM_PER_NODE (MB) used.
+    safe, src, warned = wc.resolve_safe_mem(
+        env={"SLURM_MEM_PER_NODE": "229376"},   # 224 GiB in MB
+        cgroup_reader=lambda: (None, None),
+        meminfo_reader=lambda: 224 * G,
+    )
+    assert src == "slurm:SLURM_MEM_PER_NODE"
+    assert not warned
+    assert 196 * G < safe < 198 * G
+
+
+def test_safe_mem_cgroup_over_node_is_sentinel_falls_through():
+    # cgroup v1 "unlimited" sentinel (> node total) must not be taken literally.
+    safe, src, warned = wc.resolve_safe_mem(
+        env={},
+        cgroup_reader=lambda: (2 ** 62, "cgroup_v1:memory.limit_in_bytes"),
+        meminfo_reader=lambda: 224 * G,
+    )
+    assert src == "node:MemTotal(RealMemory)"
+    assert warned
+
+
+def test_safe_mem_realmemory_warns():
+    safe, src, warned = wc.resolve_safe_mem(
+        env={},
+        cgroup_reader=lambda: (None, None),
+        meminfo_reader=lambda: 224 * G,
+    )
+    assert src == "node:MemTotal(RealMemory)"
+    assert warned is True
+
+
+def test_safe_mem_unavailable_returns_none():
+    safe, src, warned = wc.resolve_safe_mem(
+        env={},
+        cgroup_reader=lambda: (None, None),
+        meminfo_reader=lambda: None,
+    )
+    assert safe is None
+    assert src == "unavailable"
+    assert warned
+
+
+def test_compute_cap_raises_on_unavailable_safe_mem():
+    with pytest.raises(wc.ForcedSerialError):
+        wc.compute_worker_cap(
+            cpu_workers=128, num_units=80, usable_cores_physical=128,
+            safe_mem_bytes=None, per_unit_peak_bytes=3 * G,
+        )
+
+
+# ── usable_cores_physical (SMT halving / floor / fallback) ───────────────────
+
+def test_usable_cores_smt_halving():
+    # 256 logical (full SMT-2 node) -> 128 physical.
+    assert wc.resolve_usable_cores_physical(
+        env={}, affinity_reader=lambda: 256) == 128
+
+
+def test_usable_cores_floor_one():
+    # A genuine single-logical-core reservation floors at 1 (D4(d)).
+    assert wc.resolve_usable_cores_physical(
+        env={}, affinity_reader=lambda: 1) == 1
+
+
+def test_usable_cores_slurm_fallback():
+    # Affinity unreadable -> SLURM env, then halved.
+    assert wc.resolve_usable_cores_physical(
+        env={"SLURM_CPUS_ON_NODE": "256"}, affinity_reader=lambda: None) == 128
+
+
+# ── D1 probe parsing ─────────────────────────────────────────────────────────
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"),
+                    reason="VmHWM via /proc is Linux-only")
+def test_read_vmhwm_self_positive():
+    val = wc.read_vmhwm_kib("self")
+    assert val is not None and val > 0
+
+
+def test_read_int_file_ignores_max(tmp_path):
+    p = tmp_path / "memory.max"
+    p.write_text("max\n")
+    assert wc._read_int_file(str(p)) is None
+    p.write_text("123456789\n")
+    assert wc._read_int_file(str(p)) == 123456789
+    assert wc._read_int_file(str(tmp_path / "does_not_exist")) is None

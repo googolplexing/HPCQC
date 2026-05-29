@@ -2236,18 +2236,23 @@ class SweepEngine:
                         ),
                     ))
 
-        # ── Worker cap. W1.3 ships a MINIMAL correct cap (min of work-unit
-        #    count and host CPU count). The allocation-aware cap (cgroup
-        #    probe + sequential 1-unit RSS probe per A/B/C in
-        #    BLUE-PROPOSAL-W1 v1.1) lands with W1.4 per Q6 ACCEPT. At the
-        #    2-seed canary scale this minimal cap is sufficient — canary
-        #    MaxRSS measured 2.77 GiB at 2-way (RED-RESP-W1 v1.4 §1.3), the
-        #    224 GiB node accommodates trivially. ──
-        cap = max(1, min(len(work_units), os.cpu_count() or 1))
-        print(
-            f"    BYO: dispatching {len(work_units)} unit(s) to forkserver "
-            f"pool (cap={cap}; W1.4 will replace with allocation-aware sizing)"
-        )
+        # ── W1.4 allocation-aware worker cap (RED-RESP-W1.3-VERIFY-AND-W1.4-
+        #    CAP-RULINGS-v1.0 D1-D6; Q6 formula). Replaces the W1.3 placeholder
+        #    (which used node-wide os.cpu_count() and would launch 80 units ->
+        #    ~240 GiB -> the OOM of job 18899724). The cap reads the JOB's
+        #    allocation, never node scontrol:
+        #      cap = min(cpu_workers, num_units, usable_cores_physical,
+        #                floor(safe_mem / per_unit_peak))
+        #    per_unit_peak comes from a live device_calibrated probe (D1/D2);
+        #    safe_mem/usable_cores from cgroup+affinity (D3). The arithmetic +
+        #    fail-loud taxonomy live in the stdlib-only worker_cap module so they
+        #    are unit-testable offline with mocked inputs. ──
+        from lumi_hpc_qc.sweep import worker_cap as wc
+
+        num_units = len(work_units)
+        cpu_workers = self._config.cpu_workers
+        usable_cores = wc.resolve_usable_cores_physical()
+        safe_mem, safe_mem_src, mem_warned = wc.resolve_safe_mem()
 
         # ── Defense-in-depth: seed the env BEFORE the forkserver server is
         #    started (the server is spawned on the first ctx.Pool below, and the
@@ -2257,20 +2262,98 @@ class SweepEngine:
         #    setdefault covers the forkserver server's own process environment.
         #    setdefault (not =) so an explicit cluster/SLURM value is respected
         #    at the server level while each worker still forces its own. Lives
-        #    here, at the sole forkserver-Pool creation site, rather than in the
-        #    run_sweep entry point, so it also covers direct callers of
-        #    _execute_byo_group (e.g. the d34a unit test). Mirrors
+        #    here, before the first forkserver Pool, so it also covers direct
+        #    callers of _execute_byo_group (e.g. the d34a unit test). Mirrors
         #    floquet_runner main():501. See byo_worker.run_one_unit for the full
         #    rationale (device_calibrated custom-noise-pass parallel_map → daemonic
         #    forkserver child → "daemonic processes are not allowed to have children").
         os.environ.setdefault("QISKIT_IN_PARALLEL", "TRUE")
         os.environ.setdefault("OMP_NUM_THREADS", "1")
-
-        # ── Forkserver dispatch (mirrors floquet_runner.py:549-552). ──
         ctx = mp.get_context("forkserver")
-        with ctx.Pool(processes=cap) as pool:
-            worker_results: list[WorkerResult] = list(
-                pool.map(run_one_unit, work_units)
+
+        # ── D1/D2 probe: run ONE device_calibrated unit alone (Pool(1)) and read
+        #    its returned VmHWM as per_unit_peak (the binding heavy arm — a
+        #    noiseless probe would underestimate -> OOM risk). The probe is REAL
+        #    work: its result is kept and joined to the main results. The worker
+        #    reports its own peak (D1 refinement) so the parent never races
+        #    /proc/<child>. Probe-unit selection is deterministic (first
+        #    device_calibrated unit in the deterministic work_units order). If no
+        #    device-cal unit exists, fall back to the C1 banked constant. ──
+        probe_idx = next(
+            (i for i, u in enumerate(work_units)
+             if u.env_source == "device_calibrated"),
+            None,
+        )
+        probe_result: WorkerResult | None = None
+        if probe_idx is not None:
+            with ctx.Pool(processes=1) as ppool:
+                probe_result = ppool.map(run_one_unit, [work_units[probe_idx]])[0]
+
+        if probe_result is not None and probe_result.error:
+            # Probe failed (e.g. a resurfaced device-cal crash): do NOT spend the
+            # main pool. Surface via the standard error-aggregation path below.
+            worker_results: list[WorkerResult] = [probe_result]
+        else:
+            if probe_result is not None and probe_result.peak_rss_kib > 0:
+                per_unit_peak = probe_result.peak_rss_kib * 1024
+                peak_source = "probe:device_calibrated_VmHWM"
+            elif probe_idx is None:
+                per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                peak_source = "c1_fallback:no_device_cal_unit"
+            else:
+                per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                peak_source = "c1_fallback:probe_returned_no_vmhwm"
+
+            # Resolve the cap. Raises ForcedSerialError on D4(a)/(b) (fail-loud).
+            decision = wc.compute_worker_cap(
+                cpu_workers=cpu_workers,
+                num_units=num_units,
+                usable_cores_physical=usable_cores,
+                safe_mem_bytes=safe_mem,
+                per_unit_peak_bytes=per_unit_peak,
+            )
+            cap = decision.cap
+
+            # D3: a LOUD WARN when safe_mem fell through to node RealMemory (the
+            # non-allocation-aware last resort Q6 exists to avoid) — never silent.
+            if mem_warned:
+                print(
+                    "    BYO: WARN: memory budget fell through to node "
+                    f"RealMemory ({safe_mem_src}) — NOT allocation-aware. "
+                    f"safe_mem={safe_mem / wc.GIB:.1f} GiB. Set --mem or run "
+                    "under a cgroup memory limit for an allocation-aware cap."
+                )
+            # D2 condition + criterion-5 observability: record that all units
+            # were treated as heavy (device-cal per_unit_peak), the resolved cap,
+            # the per_unit_peak + its source, safe_mem + its source, the cores,
+            # and which term bound the cap — so the under-pack is auditable.
+            n_waves = (num_units + cap - 1) // cap if cap else 0
+            print(
+                f"    BYO: dispatching {num_units} unit(s) to forkserver pool "
+                f"(cap={cap}; binding={decision.binding_term}; "
+                f"{n_waves} wave(s); all units treated as heavy "
+                f"[device_calibrated], D2 conservative). "
+                f"per_unit_peak={per_unit_peak / wc.GIB:.2f} GiB [{peak_source}]; "
+                f"safe_mem={safe_mem / wc.GIB:.1f} GiB [{safe_mem_src}]; "
+                f"usable_cores_physical={usable_cores}; cpu_workers={cpu_workers}; "
+                f"mem_term={decision.mem_term}."
+            )
+
+            # ── Main dispatch over the REMAINING units (the probe result is
+            #    reused, not recomputed). The probe ran-then-exited before this
+            #    pool, so peak concurrency is `cap`, not cap+1. Each unit's
+            #    run_one_unit is byte-identical regardless of pool grouping, so
+            #    the 2-seed canary byte-match is preserved. ──
+            remaining = (
+                [u for i, u in enumerate(work_units) if i != probe_idx]
+                if probe_idx is not None else list(work_units)
+            )
+            main_results: list[WorkerResult] = []
+            if remaining:
+                with ctx.Pool(processes=cap) as pool:
+                    main_results = list(pool.map(run_one_unit, remaining))
+            worker_results = (
+                ([probe_result] if probe_result is not None else []) + main_results
             )
 
         # ── Fail-loud on any worker error. A failed worker returns a
