@@ -25,7 +25,9 @@ import pytest
 
 pytest.importorskip("qiskit")
 
-from lumi_hpc_qc.sweep.sweep_engine import SweepEngine, SweepTask, SweepProgress
+from lumi_hpc_qc.sweep.sweep_engine import (
+    SweepEngine, SweepTask, SweepProgress, SweepConfig,
+)
 from lumi_hpc_qc.sweep.noise_configs import NOISE_ENV_BY_NAME
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -118,8 +120,14 @@ def _full_engine_for(tasks):
     # surfaced post-W1.3 regression-check (LUMI job 18906639, 3 of 5 d34a
     # tests). `_byo_dat_dir` already has a `getattr(self, "_byo_dat_dir",
     # None)` guard in _execute_byo_group, so it does not need initialising.
+    # W1.4 adds one more read — the allocation-aware cap reads
+    # `self._config.cpu_workers` (the config ceiling) — so wire a default
+    # SweepConfig (cpu_workers defaults to 128; at d34a's 2-4 unit scale the
+    # cap resolves to num_units regardless). Same __new__-bypass cause as the
+    # _progress wiring above (surfaced LUMI job 18921322, same 3 of 5 tests).
     eng._progress = SweepProgress()
     eng._progress_callback = None
+    eng._config = SweepConfig()
     eng._load_calibration(_CAL)   # real contract: caches + registers device
     return eng
 
