@@ -2316,6 +2316,12 @@ class SweepEngine:
                 "master_seed": r.master_seed,
                 # CFG-2 / W1.2: resolved opt_level recorded per result.
                 "optimization_level": r.optimization_level,
+                # NF4 (W1.4): thread the resolved calibration_set_id onto the
+                # record so the HDF5 writer can persist it (criterion 6). cal_id
+                # is a per-GROUP constant resolved at _execute_byo_group from
+                # self._cal_cache[cal_path] (@~2026) — parent-side, so it is not
+                # round-tripped through WorkerArgs/WorkerResult per unit.
+                "calibration_set_id": cal_id,
             })
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start

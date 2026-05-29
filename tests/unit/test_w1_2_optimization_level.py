@@ -11,10 +11,15 @@ Verifies that:
   (3) the resolution expression at the execution site treats None as 3 and
       passes any explicit 0..3 value through unchanged.
 
-Provenance threading (the per-result HDF5 attr "optimization_level") and the
-non-default health note are observed by the LUMI canary at W1.3 and gate-2
-verification at W1.6; this file's job is to lock the schema + the validator
-down so those downstream checks have a stable contract to assert against.
+Provenance threading: the per-result HDF5 attr "optimization_level" is
+persisted by the BYO writer as of W1.4 (NF4 — previously the result dict +
+WAL carried it but the HDF5 writer dropped it). The non-default health note
+is printed by the engine. NOTE: the 2-seed LUMI canary verifies the
+per-instance .dat SHAs (byte-match), NOT the HDF5 attrs, so attr persistence
+is exercised by the d34a on-stack wiring suite and is available for gate-2
+provenance inspection at W1.6 — it is not asserted by the canary itself.
+This file's job is to lock the schema + the validator down so those
+downstream checks have a stable contract to assert against.
 
 Per RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Q3 ACCEPT: gate-2 pins 3
 (the banked-reference lineage); changing the level changes the transpiled

@@ -407,7 +407,8 @@ class SweepHDF5Writer:
         Datasets:  autocorrelator (float64[N_kicks]), num_kicks (int[N_kicks]),
                    physical_qubit_set (utf-8[n_qubits]).
         Attrs:     noise_source, noise_placement_independent, seed,
-                   seed_simulator, master_seed, shots.
+                   seed_simulator, master_seed, shots, placement_id,
+                   optimization_level, calibration_set_id (NF4).
 
         ``result`` is one dict from SweepEngine._byo_results_last.
         """
@@ -487,6 +488,16 @@ class SweepHDF5Writer:
         grp.attrs["shots"] = int(result["shots"])
         if result.get("placement_id") is not None:
             grp.attrs["placement_id"] = int(result["placement_id"])
+        # NF4 (W1.4): persist the W1 provenance attrs that the result dict +
+        # WAL already carry but the writer previously dropped. optimization_level
+        # is physics-affecting under noise (CFG-2); calibration_set_id ties the
+        # record to its calibration. .get() so WAL-replay (which feeds the same
+        # _write_byo_hdf5_group via _byo_wal_safe, a whole-dict coercion) and the
+        # live path behave identically. Criterion 6 (RED-RESP-W1.3-VERIFY NF4).
+        if result.get("optimization_level") is not None:
+            grp.attrs["optimization_level"] = int(result["optimization_level"])
+        if result.get("calibration_set_id") is not None:
+            grp.attrs["calibration_set_id"] = str(result["calibration_set_id"])
 
     def create_soft_link(
         self, source_path: str, target_path: str
