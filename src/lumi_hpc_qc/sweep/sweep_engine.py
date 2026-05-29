@@ -2339,7 +2339,6 @@ class SweepEngine:
         # output dir mirrors the bank: one subdir per (placement, env).
         out_root = getattr(self, "_byo_dat_dir", None)
         if out_root is not None:
-            import os
             by_pe: dict[tuple, list] = {}
             for r in byo_results:
                 key = (tuple(r["physical_qubit_set"]), r["env"])
