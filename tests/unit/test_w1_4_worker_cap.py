@@ -263,22 +263,66 @@ def test_compute_cap_raises_on_unavailable_safe_mem():
 
 # ── usable_cores_physical (SMT halving / floor / fallback) ───────────────────
 
-def test_usable_cores_smt_halving():
-    # 256 logical (full SMT-2 node) -> 128 physical.
+# ── usable_cores_physical: distinct-physical-core counting via sibling map ───
+# A fake LUMI-C topology: 128 physical cores, SMT-2, siblings (N, N+128).
+def _lumi_siblings(cpu):
+    lo = cpu % 128
+    return f"{lo},{lo + 128}"
+
+
+def test_usable_cores_production_128_not_64():
+    # MEASURED on LUMI-C (job 18938652): --cpus-per-task=128 -> affinity 0-127,
+    # which is the first thread of all 128 distinct physical cores. The correct
+    # count is 128 (the old flat //2 wrongly said 64, under-packing the gate).
+    affinity = set(range(128))
     assert wc.resolve_usable_cores_physical(
-        env={}, affinity_reader=lambda: 256) == 128
+        affinity_reader=lambda: affinity, siblings_reader=_lumi_siblings) == 128
 
 
-def test_usable_cores_floor_one():
-    # A genuine single-logical-core reservation floors at 1 (D4(d)).
+def test_usable_cores_both_siblings_collapse_to_core():
+    # Both threads of every core present (e.g. --threads-per-core=2, or a 0-255
+    # set): logical 0 and 128 share sibling group "0,128" and must collapse to
+    # ONE core. 256 logical -> 128 physical, NOT 256.
+    affinity = set(range(256))
     assert wc.resolve_usable_cores_physical(
-        env={}, affinity_reader=lambda: 1) == 1
+        affinity_reader=lambda: affinity, siblings_reader=_lumi_siblings) == 128
 
 
-def test_usable_cores_slurm_fallback():
-    # Affinity unreadable -> SLURM env, then halved.
+def test_usable_cores_small_partition_partial():
+    # MEASURED on `small` (job 18937495): --cpus-per-task=4 -> affinity like
+    # [82,83,84,85], four DISTINCT cores' first threads -> 4 physical cores.
+    # The old //2 wrongly said 2 (under-pack). This is also why the post-fix
+    # D5 wave-forcing recipe uses --cpus-per-task=2, not 4.
+    affinity = {82, 83, 84, 85}
+    assert wc.resolve_usable_cores_physical(
+        affinity_reader=lambda: affinity, siblings_reader=_lumi_siblings) == 4
+
+
+def test_usable_cores_single_core_floor_one():
+    # A genuine single-core reservation floors at 1 (D4(d)).
+    assert wc.resolve_usable_cores_physical(
+        affinity_reader=lambda: {5}, siblings_reader=_lumi_siblings) == 1
+
+
+def test_usable_cores_topology_unreadable_falls_back_to_divide():
+    # /sys topology unreadable (restricted container): we know the owned-logical
+    # count but not the sibling layout, so divide conservatively (under-count,
+    # safe). 128 owned logical -> 64.
+    affinity = set(range(128))
+    assert wc.resolve_usable_cores_physical(
+        affinity_reader=lambda: affinity, siblings_reader=lambda c: None) == 64
+
+
+def test_usable_cores_no_affinity_slurm_env_fallback():
+    # No affinity at all -> SLURM env count, divided conservatively.
     assert wc.resolve_usable_cores_physical(
         env={"SLURM_CPUS_ON_NODE": "256"}, affinity_reader=lambda: None) == 128
+
+
+def test_usable_cores_no_affinity_empty_set_uses_env():
+    # An empty affinity set is treated as "no affinity" -> env fallback.
+    assert wc.resolve_usable_cores_physical(
+        env={"SLURM_CPUS_PER_TASK": "8"}, affinity_reader=lambda: set()) == 4
 
 
 # ── D1 probe parsing ─────────────────────────────────────────────────────────

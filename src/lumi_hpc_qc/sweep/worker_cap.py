@@ -42,12 +42,25 @@ GIB = 1024 ** 3
 # provenance-tagged in the footer when it fires (never a silent default).
 C1_PER_UNIT_PEAK_BYTES = 3 * GIB
 
-# LUMI standard partition is SMT-2 (256 logical / 128 physical). The job's
-# affinity set is assumed to contain both SMT siblings per owned physical core
-# (true when SLURM allocates whole physical cores). Under-counting cores only
-# shrinks the cap (under-packs, safe); the memory term is the real OOM guard.
-# DEBT: detect siblings precisely rather than assuming a flat /2.
-SMT_FACTOR = 2
+# Physical-core counting reads the actual CPU topology (sibling map) rather
+# than assuming an SMT factor. The job's affinity set is the logical CPUs it
+# owns; the number of *physical* cores is the count of DISTINCT
+# thread-sibling groups among them. This is correct for any allocation shape:
+#   - one thread per core (the normal SLURM allocation, e.g. --cpus-per-task=128
+#     -> logical 0-127, siblings 0,128 / 1,129 / ... -> 128 distinct -> 128 cores)
+#   - both threads of some cores (e.g. --threads-per-core=2, or a 0-255 set ->
+#     logical 0 and 128 share sibling-list "0,128" and collapse to one core)
+# Verified on LUMI-C at d057e64: --cpus-per-task=128 -> 128 distinct cores
+# (job 18938652), where the prior flat //2 wrongly reported 64. The //2 was a
+# systematic 2x under-count wherever SLURM allocates one thread per core (the
+# common case), under-packing the pool on both `standard` and `small`.
+#
+# FALLBACK_SMT_FACTOR applies ONLY when the topology is unreadable (no
+# /sys/devices/system/cpu, e.g. some restricted containers) AND we have only a
+# bare logical count from SLURM env / os.cpu_count(). In that last-resort path
+# we cannot know the sibling layout, so we conservatively divide (under-count
+# -> under-pack -> safe, never OOM). The primary path never divides.
+FALLBACK_SMT_FACTOR = 2
 
 # D3 headroom: reserve = min( max(16 GiB floor, 12% fraction), 50% cap ).
 # The reserve must cover OS + page cache AND the resident parent heap (the
@@ -212,39 +225,81 @@ def resolve_safe_mem(
     return limit - reserve, source, warned
 
 
+def _read_thread_siblings(cpu: int) -> str | None:
+    """The thread-sibling group of one logical CPU, as the kernel reports it.
+
+    Reads ``/sys/devices/system/cpu/cpu<N>/topology/thread_siblings_list`` — a
+    stable string like ``"0,128"`` that is IDENTICAL for both threads of a
+    physical core. Distinct strings => distinct physical cores. Returns None if
+    the topology file is unreadable (restricted container / non-Linux).
+    """
+    path = f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
 def resolve_usable_cores_physical(
     *,
     env: dict | None = None,
     affinity_reader=None,
+    siblings_reader=_read_thread_siblings,
 ) -> int:
     """Physical cores the JOB owns.
 
-    ``len(os.sched_getaffinity(0))`` (logical cores in the job's cpuset) halved
-    for SMT-2; falls back to ``$SLURM_CPUS_PER_TASK`` / ``$SLURM_CPUS_ON_NODE``,
-    then ``os.cpu_count()``. Floored at 1 — a genuine single-core reservation
-    resolves to 1 (D4(d): silent/normal, NOT the D10 forced-serial raise).
+    Counts DISTINCT physical cores in the job's affinity set by deduplicating
+    each logical CPU's thread-sibling group (NOT a flat SMT divide — see the
+    FALLBACK_SMT_FACTOR note). Correct for any allocation shape: one thread per
+    core, or both threads of some cores (they share a sibling group and collapse
+    to one). Floored at 1 — a genuine single-core reservation resolves to 1
+    (D4(d): silent/normal, NOT the D10 forced-serial raise).
+
+    Resolution order:
+      1. Affinity set + sibling map (the accurate path; needs /sys topology).
+      2. Affinity set with NO readable topology -> conservative divide of the
+         set size by FALLBACK_SMT_FACTOR (last resort; under-counts, safe).
+      3. No affinity -> SLURM env count / os.cpu_count(), divided (last resort).
+
+    ``affinity_reader`` returns the SET of logical CPU IDs the job owns (for
+    tests); ``siblings_reader(cpu)`` returns that CPU's sibling-group string or
+    None (for tests). Both default to the real OS/sysfs readers.
     """
     env = os.environ if env is None else env
-    logical = None
+
+    # (1)/(2): the affinity set — the logical CPUs this job actually owns.
+    affinity: set[int] | None
     if affinity_reader is not None:
-        logical = affinity_reader()
+        affinity = affinity_reader()
     else:
         try:
-            logical = len(os.sched_getaffinity(0))
+            affinity = set(os.sched_getaffinity(0))
         except (AttributeError, OSError):
-            logical = None
-    if not logical:
-        for key in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
-            val = env.get(key)
-            if val:
-                try:
-                    logical = int(val)
-                    break
-                except ValueError:
-                    pass
+            affinity = None
+
+    if affinity:
+        groups = {sib for c in affinity if (sib := siblings_reader(c)) is not None}
+        if groups:
+            # (1) Accurate: distinct sibling groups == distinct physical cores.
+            return max(1, len(groups))
+        # (2) Topology unreadable but we DO know the owned-logical count.
+        # Cannot know the sibling layout -> divide conservatively (under-count).
+        return max(1, len(affinity) // FALLBACK_SMT_FACTOR)
+
+    # (3) No affinity at all -> bare logical count from SLURM env, then cpu_count.
+    logical = None
+    for key in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+        val = env.get(key)
+        if val:
+            try:
+                logical = int(val)
+                break
+            except ValueError:
+                pass
     if not logical:
         logical = os.cpu_count() or 1
-    return max(1, logical // SMT_FACTOR)
+    return max(1, logical // FALLBACK_SMT_FACTOR)
 
 
 # ── The cap (Q6 formula + D4 taxonomy) ───────────────────────────────────────
