@@ -284,6 +284,14 @@ class SweepTask:
     # each task so the BYO execution site uses the resolved value. None -> 3
     # (default; the historical hardcode and the gate-2 reference pin).
     optimization_level: int | None = None
+    # PLACEMENT-1: experiment-level researcher placement carried onto each task
+    # so the executor's shared placement seam (solver.resolve_placements) can
+    # bypass the solver. None -> solver self-selects; list[list[str]] -> manual
+    # placement(s), logical qubit i -> physical_qubits[k][i]. Parsed and
+    # scope-gated in parse_sweep_config (BYO-only pending review); propagated in
+    # _expand_byo_experiment. Without this carry the executor reads it off the
+    # task and always sees None -> the W1.6 Step-1 silent-solver bug.
+    physical_qubits: list[list[str]] | None = None
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -543,6 +551,7 @@ def _expand_byo_experiment(
                     master_seed=disorder_master_seed,
                     experiment_shots=exp.shots,
                     optimization_level=exp.optimization_level,
+                    physical_qubits=exp.physical_qubits,
                 ))
     return task_counter
 
@@ -760,6 +769,21 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             signature_check=exp_dict.get("signature_check", True),
             disorder_gates=exp_dict.get("disorder_gates", ["rz", "rzz"]),
         )
+
+        # PLACEMENT-1 scope gate: researcher physical_qubits is wired only into
+        # the BYO placement seam (Phase 1; other types pending review). Set on
+        # any other experiment_type it would parse but never be honoured by that
+        # executor -- reject it fail-loud rather than silently ignore it.
+        if (
+            exp.physical_qubits is not None
+            and exp.experiment_type != "byo_circuit"
+        ):
+            raise ValueError(
+                f"physical_qubits is only supported for "
+                f"experiment_type='byo_circuit' (PLACEMENT-1 is BYO-only "
+                f"pending review); got experiment_type={exp.experiment_type!r}. "
+                f"Remove physical_qubits, or set type: byo_circuit."
+            )
 
         # Parse seed_list (v1.4.0 — explicit seed list)
         raw_seeds = exp_dict.get("seed_list")
@@ -1803,12 +1827,23 @@ class SweepEngine:
         t_place_start = time.perf_counter()
         cache_key = (topo_name, device_cal.device_id)
         if cache_key not in self._placement_cache:
-            placements = self._solver.find_all_placements(
+            # Shared placement seam (PLACEMENT-1), same entry point the BYO
+            # executor uses. Non-BYO manual placement is gated off at parse
+            # (physical_qubits rejected on non-byo types), so this resolves
+            # solver-only today and is byte-identical to the prior direct
+            # find_all_placements call. To enable manual placement here later:
+            # carry physical_qubits onto the non-byo task, fold it into
+            # cache_key (which currently keys only (topo, device)), and decide
+            # this executor's device-cal guardrail.
+            placements = self._solver.resolve_placements(
                 circuit_edges=representative.topology_edges,
                 circuit_qubits=qsize,
-                device_ids=[device_cal.device_id],
+                device_id=device_cal.device_id,
                 strategy="max_fidelity",
                 max_placements=representative.max_placements,
+                manual_qubit_name_lists=getattr(
+                    representative, "physical_qubits", None
+                ),
             )
             self._placement_cache[cache_key] = placements
             print(f"    E1: {len(placements)} placements for {topo_name} "
@@ -2127,35 +2162,29 @@ class SweepEngine:
         #    score-descending). ──
         manual_placements = getattr(representative, "physical_qubits", None)
         t_place_start = time.perf_counter()
-        if manual_placements:
-            # Preserve the F5a device-cal guardrail even on the manual path:
-            # until per-placement device-calibrated noise is validated across
-            # multiple placements, device_calibrated is restricted to a single
-            # placement. A manual device_calibrated study with >1 placement is
-            # gated here, not silently allowed (DEBT PLACEMENT-1).
-            if wants_device_cal and len(manual_placements) > 1:
-                errors.append(
-                    f"BYO: device_calibrated with {len(manual_placements)} "
-                    f"manual placements is gated by the F5a single-placement "
-                    f"guardrail; supply one placement for device_calibrated, "
-                    f"or run noiseless for a multi-placement study "
-                    f"(see DEBT PLACEMENT-1)."
-                )
-                return
-            placements = self._solver.placements_from_names(
-                qubit_name_lists=manual_placements,
-                circuit_edges=connectivity,
-                circuit_qubits=qsize,
-                device_id=device_cal.device_id,
+        # F5a device-cal guardrail stays here (per-executor noise policy): until
+        # per-placement device-calibrated noise is validated across multiple
+        # placements, a manual device_calibrated study with >1 placement is
+        # gated, not silently allowed (DEBT PLACEMENT-1). Resolution itself now
+        # goes through the shared seam below (solver.resolve_placements), so new
+        # circuit types inherit solver-bypass without re-implementing dispatch.
+        if manual_placements and wants_device_cal and len(manual_placements) > 1:
+            errors.append(
+                f"BYO: device_calibrated with {len(manual_placements)} "
+                f"manual placements is gated by the F5a single-placement "
+                f"guardrail; supply one placement for device_calibrated, "
+                f"or run noiseless for a multi-placement study "
+                f"(see DEBT PLACEMENT-1)."
             )
-        else:
-            placements = self._solver.find_all_placements(
-                circuit_edges=connectivity,
-                circuit_qubits=qsize,
-                device_ids=[device_cal.device_id],
-                strategy="max_fidelity",
-                max_placements=max_placements,
-            )
+            return
+        placements = self._solver.resolve_placements(
+            circuit_edges=connectivity,
+            circuit_qubits=qsize,
+            device_id=device_cal.device_id,
+            strategy="max_fidelity",
+            max_placements=max_placements,
+            manual_qubit_name_lists=manual_placements,
+        )
         self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
         if not placements:
             errors.append(

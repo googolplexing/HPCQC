@@ -110,3 +110,29 @@ def test_cross_grid_catches_impure_factory(tmp_path):
     cfg.experiments[0].circuit_script = str(impure)
     with pytest.raises(ValueError, match="FAILED"):
         expand_grid(cfg)
+
+
+def _cfg_dict_with_placement():
+    cfg = _cfg_dict()
+    cfg["sweep"]["experiments"][0]["physical_qubits"] = ["QB1", "QB2", "QB5", "QB6"]
+    return cfg
+
+
+def test_expand_grid_propagates_physical_qubits_to_byo_tasks():
+    # PLACEMENT-1 regression: experiment-level physical_qubits must reach EVERY
+    # task, mirroring the shots/optimization_level carry. Without it the
+    # executor reads None off the task and silently runs the solver -- the W1.6
+    # Step-1 bug, which the prior dispatch test missed by using a fake task that
+    # already had the attribute set. This drives the real expand_grid path.
+    tasks = expand_grid(parse_sweep_config(_cfg_dict_with_placement()))
+    assert tasks
+    for t in tasks:
+        assert t.physical_qubits == [["QB1", "QB2", "QB5", "QB6"]], t.physical_qubits
+
+
+def test_expand_grid_no_physical_qubits_leaves_none():
+    # Field-absent path stays None (solver self-selects) -- byte-identical to
+    # pre-PLACEMENT-1 behaviour.
+    tasks = expand_grid(parse_sweep_config(_cfg_dict()))
+    assert tasks
+    assert all(t.physical_qubits is None for t in tasks)

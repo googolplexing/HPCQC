@@ -515,6 +515,50 @@ class GeneralPlacementSolver:
             ))
         return placements
 
+    def resolve_placements(
+        self,
+        circuit_edges: list[tuple[int, int]],
+        circuit_qubits: int,
+        device_id: str,
+        strategy: str = "max_fidelity",
+        max_placements: int | None = None,
+        call_limit: int = 100_000,
+        manual_qubit_name_lists: list[list[str]] | None = None,
+    ) -> list["Placement"]:
+        """Single placement-resolution seam (PLACEMENT-1).
+
+        The one place any executor resolves placements: when
+        ``manual_qubit_name_lists`` is supplied the solver is bypassed via
+        ``placements_from_names`` (researcher placement control); otherwise the
+        solver self-selects via ``find_all_placements``. The manual-absent path
+        forwards its arguments unchanged, so it is byte-identical to calling
+        ``find_all_placements`` directly -- the invariant each executor relies
+        on for its field-absent behaviour. New circuit types resolve placements
+        by calling this method; they do not re-implement the dispatch.
+
+        ``max_placements``/``call_limit`` apply only to the solver path
+        (``placements_from_names`` returns exactly the supplied placements).
+        Noise/guardrail policy (e.g. the F5a device-calibrated single-placement
+        restriction) is deliberately left to the caller, since it differs per
+        executor.
+        """
+        if manual_qubit_name_lists:
+            return self.placements_from_names(
+                qubit_name_lists=manual_qubit_name_lists,
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_id=device_id,
+                strategy=strategy,
+            )
+        return self.find_all_placements(
+            circuit_edges=circuit_edges,
+            circuit_qubits=circuit_qubits,
+            device_ids=[device_id],
+            strategy=strategy,
+            max_placements=max_placements,
+            call_limit=call_limit,
+        )
+
     # --- Scoring ---
 
     def _score_placement(
