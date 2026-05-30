@@ -1,0 +1,82 @@
+=== W1 Canary — 2-seed byte-match against in-tree oracle ===
+Job ID:    18924351
+Node:      nid001162
+Container: /appl/local/quantum/qiskit/qiskit_2.3.0_csc.sif
+YAML:      /flash/project_462001289/mucciard/HPCQC/HPCQC/examples/byo/floquet_dtc_q10_canary_2seed.yaml
+Oracle:    /flash/project_462001289/mucciard/HPCQC/HPCQC/evidence/W1/gate2_canary/sha256_oracle.txt
+OutputDir: /pfs/lustref1/flash/project_462001289/mucciard/HPCQC/HPCQC/sweep_output/w1_canary
+Verifier:  /flash/project_462001289/mucciard/HPCQC/HPCQC/tests/_w1_canary_verify.py
+Started:   Fri May 29 18:22:52 EEST 2026
+
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+
+======================================================================
+  SWEEP ENGINE — 2bef4b8f
+======================================================================
+
+── Loading calibrations ──
+  Loaded: examples/q50_calibration_20260524_08c3c70f.json
+
+── Expanding sweep grid ──
+  Total tasks: 120
+  Experiments: 1
+  Calibrations: 1
+  Manifest created: 120 tasks
+  Task groups: 1 (hamiltonian × topology × calibration)
+
+── Executing sweep → sweep_output/w1_canary/sweep.h5 ──
+
+  Group 1/1: examples/byo/floquet_dtc.py / byo / cal_20260524
+    BYO: built examples/byo/floquet_dtc.py (10q, 9 2q-edges, num_kicks=59)
+  Device Q50: 30750 valid placements for 10q circuit
+    BYO: 1 placement(s) (top_1, device_calibrated guardrail)
+    BYO: WARN: memory budget fell through to node RealMemory (node:MemTotal(RealMemory)) — NOT allocation-aware. safe_mem=221.0 GiB. Set --mem or run under a cgroup memory limit for an allocation-aware cap.
+    BYO: dispatching 4 unit(s) to forkserver pool (cap=4; binding=num_units; 1 wave(s); all units treated as heavy [device_calibrated], D2 conservative). per_unit_peak=1.32 GiB [probe:device_calibrated_VmHWM]; safe_mem=221.0 GiB [node:MemTotal(RealMemory)]; usable_cores_physical=64; cpu_workers=128; mem_term=167.
+    BYO: computed 4 (seed x placement x env) autocorrelator series
+
+── Verifying WAL consistency ──
+  WAL entries: 4
+  HDF5 groups: 4
+  Consistent: True
+
+======================================================================
+  SWEEP COMPLETE — 2bef4b8f
+  Tasks: 120/120
+  Placements processed: 120
+  Simulations: 4
+  Deduplicated: 0
+  HDF5 writes: 4
+  Errors: 0
+  Elapsed: 1312.8s
+  Output: sweep_output/w1_canary/sweep.h5
+======================================================================
+
+  Benchmark Parquet: 1 rows → sweep_output/w1_canary/sweep_benchmark.parquet
+Sweep complete: SweepResult(sweep_id='2bef4b8f', hdf5_path='sweep_output/w1_canary/sweep.h5', total_tasks=120, total_placements=120, total_simulations=4, total_deduplicated=0, total_hdf5_writes=4, total_errors=0, elapsed_seconds=1312.7541990280151, errors=[], placement_summary={})
+
+=== Byte-match verification ===
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+=== W1 Canary byte-match verifier ===
+Workdir: /pfs/lustref1/flash/project_462001289/mucciard/HPCQC/HPCQC/sweep_output/w1_canary
+Oracle:  /flash/project_462001289/mucciard/HPCQC/HPCQC/evidence/W1/gate2_canary/sha256_oracle.txt
+
+Oracle SHAs (2 seed(s)):
+  seed 00: f5578984383107bc0e3f6eb57be7c8b5c980622f544af5cf1f3d10cdcdc82409
+  seed 01: 622721c61cb81e4a8fd313b34072173d638d18222c967dd7df1caf0f23ad1c9b
+
+Found arms in engine output: ['device_calibrated', 'noiseless']
+  device_calibrated: 2 per-instance dat(s) (seeds [0, 1])
+  noiseless: 2 per-instance dat(s) (seeds [0, 1])
+
+--- arm: device_calibrated ---
+  seed 00: engine=f5578984383107bc.. oracle=f5578984383107bc.. OK
+  seed 01: engine=622721c61cb81e4a.. oracle=622721c61cb81e4a.. OK
+
+--- arm: noiseless ---
+  seed 00: engine=5e55b57369cc8b3a.. oracle=f5578984383107bc.. MISMATCH
+  seed 01: engine=9ac85fbcb1c4c23c.. oracle=622721c61cb81e4a.. MISMATCH
+
+W1 CANARY ACCEPTANCE: ALL CHECKS PASSED
+  device_calibrated: byte-match on both seeds; noiseless: present and distinct (noise applied).
+
+Finished: Fri May 29 18:45:00 EEST 2026

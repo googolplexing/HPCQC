@@ -1,0 +1,6 @@
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+
+Lmod is automatically replacing "craype-x86-rome" with "craype-x86-milan".
+
+.......................................................                  [100%]
+55 passed in 20.74s
