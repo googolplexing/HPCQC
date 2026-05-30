@@ -294,17 +294,19 @@ class _FakeTask:
 
 
 class _SpySolver:
+    # The executor now resolves placements through the shared seam
+    # (solver.resolve_placements); it no longer calls find_all_placements /
+    # placements_from_names directly. So we spy on the seam and assert the
+    # executor hands it the right args -- in particular manual_qubit_name_lists
+    # (None vs the supplied lists). The seam's onward dispatch and verbatim
+    # forwarding to each primitive is covered in
+    # tests/unit/test_placement_resolution_seam.py.
     def __init__(self):
-        self.find_all_kwargs = None
-        self.from_names_kwargs = None
+        self.resolve_kwargs = None
 
-    def find_all_placements(self, **kwargs):
-        self.find_all_kwargs = kwargs
+    def resolve_placements(self, **kwargs):
+        self.resolve_kwargs = kwargs
         return []                        # -> method exits at `if not placements`
-
-    def placements_from_names(self, **kwargs):
-        self.from_names_kwargs = kwargs
-        return []
 
 
 def _engine_with(spy, task):
@@ -322,15 +324,16 @@ def test_field_absent_dispatches_to_solver_with_verbatim_args():
     eng = _engine_with(spy, task)
     eng._execute_byo_group([task], writer=None, errors=[])
 
-    # the manual path is NOT touched ...
-    assert spy.from_names_kwargs is None
-    # ... and the solver is called with exactly the pre-seam arguments.
-    assert spy.find_all_kwargs == {
+    # field absent -> the executor hands the seam manual_qubit_name_lists=None
+    # (the seam then self-selects via the solver) together with the verbatim
+    # placement args, including the distinctive max_placements=7.
+    assert spy.resolve_kwargs == {
         "circuit_edges": [(0, 1), (1, 2)],
         "circuit_qubits": 3,
-        "device_ids": ["vtt_q50_test"],
+        "device_id": "vtt_q50_test",
         "strategy": "max_fidelity",
         "max_placements": 7,
+        "manual_qubit_name_lists": None,
     }
 
 
@@ -340,12 +343,14 @@ def test_field_present_bypasses_solver():
     eng = _engine_with(spy, task)
     eng._execute_byo_group([task], writer=None, errors=[])
 
-    # routes to the manual path with the supplied list, in logical order ...
-    assert spy.from_names_kwargs == {
-        "qubit_name_lists": [["QB1", "QB2", "QB3"]],
+    # field present -> the executor hands the seam the supplied manual list (in
+    # logical order); the seam routes it to placements_from_names. The verbatim
+    # placement args still ride along.
+    assert spy.resolve_kwargs == {
         "circuit_edges": [(0, 1), (1, 2)],
         "circuit_qubits": 3,
         "device_id": "vtt_q50_test",
+        "strategy": "max_fidelity",
+        "max_placements": 7,
+        "manual_qubit_name_lists": [["QB1", "QB2", "QB3"]],
     }
-    # ... and the solver self-selection is NOT invoked.
-    assert spy.find_all_kwargs is None
