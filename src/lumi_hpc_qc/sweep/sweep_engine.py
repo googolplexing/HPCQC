@@ -164,6 +164,12 @@ class SweepExperimentConfig:
     # exposed. None -> 3 (default).
     optimization_level: int | None = None
 
+    # PLACEMENT-1: explicit researcher-chosen placement(s), bypassing the
+    # solver. None -> solver self-selects (current behavior). A list of
+    # qubit-name lists; logical qubit i maps to physical_qubits[k][i] (the F5a
+    # placement-keyed order, mirroring noise_model._resolve_selected).
+    physical_qubits: list[list[str]] | None = None
+
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
 
@@ -628,6 +634,41 @@ def _generate_lhs_samples(
 # Config parsing
 # ═══════════════════════════════════════════════════════════════════════
 
+def _parse_physical_qubits(raw: Any) -> list[list[str]] | None:
+    """Normalize the optional ``physical_qubits`` field to list[list[str]] | None.
+
+    PLACEMENT-1. Accepts either a single placement (a list of qubit-name
+    strings) or several (a list of such lists), and normalizes a single
+    placement to a one-element list. Returns None when the field is absent
+    (solver self-selects). Fail-loud on a malformed value; per-placement
+    semantic validation (count, names-in-calibration, real edges) happens at
+    placement-resolution time in PlacementSolver.placements_from_names.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "physical_qubits must be a non-empty list (of qubit-name strings "
+            "for one placement, or of lists of qubit-name strings for several)"
+        )
+    if all(isinstance(x, str) for x in raw):
+        placements = [list(raw)]
+    elif all(isinstance(x, list) for x in raw):
+        placements = [list(x) for x in raw]
+    else:
+        raise ValueError(
+            "physical_qubits must be either a list of qubit-name strings (one "
+            "placement) or a list of such lists (several placements), not a mix"
+        )
+    for k, p in enumerate(placements):
+        if not p or not all(isinstance(q, str) for q in p):
+            raise ValueError(
+                f"physical_qubits[{k}] must be a non-empty list of qubit-name "
+                f"strings"
+            )
+    return placements
+
+
 def _parse_optimization_level(raw: Any) -> int | None:
     """Parse and validate the experiment-level optimization_level (CFG-2).
 
@@ -707,6 +748,9 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
                 exp_dict.get("optimization_level")
             ),
             placement=exp_dict.get("placement", "all_valid"),
+            physical_qubits=_parse_physical_qubits(
+                exp_dict.get("physical_qubits")
+            ),
             grid=exp_dict.get("grid", {}),
             label=exp_dict.get("label", ""),
             circuit_script=exp_dict.get("circuit_script", ""),
@@ -2077,16 +2121,41 @@ class SweepEngine:
         # placement-independent.
         guardrail_single_placement = bool(wants_device_cal)
 
-        # ── Placements from the built circuit's connectivity (top_1 = highest
-        #    score, since find_all_placements returns score-descending). ──
+        # ── Placements: researcher-specified (PLACEMENT-1) bypass the solver;
+        #    otherwise the solver self-selects from the circuit's connectivity
+        #    (top_1 = highest score, since find_all_placements is
+        #    score-descending). ──
+        manual_placements = getattr(representative, "physical_qubits", None)
         t_place_start = time.perf_counter()
-        placements = self._solver.find_all_placements(
-            circuit_edges=connectivity,
-            circuit_qubits=qsize,
-            device_ids=[device_cal.device_id],
-            strategy="max_fidelity",
-            max_placements=max_placements,
-        )
+        if manual_placements:
+            # Preserve the F5a device-cal guardrail even on the manual path:
+            # until per-placement device-calibrated noise is validated across
+            # multiple placements, device_calibrated is restricted to a single
+            # placement. A manual device_calibrated study with >1 placement is
+            # gated here, not silently allowed (DEBT PLACEMENT-1).
+            if wants_device_cal and len(manual_placements) > 1:
+                errors.append(
+                    f"BYO: device_calibrated with {len(manual_placements)} "
+                    f"manual placements is gated by the F5a single-placement "
+                    f"guardrail; supply one placement for device_calibrated, "
+                    f"or run noiseless for a multi-placement study "
+                    f"(see DEBT PLACEMENT-1)."
+                )
+                return
+            placements = self._solver.placements_from_names(
+                qubit_name_lists=manual_placements,
+                circuit_edges=connectivity,
+                circuit_qubits=qsize,
+                device_id=device_cal.device_id,
+            )
+        else:
+            placements = self._solver.find_all_placements(
+                circuit_edges=connectivity,
+                circuit_qubits=qsize,
+                device_ids=[device_cal.device_id],
+                strategy="max_fidelity",
+                max_placements=max_placements,
+            )
         self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
         if not placements:
             errors.append(
@@ -2094,8 +2163,12 @@ class SweepEngine:
                 f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
             )
             return
-        print(f"    BYO: {len(placements)} placement(s) "
-              f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
+        if manual_placements:
+            print(f"    BYO: {len(placements)} manual placement(s) "
+                  f"(researcher-specified, solver bypassed)")
+        else:
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
 
         # Progress accounting: matches the non-BYO _execute_group convention
         # (line ~1701) -- count (placement, task) pairs explored.

@@ -432,6 +432,89 @@ class GeneralPlacementSolver:
 
         return rounds
 
+    # --- Researcher-specified placements (PLACEMENT-1) ---
+
+    def placements_from_names(
+        self,
+        qubit_name_lists: list[list[str]],
+        circuit_edges: list[tuple[int, int]],
+        circuit_qubits: int,
+        device_id: str,
+        strategy: str = "max_fidelity",
+    ) -> list["Placement"]:
+        """Build faithful Placements from explicit qubit-name lists, bypassing
+        the subgraph search (PLACEMENT-1 / researcher placement control).
+
+        Logical qubit ``i`` maps to ``qubit_name_lists[k][i]`` -- the F5a
+        placement-keyed order (mirrors backends.noise_model._resolve_selected,
+        which uses supplied names "in the given logical order"). The returned
+        placements are structurally identical to ``find_all_placements`` output
+        (same fields, computed via the same scoring/metric helpers), so every
+        downstream consumer -- device-cal noise keying, output-path naming,
+        HDF5 provenance -- is unchanged.
+
+        Fail-loud, mirroring ``_resolve_selected``'s single-placement checks
+        applied per placement:
+          - each list length == ``circuit_qubits``;
+          - no repeated qubit within a placement;
+          - every name exists in the device calibration;
+          - every circuit edge maps to a real calibrated 2q device edge.
+        """
+        if device_id not in self._devices:
+            raise ValueError(
+                f"device_id {device_id!r} not registered with the solver"
+            )
+        cal = self._devices[device_id]
+        name_to_idx = {
+            name: idx for idx, name in cal.index_to_qubit_name.items()
+        }
+
+        placements: list[Placement] = []
+        for k, names in enumerate(qubit_name_lists):
+            if len(names) != circuit_qubits:
+                raise ValueError(
+                    f"physical_qubits[{k}] has {len(names)} qubit(s) but the "
+                    f"circuit needs {circuit_qubits}; they must match"
+                )
+            if len(set(names)) != len(names):
+                dupes = sorted({n for n in names if names.count(n) > 1})
+                raise ValueError(
+                    f"physical_qubits[{k}] repeats qubit(s): {dupes}"
+                )
+            missing = [n for n in names if n not in name_to_idx]
+            if missing:
+                raise ValueError(
+                    f"physical_qubits[{k}] not in calibration {device_id!r}: "
+                    f"{missing}"
+                )
+            logical_idx = [name_to_idx[names[i]] for i in range(circuit_qubits)]
+            for (a, b) in circuit_edges:
+                ia, ib = logical_idx[a], logical_idx[b]
+                if ib not in cal.adjacency.get(ia, set()):
+                    raise ValueError(
+                        f"physical_qubits[{k}]: circuit edge ({a},{b}) maps to "
+                        f"physical pair ({names[a]},{names[b]}), which is not a "
+                        f"calibrated 2q gate on {device_id!r}"
+                    )
+            qubit_mapping = {i: names[i] for i in range(circuit_qubits)}
+            phys_indices = sorted(logical_idx)
+            placements.append(Placement(
+                placement_id=k,
+                device_id=cal.device_id,
+                device_prefix=cal.device_prefix,
+                qubit_mapping=qubit_mapping,
+                physical_indices=phys_indices,
+                score=self._score_placement(phys_indices, cal, strategy),
+                internal_edges=self._count_internal_edges(phys_indices, cal),
+                avg_readout_fidelity=self._avg_readout(phys_indices, cal),
+                avg_gate_fidelity=self._avg_gate_fidelity(phys_indices, cal),
+                topology_hash=self._topology_hash(phys_indices, cal),
+                per_qubit_calibration=self._per_qubit_calibration(
+                    phys_indices, cal
+                ),
+            ))
+        return placements
+
     # --- Scoring ---
 
     def _score_placement(
