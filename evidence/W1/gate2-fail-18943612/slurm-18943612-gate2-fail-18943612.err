@@ -1,0 +1,8 @@
+
+Lmod is automatically replacing "craype-x86-rome" with "craype-x86-milan".
+
+
+Lmod is automatically replacing "craype-x86-rome" with "craype-x86-milan".
+
+srun: error: nid001131: task 0: Exited with exit code 1
+srun: Terminating StepId=18943612.1

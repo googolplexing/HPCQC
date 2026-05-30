@@ -381,7 +381,13 @@ constraint and density matters.
 marginal cost, and feed a marginal figure (not the standalone peak) into the cap
 default. Pairs naturally with the W1.4-2 measurement.
 ## PLACEMENT-1 — researcher cannot select physical qubits (replication is broken for the device-calibrated arm)
-**Status:** open (tracked; proposed in BLUE-PROPOSAL-RESEARCHER-PLACEMENT-CONTROL-v1.0, awaiting Red ruling).
+**Status:** Phase 1 DONE — researcher-controlled placement ADOPTED per
+RED-RESP-GATE2-FAILURE-RECONCILIATION-AND-PLACEMENT-CONTROL-RULING §6 (conditions
+1–4 verified at `1bbe5da`); the `physical_qubits` seam is committed (`d3f1b3b`),
+18/18 unit, confirmed on real deps (job 18946498). It is the mechanism for the
+gate-2 reconciliation (Step-1 confirmatory + Option-1 reference pin), now in
+progress. **Phase 2 (QPU integration) DEFERRED** to its own design + review
+(RED-RESP §6).
 **What.** A BYO sweep's physical qubits are an *output* of the placement solver
 (`_execute_byo_group` always calls `self._solver.find_all_placements(...,
 strategy="max_fidelity")`); there is no YAML seam to supply them. A
