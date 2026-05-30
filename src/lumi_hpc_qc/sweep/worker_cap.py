@@ -49,13 +49,29 @@ C1_PER_UNIT_PEAK_BYTES = 3 * GIB
 # DEBT: detect siblings precisely rather than assuming a flat /2.
 SMT_FACTOR = 2
 
-# D3 headroom: reserve = max(20 GiB floor, 12% fraction). The floor protects
-# small allocations; the fraction protects large ones (on a 224 GiB node the
-# fraction binds: reserve ~= 26.9 GiB). The reserve must cover OS + page cache
-# AND the resident parent heap (the parent holds the imported stack, the full
-# work_units list, and every WorkerResult as it returns).
-SAFE_MEM_FLOOR_BYTES = 20 * GIB
+# D3 headroom: reserve = min( max(16 GiB floor, 12% fraction), 50% cap ).
+# The reserve must cover OS + page cache AND the resident parent heap (the
+# parent holds the imported stack, the full work_units list, and every
+# WorkerResult as it returns).
+#
+# Three bounds, because a single fixed floor is wrong at both ends (RED-RESP-
+# W1-CAP-VERIFY-AND-GATE-RULING §2.3, D3): the 16 GiB absolute floor protects
+# a *large* allocation from a too-small percentage reserve; the 12% fraction
+# scales the reserve up on big nodes (224 GiB -> 26.9 GiB); and the 50% cap
+# stops the floor from *over*-reserving a SMALL allocation. Without the cap, a
+# fixed floor sabotages exactly the partial-node allocations it was meant to
+# protect: on the non-exclusive `small` partition a researcher can request a
+# few cores and a proportional --mem (e.g. 16 GiB), and a 16-or-20 GiB floor
+# would reserve >= the whole allocation -> safe_mem <= 0 -> a spurious
+# ForcedSerialError on a job that should run. The cap makes the reserve at
+# most half of whatever was allocated, so a small slice still runs (16 GiB
+# --mem -> reserve 8 -> safe_mem 8), while the node-exclusive 224 GiB case is
+# unchanged (12% = 26.9 GiB < 50% = 112 GiB, so the cap does not bind there).
+SAFE_MEM_FLOOR_BYTES = 16 * GIB
 SAFE_MEM_FRACTION = 0.12
+# Upper bound on the reserve as a fraction of the resolved limit, so the floor
+# can never swallow a small allocation (D3 / §2.3).
+SAFE_MEM_RESERVE_CAP_FRACTION = 0.5
 
 
 class ForcedSerialError(RuntimeError):
@@ -159,7 +175,7 @@ def resolve_safe_mem(
     node RealMemory — the non-allocation-aware last resort Q6 exists to avoid;
     the caller emits a LOUD WARN in the footer (never silent).
 
-    ``safe_mem = limit - max(20 GiB, 0.12 * limit)``. Returns
+    ``safe_mem = limit - min(max(16 GiB, 0.12*limit), 0.5*limit)``. Returns
     ``(None, "unavailable", True)`` if nothing is readable (forces a raise
     downstream rather than silently over-packing).
     """
@@ -188,7 +204,11 @@ def resolve_safe_mem(
     if limit is None:
         return None, "unavailable", True
 
+    # D3 reserve: at least max(16 GiB, 12%), but never more than 50% of the
+    # allocation, so a small --mem slice is not over-reserved into a spurious
+    # ForcedSerialError (RED-RESP-W1-CAP-VERIFY-AND-GATE-RULING §2.3).
     reserve = max(SAFE_MEM_FLOOR_BYTES, int(SAFE_MEM_FRACTION * limit))
+    reserve = min(reserve, int(SAFE_MEM_RESERVE_CAP_FRACTION * limit))
     return limit - reserve, source, warned
 
 
@@ -267,11 +287,20 @@ def compute_worker_cap(
         raise ValueError("per_unit_peak_bytes must be > 0")
     if num_units < 1:
         raise ValueError("num_units must be >= 1")
-    if safe_mem_bytes is None or safe_mem_bytes <= 0:
+    if safe_mem_bytes is None:
         raise ForcedSerialError(
             "no usable memory budget could be resolved (safe_mem unavailable); "
             "refusing to size the pool blind. Set --mem or run under a cgroup "
             "memory limit."
+        )
+    if safe_mem_bytes <= 0:
+        raise ForcedSerialError(
+            f"resolved memory budget is non-positive (safe_mem="
+            f"{safe_mem_bytes / GIB:.2f} GiB): the headroom reserve met or "
+            f"exceeded the allocation. This should not happen via resolve_safe_mem "
+            f"(its reserve is capped at 50% of the limit), so the allocation "
+            f"itself is too small for even the reserve. Request more memory "
+            f"(--mem) for this job."
         )
 
     mem_term = safe_mem_bytes // per_unit_peak_bytes

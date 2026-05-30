@@ -140,9 +140,63 @@ def test_safe_mem_cgroup_v2():
     )
     assert src == "cgroup_v2:memory.max"
     assert not warned
-    # reserve = max(20 GiB, 0.12 * 224 GiB) = 26.88 GiB -> safe ~= 197.1 GiB
+    # reserve = min( max(16 GiB, 0.12*224) , 0.5*224 ) = 26.88 GiB (fraction
+    # binds; floor and 50% cap do not) -> safe ~= 197.1 GiB. Node-exclusive
+    # case is unchanged by the D3 §2.3 reserve cap.
     assert abs(safe - (224 * G - int(0.12 * 224 * G))) < 2
     assert 196 * G < safe < 198 * G
+
+
+def test_safe_mem_small_allocation_not_over_reserved():
+    # D3 §2.3 regression: on the non-exclusive `small` partition a researcher
+    # can request a partial node with a proportional --mem. A fixed 16-or-20 GiB
+    # floor would reserve >= the whole allocation -> safe_mem <= 0 -> a spurious
+    # ForcedSerialError. The 50% reserve cap must keep a small slice runnable.
+    # 16 GiB --mem: reserve = min(max(16, 1.92), 8) = 8 GiB -> safe_mem = 8 GiB.
+    safe, src, warned = wc.resolve_safe_mem(
+        env={"SLURM_MEM_PER_NODE": str(16 * 1024)},  # 16 GiB in MB
+        cgroup_reader=lambda: (None, None),
+        meminfo_reader=lambda: 992 * G,              # small-partition node total
+    )
+    assert src == "slurm:SLURM_MEM_PER_NODE"
+    assert not warned
+    assert safe > 0, "small --mem must not be over-reserved into a raise"
+    assert abs(safe - 8 * G) < 2
+    # And it must actually size a pool rather than raise: at 1.32 GiB/unit the
+    # historical measured peak, an 8 GiB budget supports several workers.
+    d = wc.compute_worker_cap(
+        cpu_workers=128, num_units=8, usable_cores_physical=4,
+        safe_mem_bytes=safe, per_unit_peak_bytes=int(1.32 * G),
+    )
+    assert d.cap >= 1 and d.mem_term >= 1
+
+
+def test_safe_mem_reserve_never_exceeds_half():
+    # The reserve is capped at 50% of the limit for any allocation size.
+    for mem_gib in (4, 8, 16, 24, 32, 64, 128):
+        safe, _, _ = wc.resolve_safe_mem(
+            env={"SLURM_MEM_PER_NODE": str(mem_gib * 1024)},
+            cgroup_reader=lambda: (None, None),
+            meminfo_reader=lambda: 992 * G,
+        )
+        assert safe >= mem_gib * G * 0.5 - 2, f"--mem={mem_gib} over-reserved"
+        assert safe > 0
+
+
+def test_compute_cap_distinguishes_nonpositive_from_unavailable():
+    # None (detection failed) and <=0 (too-small budget) must give DIFFERENT,
+    # actionable messages so a small-partition user is not misled into thinking
+    # memory detection broke (D3 §2.3).
+    with pytest.raises(wc.ForcedSerialError, match="unavailable"):
+        wc.compute_worker_cap(
+            cpu_workers=4, num_units=4, usable_cores_physical=4,
+            safe_mem_bytes=None, per_unit_peak_bytes=int(1.32 * G),
+        )
+    with pytest.raises(wc.ForcedSerialError, match="non-positive"):
+        wc.compute_worker_cap(
+            cpu_workers=4, num_units=4, usable_cores_physical=4,
+            safe_mem_bytes=-(1 * G), per_unit_peak_bytes=int(1.32 * G),
+        )
 
 
 def test_safe_mem_cgroup_v1():
