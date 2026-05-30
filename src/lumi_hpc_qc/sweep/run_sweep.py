@@ -4,6 +4,12 @@
 
 Usage:
     python3 -m lumi_hpc_qc.sweep.run_sweep <sweep.yaml> [--device CPU|GPU]
+                                            [--output-dir DIR]
+
+--output-dir overrides the YAML's `output_dir` for this invocation only (the
+file on disk is untouched). It lets a caller point an unmodified config at a
+clean, run-specific workdir — e.g. the W1.6 gate runs the canonical
+floquet_dtc_q10_sweep.yaml into sweep_output/w1_gate without editing it.
 
 The YAML schema is the one parse_sweep_config / run_sweep_from_dict accept:
 top-level `sweep:` key with `experiments`, `calibrations`, `execution`, etc.
@@ -39,6 +45,15 @@ def main(argv: list[str] | None = None) -> int:
         choices=["CPU", "GPU"],
         help="Execution device (default: CPU).",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Override the YAML's output_dir for this run only (the file is not "
+            "modified). Useful for directing an unmodified config at a clean, "
+            "run-specific workdir."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -57,6 +72,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # --output-dir override: mutate the same sub-dict parse_sweep_config reads
+    # from (it does `yaml_dict.get("sweep", yaml_dict)`), so the override takes
+    # effect whether or not the config is wrapped in a top-level `sweep:` key.
+    # In-memory only; the YAML on disk is never written back.
+    if args.output_dir is not None:
+        sweep_section = config_dict.get("sweep", config_dict)
+        sweep_section["output_dir"] = args.output_dir
 
     result = run_sweep_from_dict(config_dict, device=args.device)
     print(f"Sweep complete: {result}")
