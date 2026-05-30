@@ -413,3 +413,4 @@ integrate manual/solver placements through the existing-but-unwired `MixedPacker
 (qubit+edge overlap → shared rounds; overlap → separate circuits) and the
 `iqm_qpu` backend (`VTT_BATCH_LIMIT`, ≤100/batch). BYO is simulation-only today;
 Phase 2 is integration, not plumbing.
+
