@@ -380,3 +380,30 @@ constraint and density matters.
 (proportional set size) read during a calibration run to measure the true
 marginal cost, and feed a marginal figure (not the standalone peak) into the cap
 default. Pairs naturally with the W1.4-2 measurement.
+## PLACEMENT-1 — researcher cannot select physical qubits (replication is broken for the device-calibrated arm)
+**Status:** open (tracked; proposed in BLUE-PROPOSAL-RESEARCHER-PLACEMENT-CONTROL-v1.0, awaiting Red ruling).
+**What.** A BYO sweep's physical qubits are an *output* of the placement solver
+(`_execute_byo_group` always calls `self._solver.find_all_placements(...,
+strategy="max_fidelity")`); there is no YAML seam to supply them. A
+device-calibrated noise model is determined by two inputs — the calibration
+snapshot (selectable via `calibrations:`) and the physical qubits (NOT
+selectable). The asymmetry breaks replication: to reproduce a prior experiment
+one must pin both, but the solver picks current-optimal qubits that in general
+differ from a past run's. Gate-2 (job 18943612) is the live proof — the
+solver's `top_1` (`QB11…QB26`) ≠ the runner reference's fidelity self-selection
+(`QB1,2,5,6,7,9,10,11,12,13`); a ~2.4× T2 difference on the swapped qubits drove
+a 52/60-kick > 5σ divergence (see BLUE-FINDING-W1_6-GATE2-PLACEMENT-PROVENANCE).
+**Trigger to resolve.** Before any replication of a placement-keyed experiment,
+and as the mechanism for the gate-2 reconciliation (findings doc §7 option 2 /
+§6 confirmatory run). Phase 1 (simulation) is the near-term, gate-2-unblocking
+increment.
+**Plan.** Phase 1 (sim, small): add a YAML `physical_qubits:` field accepting a
+list of placements (each a list of qubit strings); when present, bypass the
+solver and feed the lists to the existing `_resolve_selected` placement path;
+extend its single-placement fail-loud validation (count==num_qubits, names in
+calibration, real calibrated edges) list-wise. Task multiplication and the W1
+cap parallelism already handle the rest. Phase 2 (QPU, larger, separate review):
+integrate manual/solver placements through the existing-but-unwired `MixedPacker`
+(qubit+edge overlap → shared rounds; overlap → separate circuits) and the
+`iqm_qpu` backend (`VTT_BATCH_LIMIT`, ≤100/batch). BYO is simulation-only today;
+Phase 2 is integration, not plumbing.
