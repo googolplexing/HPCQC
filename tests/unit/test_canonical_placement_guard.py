@@ -27,9 +27,12 @@ from lumi_hpc_qc.sweep.placement_solver import GeneralPlacementSolver
 _CAL = "examples/q50_calibration_20260524_08c3c70f.json"
 _CHAIN = [(i, i + 1) for i in range(9)]   # q10 open linear Floquet chain (9 edges)
 
-# Recorded from extract_canonical_placement.py — FILL before committing, e.g.:
-#   _CANONICAL = ["QB11", "QB5", "QB6", "QB7", "QB13", "QB21", "QB29", "QB28", "QB27", "QB26"]
-_CANONICAL: list[str] | None = None
+# Recorded from extract_canonical_placement.py (LUMI job 18953209, cal 08c3c70f):
+#   canonical top_1: QB11,QB5,QB6,QB7,QB13,QB21,QB29,QB28,QB27,QB26
+#   physical_indices [4,5,6,10,12,20,25,26,27,28], score 0.9806841282896859
+_CANONICAL: list[str] | None = [
+    "QB11", "QB5", "QB6", "QB7", "QB13", "QB21", "QB29", "QB28", "QB27", "QB26",
+]
 
 
 def _top1_order() -> tuple[list[str], object]:
