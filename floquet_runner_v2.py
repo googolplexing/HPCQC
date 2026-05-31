@@ -384,6 +384,21 @@ def run_one_instance(args_tuple):
         sys.stderr = saved_stderr
 
 
+def _parse_physical_qubits_cli(raw):
+    """Normalize the --physical-qubits CLI value into a name list (or None).
+
+    Comma-separated, each name whitespace-stripped, blanks dropped. None or an
+    empty string -> None (the free-layout default). A non-empty but all-blank
+    value (e.g. " , ") yields [] -- deliberately NOT None -- so a malformed flag
+    fails loud on the placement length check rather than silently free-layouting.
+    Single source of truth for the runner's --physical-qubits parse; the parity
+    guard test exercises this exact function.
+    """
+    if not raw:
+        return None
+    return [q.strip() for q in raw.split(",") if q.strip()]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -434,10 +449,7 @@ def main():
              "behaviour). device-calibrated only.")
     args = parser.parse_args()
 
-    physical_qubits = (
-        [q.strip() for q in args.physical_qubits.split(",") if q.strip()]
-        if args.physical_qubits else None
-    )
+    physical_qubits = _parse_physical_qubits_cli(args.physical_qubits)
     if args.disorder_file and not os.path.isfile(args.disorder_file):
         sys.exit(f"ERROR: --disorder-file not found: {args.disorder_file}")
 

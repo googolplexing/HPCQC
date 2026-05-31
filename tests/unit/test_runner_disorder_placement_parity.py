@@ -189,13 +189,16 @@ def test_disorder_file_values_land_in_runner_circuit():
 
 # ── 3. --physical-qubits parse + pinned placement ───────────────────────────
 def test_physical_qubits_cli_parse_contract():
-    """The runner's CLI normalizer (comma-split, strip, drop blanks). Documents
-    the contract the canonical --physical-qubits string relies on."""
-    cli = ",".join(_CANONICAL)
-    assert [q.strip() for q in cli.split(",") if q.strip()] == _CANONICAL
-    assert [q.strip() for q in " QB11 , QB5 ,".split(",") if q.strip()] == [
-        "QB11", "QB5",
-    ]
+    """The runner's CLI normalizer, exercised directly (patch 18c lifted it into
+    `_parse_physical_qubits_cli`). Comma-split, strip, drop blanks; None/"" ->
+    None (free-layout default); an all-blank value -> [] (NOT None) so a
+    malformed flag fails loud downstream rather than silently free-layouting."""
+    parse = runner._parse_physical_qubits_cli
+    assert parse(",".join(_CANONICAL)) == _CANONICAL
+    assert parse(" QB11 , QB5 ,") == ["QB11", "QB5"]
+    assert parse(None) is None
+    assert parse("") is None
+    assert parse(" , ") == []
 
 
 def test_canonical_physical_qubits_resolve_to_pinned_mapping():
