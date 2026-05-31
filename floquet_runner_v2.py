@@ -42,6 +42,15 @@ from qiskit_aer import AerSimulator
 
 try:
     from lumi_hpc_qc.backends.prepare import prepare_simulation
+    # PLACEMENT-1 / parity reuse: the runner resolves placement and disorder
+    # through the SAME code the sweep uses -- no parallel reimplementation.
+    #   resolve_placements   : solver seam (manual names -> validated Placement)
+    #   resolve_disorder      : source:file load + fail-loud assertions (F2)
+    #   extract_connectivity  : circuit 2q-edges from the built circuit
+    from lumi_hpc_qc.sweep.placement_solver import GeneralPlacementSolver
+    from lumi_hpc_qc.sweep.byo_sweep import resolve_disorder
+    from lumi_hpc_qc.sweep.circuit_loader import extract_connectivity
+    from lumi_hpc_qc.plugins.registry import PluginRegistry
     HAVE_DEVICE_NOISE = True
 except ImportError:
     # Not pip-installed: make the in-repo package importable from a checkout
@@ -51,9 +60,17 @@ except ImportError:
         sys.path.insert(0, os.path.join(_proj, "src"))
     try:
         from lumi_hpc_qc.backends.prepare import prepare_simulation
+        from lumi_hpc_qc.sweep.placement_solver import GeneralPlacementSolver
+        from lumi_hpc_qc.sweep.byo_sweep import resolve_disorder
+        from lumi_hpc_qc.sweep.circuit_loader import extract_connectivity
+        from lumi_hpc_qc.plugins.registry import PluginRegistry
         HAVE_DEVICE_NOISE = True
     except ImportError:
         prepare_simulation = None
+        GeneralPlacementSolver = None
+        resolve_disorder = None
+        extract_connectivity = None
+        PluginRegistry = None
         HAVE_DEVICE_NOISE = False
 
 # parse_noise_spec has no qiskit dependency; import it independently so the
@@ -149,7 +166,7 @@ def build_init_bit_array(initial_state, num_qubits):
 def run_one_instance(args_tuple):
     (instance_id, noise_source, calibration_path, output_dir, num_qubits,
      num_shots, num_max_kicks, epsilon, initial_state, t2_mode, durations,
-     iqm_device, noise_spec, master_seed) = args_tuple
+     iqm_device, noise_spec, master_seed, disorder_file, physical_qubits) = args_tuple
 
     tag = f"[instance {instance_id:02d}]"
     log_path = os.path.join(output_dir, f"instance_{instance_id:02d}.log")
@@ -171,14 +188,39 @@ def run_one_instance(args_tuple):
             random.seed(inst_seed)
             np.random.seed(inst_seed)
         h_x = (1 - epsilon) * np.pi
-        init_bit_array = build_init_bit_array(initial_state, num_qubits)
 
         print(f"{tag} noise-source: {noise_source}")
-        print(f"{tag} init_bit_array = {init_bit_array}")
         t0 = time.time()
 
-        Jz_angles = np.random.uniform(-1.5 * np.pi, -0.5 * np.pi, num_qubits)
-        hz_angles = np.random.uniform(-np.pi, np.pi, num_qubits)
+        # ── Disorder: file (parity with the sweep, RNG-free) vs. draw (default).
+        #    File mode reuses the sweep's resolve_disorder (same load + the F2
+        #    fail-loud assertions: num_qubits / initial_state / array lengths /
+        #    seed coverage), so both arms consume byte-identical instances from
+        #    one banked JSON -- no parallel disorder logic. Draw mode is the
+        #    prior legacy-stream behaviour, preserved as the default when no
+        #    --disorder-file is given. inst_seed still seeds seed_simulator
+        #    below in BOTH modes. ──
+        if disorder_file is not None:
+            if resolve_disorder is None:
+                raise RuntimeError("resolve_disorder not importable")
+            resolved, _ = resolve_disorder(
+                {"source": "file", "file": disorder_file},
+                [instance_id],
+                num_qubits=num_qubits,
+                configured_initial_state=initial_state,
+            )
+            inst = resolved[instance_id]
+            hz_angles = np.asarray(inst["hz_angles"], dtype=float)
+            Jz_angles = np.asarray(inst["Jzz_angles"], dtype=float)
+            init_bit_array = list(inst["init_bit_array"])
+            print(f"{tag} disorder: file {disorder_file} (instance {instance_id})")
+        else:
+            init_bit_array = build_init_bit_array(initial_state, num_qubits)
+            Jz_angles = np.random.uniform(-1.5 * np.pi, -0.5 * np.pi, num_qubits)
+            hz_angles = np.random.uniform(-np.pi, np.pi, num_qubits)
+            print(f"{tag} disorder: drawn (master_seed-derived)")
+        print(f"{tag} init_bit_array = {init_bit_array}")
+
         circuits = [build_circuit(n, hz_angles, Jz_angles, init_bit_array,
                                   num_qubits, h_x) for n in range(num_max_kicks)]
 
@@ -187,6 +229,42 @@ def run_one_instance(args_tuple):
         # tuple (often all None) is recorded as-is.
         durations_used = {"prx": durations[0], "cz": durations[1],
                           "measure": durations[2]}
+
+        # ── Pinned placement (parity): when --physical-qubits is given, resolve
+        #    it through the SAME solver seam the sweep uses
+        #    (resolve_placements -> validated Placement), then derive
+        #    phys_qubits/phys_edges exactly as the sweep parent does
+        #    (sweep_engine _execute_byo_group). This drives prepare_simulation's
+        #    device-cal branch onto a fixed initial_layout = the canonical
+        #    placement, so transpile is deterministic (no free Sabre) and both
+        #    arms sit on identical physical qubits. Absent the flag, prep keeps
+        #    its default (free-layout) behaviour -- unchanged. ──
+        prep_phys_qubits = None
+        prep_phys_edges = None
+        if physical_qubits is not None and noise_source == "device-calibrated":
+            if GeneralPlacementSolver is None or extract_connectivity is None:
+                raise RuntimeError("placement seam not importable")
+            connectivity = extract_connectivity(circuits[-1])
+            reg = PluginRegistry()
+            reg.discover()
+            cal_json = json.load(open(calibration_path))
+            adapter = reg.get_calibration_adapter(cal_json.get("adapter", "iqm_v2"))
+            device_cal = adapter.load(calibration_path)
+            solver = GeneralPlacementSolver()
+            solver.add_device(device_cal)
+            placements = solver.resolve_placements(
+                circuit_edges=connectivity,
+                circuit_qubits=num_qubits,
+                device_id=device_cal.device_id,
+                strategy="max_fidelity",
+                manual_qubit_name_lists=[physical_qubits],
+            )
+            placement = placements[0]
+            prep_phys_qubits = [placement.qubit_mapping[i] for i in range(num_qubits)]
+            prep_phys_edges = [
+                (prep_phys_qubits[a], prep_phys_qubits[b]) for (a, b) in connectivity
+            ]
+            print(f"{tag} pinned placement: {prep_phys_qubits} (solver bypassed)")
 
         if noise_source == "device-calibrated" and not HAVE_DEVICE_NOISE:
             raise RuntimeError("prepare_simulation not importable")
@@ -207,6 +285,8 @@ def run_one_instance(args_tuple):
             spec=noise_spec,
             calibration_path=calibration_path,
             num_qubits=num_qubits,
+            physical_qubits=prep_phys_qubits,
+            physical_edges=prep_phys_edges,
             durations=durations,
             t2_mode=t2_mode,
             iqm_device=iqm_device,
@@ -336,7 +416,30 @@ def main():
              "numpy SeedSequence); change it for a fresh independent ensemble. "
              "Pass 'random' for fresh OS entropy each run (NOT reproducible).")
     parser.add_argument("--single-instance-id", type=int, default=None)
+    parser.add_argument(
+        "--disorder-file", default=None,
+        help="Path to a banked disorder JSON (source:file). When given, the "
+             "runner consumes per-instance hz_angles/Jzz_angles/init_bit_array "
+             "from the file via the sweep's resolve_disorder (RNG-free, with "
+             "the same fail-loud assertions), instead of drawing them. Default "
+             "(absent): draw from the master-seed-derived stream (prior "
+             "behaviour). Use this to share one disorder realization with a "
+             "BYO sweep arm for bit-level parity.")
+    parser.add_argument(
+        "--physical-qubits", default=None,
+        help="Comma-separated physical qubit names (e.g. QB11,QB5,...), logical "
+             "i -> the i-th name, pinning the device-calibrated placement via "
+             "the solver seam (solver bypassed, list validated as a calibrated "
+             "chain). Default (absent): solver/free-layout placement (prior "
+             "behaviour). device-calibrated only.")
     args = parser.parse_args()
+
+    physical_qubits = (
+        [q.strip() for q in args.physical_qubits.split(",") if q.strip()]
+        if args.physical_qubits else None
+    )
+    if args.disorder_file and not os.path.isfile(args.disorder_file):
+        sys.exit(f"ERROR: --disorder-file not found: {args.disorder_file}")
 
     # master_seed: int, or the literal string "random" -> None (fresh entropy).
     if str(args.master_seed).lower() == "random":
@@ -385,6 +488,8 @@ def main():
     print(f"initial_state : {args.initial_state}")
     print(f"master_seed   : {master_seed}"
           + ("  (fresh entropy; NOT reproducible)" if master_seed == "random" else ""))
+    print(f"disorder      : {args.disorder_file if args.disorder_file else 'drawn (master-seed)'}")
+    print(f"physical_qubits: {physical_qubits if physical_qubits else 'solver/free-layout'}")
     if args.noise_source == "device-calibrated":
         print(f"t2_mode       : {args.t2_mode}")
         print(f"noise         : {noise_spec.describe()}")
@@ -396,7 +501,8 @@ def main():
     worker_args = [
         (i, args.noise_source, args.calibration, args.output_dir, args.num_qubits,
          args.num_shots, args.num_max_kicks, args.epsilon, args.initial_state,
-         args.t2_mode, durations, args.iqm_device, noise_spec, master_seed)
+         args.t2_mode, durations, args.iqm_device, noise_spec, master_seed,
+         args.disorder_file, physical_qubits)
         for i in range(args.num_instances)]
 
     if args.single_instance_id is not None:
