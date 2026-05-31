@@ -368,6 +368,19 @@ def run_one_instance(args_tuple):
                 # entropy, run not reproducible).
                 "master_seed": master_seed,
                 "instance_seed": inst_seed,
+                # Pinned-path provenance (the patch-18 inputs): the disorder
+                # source and the placement. disorder_file is the banked JSON
+                # consumed (null = master-seed-drawn). physical_qubits is the
+                # requested pin (null = solver/free-layout). resolved_placement
+                # is the logical->physical name list actually sent to
+                # prepare_simulation's device-cal branch (null unless
+                # device-calibrated AND pinned) -- this is the layout the run
+                # actually sat on, the real reproducibility key (REPRO-
+                # PLACEMENT-1). Free-layout's Sabre-resolved layout is still
+                # unrecorded here; that is the remaining REPRO-PLACEMENT-1 fix.
+                "disorder_file": disorder_file,
+                "physical_qubits": physical_qubits,
+                "resolved_placement": prep_phys_qubits,
             }, f, indent=2)
 
         print(f"{tag} wrote {dat_path}")
