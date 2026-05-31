@@ -18,6 +18,8 @@ from lumi_hpc_qc.sweep.placement_solver import GeneralPlacementSolver
 CAL = "examples/q50_calibration_20260524_08c3c70f.json"
 
 reg = PluginRegistry()
+reg.discover()                 # engine does this at construction (sweep_engine.py:1313);
+                               # without it no adapters are registered
 adapter_name = json.load(open(CAL)).get("adapter", "iqm_v2")
 adapter = reg.get_calibration_adapter(adapter_name)
 device_cal = adapter.load(CAL)
