@@ -49,6 +49,18 @@ sweep:
 
       disorder_gates: [rz, rzz]       # cross-grid identity check excludes the rx drive
 
+      # W1.6 Option-1 (PLACEMENT-1): pin the device-calibrated arm to the
+      # canonical solver top_1 placement, so the gate compares like-for-like
+      # against the pinned reference (examples/reference/floquet_dtc_q10_*).
+      # One inner list = one placement; logical qubit i -> physical_qubits[0][i].
+      # This is the solver's deterministic top_1 for the q10 chain on cal
+      # 08c3c70f (physical_indices [4,5,6,10,12,20,25,26,27,28], score 0.98068),
+      # recorded by extract_canonical_placement.py and drift-guarded in
+      # tests/unit/test_canonical_placement_guard.py. The noiseless arm is
+      # placement-independent; pinning is immaterial to it.
+      physical_qubits:
+        - [QB11, QB5, QB6, QB7, QB13, QB21, QB29, QB28, QB27, QB26]
+
       seed_list:                      # 40 disorder realizations, averaged
         - 0
         - 1

@@ -90,3 +90,23 @@ def test_canonical_top1_is_a_valid_chain():
         assert order[i + 1] in adj.get(order[i], set()), (
             f"top_1 edge {order[i]}-{order[i + 1]} is not a calibrated coupler"
         )
+
+
+def test_gate_yaml_pins_canonical_placement():
+    # The gated sweep config must pin physical_qubits to the recorded canonical
+    # top_1 order. Ties examples/byo/floquet_dtc_q10_sweep.yaml to the single
+    # _CANONICAL authority so a YAML edit can't silently un-pin or re-point the
+    # gated placement: the gate pre-flight (tests/_w1_gate_preflight.py) only
+    # checks it's *a* pinned 10-qubit placement; this checks it's *the* one.
+    import yaml as _yaml
+    from lumi_hpc_qc.sweep.sweep_engine import _parse_physical_qubits
+
+    assert _CANONICAL is not None, "fill _CANONICAL before committing this guard"
+    with open("examples/byo/floquet_dtc_q10_sweep.yaml", encoding="utf-8") as f:
+        d = _yaml.safe_load(f)
+    exps = d["sweep"]["experiments"]
+    assert len(exps) == 1, f"gate config expected one experiment, got {len(exps)}"
+    pinned = _parse_physical_qubits(exps[0].get("physical_qubits"))
+    assert pinned == [_CANONICAL], (
+        f"gate YAML physical_qubits {pinned} != canonical [{_CANONICAL}]"
+    )
