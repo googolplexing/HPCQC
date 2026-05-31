@@ -18,6 +18,29 @@ from __future__ import annotations
 
 import numpy as np
 
+# Reserved name for the synthesized single-observable case (absent ``observables``
+# in the YAML). It is the only observable name that maps to the LEGACY path
+# layout, so existing single-observable runs (incl. the W1.6 gate) stay
+# byte-identical. Any declared observable carries its own name and gets an extra
+# path level. See byo_observable_subpath.
+DEFAULT_OBSERVABLE_NAME = "default"
+
+
+def byo_observable_subpath(observable_name: str) -> str:
+    """Trailing path segment for a BYO observable's HDF5 group / .dat subdir.
+
+    Single source of the legacy-vs-observable layout decision, consumed by BOTH
+    the .dat aggregator (sweep_engine `_execute_byo_group`) and the HDF5 writer
+    (`SweepHDF5Writer.write_byo_result`) so the two cannot drift:
+
+      - the synthesized default observable ("default") -> "" (LEGACY layout;
+        the path is exactly what the single-observable path produced pre-D7, so
+        banked references and the W1.6 gate are untouched);
+      - any declared observable -> "/<name>" (one extra level), so multiple
+        families under the same (placement, env) do not collide.
+    """
+    return "" if observable_name == DEFAULT_OBSERVABLE_NAME else f"/{observable_name}"
+
 
 def get_autocorrelation(counts, init_bit_array, num_qubits):
     """Autocorrelator from a counts dict. Byte-identical to

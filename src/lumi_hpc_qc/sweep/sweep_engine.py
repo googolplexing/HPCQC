@@ -66,6 +66,10 @@ from lumi_hpc_qc.sweep.twin_simulator import (
     PlacementBatteryResult,
 )
 from lumi_hpc_qc.data.hdf5_writer import SweepHDF5Writer, SweepResultEntry
+from lumi_hpc_qc.sweep.byo_observable import (
+    DEFAULT_OBSERVABLE_NAME,
+    byo_observable_subpath,
+)
 from lumi_hpc_qc import __version__ as _pkg_version
 
 
@@ -184,6 +188,12 @@ class SweepExperimentConfig:
     # (constant), and disorder (per-seed supplied data); see §7.5.1-§7.5.5.
     circuit_script: str = ""
     circuit_function: str = "build_circuit"
+    # D7 increment 2: multi-observable BYO. Tuple of (name, factory_function),
+    # one per circuit family. None (absent in YAML) -> synthesized at parse to
+    # (("default", circuit_function),), preserving single-observable behavior
+    # byte-identically. The `derived`/ratio surface is increment 4 and is NOT
+    # read here. See DESIGN-MULTI-OBSERVABLE-BYO-ECHO (Option A).
+    observables: tuple[tuple[str, str], ...] | None = None
     fixed: dict[str, Any] = field(default_factory=dict)
     disorder: dict[str, Any] = field(default_factory=dict)
     signature_check: bool = True
@@ -268,6 +278,11 @@ class SweepTask:
     circuit_params: dict[str, Any] = field(default_factory=dict)
     circuit_script: str = ""
     circuit_function: str = "build_circuit"
+    # D7 increment 2: which observable (circuit family) this task computes. The
+    # task's circuit_function is that family's factory; observable_name labels
+    # the result for the HDF5 group / .dat subdir and groups families separately
+    # (folded into the group key in expand_grid). "default" -> legacy layout.
+    observable_name: str = "default"
     fixed_params: dict[str, Any] = field(default_factory=dict)
     disorder_instance: dict[str, Any] = field(default_factory=dict)
     disorder_gates: tuple[str, ...] = ("rz", "rzz")
@@ -490,69 +505,80 @@ def _expand_byo_experiment(
     disorder_keys: set[str] = set()
     if resolved_disorder:
         disorder_keys = set(next(iter(resolved_disorder.values())).keys())
-    factory = load_factory(exp.circuit_script, exp.circuit_function)
-    validate_factory_signature(
-        factory,
-        grid_keys=set(exp.grid),
-        fixed_keys=set(exp.fixed),
-        disorder_keys=disorder_keys,
-        allow_kwargs=not exp.signature_check,
+    # D7 increment 2: validate + expand once PER observable (circuit family).
+    # ``observables`` is always populated — synthesized to the single default
+    # ((DEFAULT_OBSERVABLE_NAME, circuit_function),) at parse, so the
+    # single-observable expansion stays byte-identical (one family, "default").
+    # Each family becomes its own task set, grouped separately in expand_grid
+    # (observable folded into the group key), so it gets its own placement solve
+    # and its own D1/D2 memory probe. Both families of a seed share the disorder
+    # seed -> the same resolve_instance_seed(master_seed, seed), as the ratio
+    # contract's shared-seed finding requires. (The derived/ratio surface and the
+    # cross-family connectivity-equality guard are increment 4, not here.)
+    observables = exp.observables or (
+        (DEFAULT_OBSERVABLE_NAME, exp.circuit_function),
     )
-
-    # Default-ON cross-grid disorder-identity backstop (§7.5.4). Build the min
-    # and max grid points for one representative seed and confirm the
-    # disorder-bearing gates are identical — impurity (build-time RNG) is a
-    # property of the factory, so one seed suffices.
-    if len(grid_points) >= 2 and resolved_disorder:
-        gate_names = tuple(exp.disorder_gates)
-        primary_axis = next(iter(exp.grid), None)
-        rep_instance = resolved_disorder[seed_values[0]]
-
-        def _build(**kw):
-            return load_circuit(
-                script_file=exp.circuit_script,
-                script_function=exp.circuit_function,
-                script_params=kw,
-            ).circuit
-
-        cross_grid_identity_check(
-            _build,
-            fixed=exp.fixed,
-            instance=rep_instance,
-            grid_points=grid_points,
-            extract_disorder_params=lambda qc: extract_disorder_signature(qc, gate_names),
-            primary_axis=primary_axis,
+    gate_names = tuple(exp.disorder_gates)
+    for obs_name, obs_func in observables:
+        factory = load_factory(exp.circuit_script, obs_func)
+        validate_factory_signature(
+            factory,
+            grid_keys=set(exp.grid),
+            fixed_keys=set(exp.fixed),
+            disorder_keys=disorder_keys,
+            allow_kwargs=not exp.signature_check,
         )
 
-    # Expand: cal × seed (OUTER) × grid point (INNER).
-    gate_names = tuple(exp.disorder_gates)
-    for cal_path in config.calibrations:
-        for seed in seed_values:
-            instance = resolved_disorder[seed]
-            for grid_point in grid_points:
-                task_counter += 1
-                tasks.append(SweepTask(
-                    task_id=f"T{task_counter:06d}",
-                    qubit_size=num_qubits,
-                    seed=seed,
-                    calibration_path=cal_path,
-                    calibration_id=_calibration_id(cal_path),
-                    experiment_type="byo_circuit",
-                    noise_configs=noise_envs,
-                    placement_strategy=placement_strategy,
-                    max_placements=max_placements,
-                    label=exp.label,
-                    circuit_params=dict(grid_point),
-                    circuit_script=exp.circuit_script,
-                    circuit_function=exp.circuit_function,
-                    fixed_params=dict(exp.fixed),
-                    disorder_instance=instance,
-                    disorder_gates=gate_names,
-                    master_seed=disorder_master_seed,
-                    experiment_shots=exp.shots,
-                    optimization_level=exp.optimization_level,
-                    physical_qubits=exp.physical_qubits,
-                ))
+        # Default-ON cross-grid disorder-identity backstop (§7.5.4), per family.
+        if len(grid_points) >= 2 and resolved_disorder:
+            primary_axis = next(iter(exp.grid), None)
+            rep_instance = resolved_disorder[seed_values[0]]
+
+            def _build(**kw):
+                return load_circuit(
+                    script_file=exp.circuit_script,
+                    script_function=obs_func,
+                    script_params=kw,
+                ).circuit
+
+            cross_grid_identity_check(
+                _build,
+                fixed=exp.fixed,
+                instance=rep_instance,
+                grid_points=grid_points,
+                extract_disorder_params=lambda qc: extract_disorder_signature(qc, gate_names),
+                primary_axis=primary_axis,
+            )
+
+        # Expand: cal × seed (OUTER) × grid point (INNER), for this family.
+        for cal_path in config.calibrations:
+            for seed in seed_values:
+                instance = resolved_disorder[seed]
+                for grid_point in grid_points:
+                    task_counter += 1
+                    tasks.append(SweepTask(
+                        task_id=f"T{task_counter:06d}",
+                        qubit_size=num_qubits,
+                        seed=seed,
+                        calibration_path=cal_path,
+                        calibration_id=_calibration_id(cal_path),
+                        experiment_type="byo_circuit",
+                        noise_configs=noise_envs,
+                        placement_strategy=placement_strategy,
+                        max_placements=max_placements,
+                        label=exp.label,
+                        circuit_params=dict(grid_point),
+                        circuit_script=exp.circuit_script,
+                        circuit_function=obs_func,
+                        observable_name=obs_name,
+                        fixed_params=dict(exp.fixed),
+                        disorder_instance=instance,
+                        disorder_gates=gate_names,
+                        master_seed=disorder_master_seed,
+                        experiment_shots=exp.shots,
+                        optimization_level=exp.optimization_level,
+                        physical_qubits=exp.physical_qubits,
+                    ))
     return task_counter
 
 
@@ -678,6 +704,47 @@ def _parse_physical_qubits(raw: Any) -> list[list[str]] | None:
     return placements
 
 
+def _parse_observables(
+    raw: Any, circuit_function: str
+) -> tuple[tuple[str, str], ...]:
+    """Normalize the optional ``observables`` field to a tuple of (name, function).
+
+    D7 increment 2. Each entry is a circuit family: a display name + the factory
+    function that builds it. Absent (None) -> the single synthesized default
+    ``(("default", circuit_function),)``, which preserves single-observable
+    behavior byte-identically (the name "default" maps to the legacy path, see
+    byo_observable.byo_observable_subpath). Fail-loud on a malformed value;
+    names must be unique and non-empty; "default" is reserved and may not be a
+    declared name. The ``derived``/ratio surface is increment 4 and is parsed
+    elsewhere, not here.
+    """
+    if raw is None:
+        return ((DEFAULT_OBSERVABLE_NAME, circuit_function or "build_circuit"),)
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "observables must be a non-empty list of {name, function} entries")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for k, entry in enumerate(raw):
+        if not isinstance(entry, dict) or "name" not in entry or "function" not in entry:
+            raise ValueError(
+                f"observables[{k}] must be a mapping with 'name' and 'function'")
+        name, func = entry["name"], entry["function"]
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"observables[{k}].name must be a non-empty string")
+        if not isinstance(func, str) or not func:
+            raise ValueError(f"observables[{k}].function must be a non-empty string")
+        if name == DEFAULT_OBSERVABLE_NAME:
+            raise ValueError(
+                f"observables[{k}].name '{DEFAULT_OBSERVABLE_NAME}' is reserved "
+                f"for the synthesized single-observable case; use a distinct name")
+        if name in seen:
+            raise ValueError(f"observables[{k}].name '{name}' is duplicated")
+        seen.add(name)
+        out.append((name, func))
+    return tuple(out)
+
+
 def _parse_optimization_level(raw: Any) -> int | None:
     """Parse and validate the experiment-level optimization_level (CFG-2).
 
@@ -764,6 +831,10 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             label=exp_dict.get("label", ""),
             circuit_script=exp_dict.get("circuit_script", ""),
             circuit_function=exp_dict.get("circuit_function", "build_circuit"),
+            observables=_parse_observables(
+                exp_dict.get("observables"),
+                exp_dict.get("circuit_function", "build_circuit"),
+            ),
             fixed=exp_dict.get("fixed", {}),
             disorder=exp_dict.get("disorder", {}),
             signature_check=exp_dict.get("signature_check", True),
@@ -1767,7 +1838,19 @@ class SweepEngine:
                 # reused across seeds/grid-points. Keep the 4-tuple shape so the
                 # run() unpack (ham,topo,cal,params) stays valid — script goes in
                 # the hamiltonian slot, "byo" in the topology slot for logging.
-                key = (task.circuit_script, "byo", task.calibration_path, params_key)
+                # D7 increment 2: fold the observable into the params slot so
+                # each circuit family (autocorr, echo, …) is its own group — own
+                # placement solve, own circuit build (representative.circuit_
+                # function is the family's factory), own D1/D2 memory probe.
+                # Keeps the 4-tuple shape. Single-observable runs carry
+                # observable_name="default", so the key is stable vs pre-D7
+                # except for the extra ("__observable__","default") entry, which
+                # does not change grouping (one family) — the placement solve and
+                # execution are byte-identical.
+                byo_params_key = (
+                    ("__observable__", task.observable_name),
+                ) + params_key
+                key = (task.circuit_script, "byo", task.calibration_path, byo_params_key)
             else:
                 key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
             if key not in groups:
@@ -2488,6 +2571,11 @@ class SweepEngine:
             byo_results.append({
                 "seed": r.seed,
                 "script": representative.circuit_script,
+                # D7 increment 2: which circuit family this result belongs to.
+                # The group is per-observable (folded into the group key), so the
+                # representative's observable_name is correct for every unit in it.
+                # "default" -> legacy HDF5/.dat layout (byte-identical pre-D7).
+                "observable": representative.observable_name,
                 "placement_id": r.placement_id,
                 "physical_qubit_set": r.physical_qubit_set,
                 "env": r.env_name,
@@ -2553,13 +2641,17 @@ class SweepEngine:
         if out_root is not None:
             by_pe: dict[tuple, list] = {}
             for r in byo_results:
-                key = (tuple(r["physical_qubit_set"]), r["env"])
+                key = (tuple(r["physical_qubit_set"]), r["env"], r["observable"])
                 by_pe.setdefault(key, []).append((r["seed"], r["autocorrelator"]))
-            for (phys, env), series in by_pe.items():
+            for (phys, env, observable), series in by_pe.items():
+                # D7 increment 2: the legacy subdir, then the observable level
+                # appended via the shared helper ("" for "default" -> byte-
+                # identical pre-D7; "/<name>" for a declared family). Same
+                # helper the HDF5 writer uses, so the two layouts cannot drift.
                 sub = os.path.join(
                     out_root, Path(representative.circuit_script).stem,
                     "-".join(str(q) for q in phys), env,
-                )
+                ) + byo_observable_subpath(observable)
                 aggregate_byo_autocorr(sorted(series), sub)
 
         # Progress accounting: this group's tasks are done. The BYO path

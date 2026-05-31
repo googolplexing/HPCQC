@@ -53,14 +53,13 @@ sweep:
       disorder_gates: [rz, rzz]
       seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # AK10 num_gate_instances=10
       shots: 100                                    # AK10 num_shots=100
-      # !! FIDELITY WARNING: as of HEAD f0ce463 the BYO path does NOT read
-      #    this 'shots' field -- sweep_engine.py:2061 hardcodes byo_shots=1000
-      #    as the fallback for envs whose shots==0 (the noiseless arm). To
-      #    replicate AK10's 100 shots faithfully, the engine must wire this
-      #    field into byo_shots (staged increment 0 in the design doc).
-      #    Until then this runs at 1000 shots, NOT 100 -- an AK10 fidelity
-      #    break. device_calibrated arm uses env.shots (4096) regardless;
-      #    that too departs from AK10 (which is AerSimulator/noiseless only).
+      # CFG-1 (commit 8903f1d) threads experiment-level shots end-to-end
+      # (precedence: experiment shots > env.shots > DEFAULT_SMOKE_SHOTS), so
+      # this 'shots: 100' IS honored on the BYO path now -- the old
+      # byo_shots=1000 hardcode is gone. Verify per-result shots==100 before
+      # the VIP run. NOTE: AK10 itself is AerSimulator/noiseless only; the
+      # device_calibrated arm below is an HPCQC extension (Q50 noise), not part
+      # of AK10 -- this 'shots' pins it to 100 as well.
       noise_configs: [noiseless, device_calibrated]
   calibrations:
     - examples/q50_calibration_20260524_08c3c70f.json

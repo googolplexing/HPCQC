@@ -417,12 +417,23 @@ class SweepHDF5Writer:
 
         script_stem = Path(result["script"]).stem if result.get("script") else "byo"
         phys = "-".join(str(q) for q in result["physical_qubit_set"])
+        # D7 increment 2: observable level appended via the shared helper —
+        # "" for the synthesized "default" (LEGACY path, byte-identical pre-D7,
+        # so the W1.6 gate / banked references are untouched) or "/<name>" for a
+        # declared family. Local import: sweep/__init__ pulls sweep_engine, which
+        # imports this module, so a module-level sweep import here would cycle.
+        from lumi_hpc_qc.sweep.byo_observable import (
+            DEFAULT_OBSERVABLE_NAME,
+            byo_observable_subpath,
+        )
+        observable = result.get("observable", DEFAULT_OBSERVABLE_NAME)
         # No leading slash — matches SweepResultEntry.group_path ("devices/...")
         # and the names h5py.visititems reports (root-relative). h5py.create_group
         # places it at /byo/... regardless, and f["/byo/..."] still resolves it.
         group_path = (
             f"byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
             f"placements/{phys}/{result['env']}"
+            f"{byo_observable_subpath(observable)}"
         )
 
         # WAL append (crash-safe), tagged so recovery can distinguish BYO rows.
