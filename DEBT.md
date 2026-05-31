@@ -414,3 +414,37 @@ integrate manual/solver placements through the existing-but-unwired `MixedPacker
 `iqm_qpu` backend (`VTT_BATCH_LIMIT`, ≤100/batch). BYO is simulation-only today;
 Phase 2 is integration, not plumbing.
 
+
+## REPRO-PLACEMENT-1 — device-calibrated transpile is unseeded and the resolved layout is unrecorded (free-layout references are not reproducible)
+**Status:** open (tracked; RED ruling #4 in RED-RESP-STEP1-COLLAPSE-CANONICAL-PLACEMENT-AND-GATE-SEMANTICS-v1.0).
+**What.** For a device-calibrated run with no pinned placement
+(`physical_qubits=None`), `backends/prepare.py:_prepare_device_calibrated`
+transpiles **free-layout** (`initial_layout=None`) with **no `seed_transpiler`**
+(`prepare.py:357-364`; no seed anywhere on the device-calibrated path). Sabre's
+layout — which physical qubit sits at which chain position — is therefore
+**non-deterministic** run-to-run, and the **resolved layout is not recorded**:
+the runner metadata persists circuit/simulator seeds only, explicitly not the
+transpiler (`floquet_runner_v2.py:268-292`). So a free-layout device-calibrated
+reference's exact placement is neither reproducible nor recoverable. This is the
+W1.6 Step-1 blocker (see BLUE-FINDING-STEP1-PLACEMENT-NONDETERMINISM-AND-OPTION1-COLLAPSE-v1.0).
+**Why it matters (scope).** This affects **every** device-calibrated reference
+produced via the free-layout path, not just W1.6. The averaged autocorrelator
+depends on which physical qubit occupies which chain position (per-qubit T1/T2
+*and* chain-position dynamics), so a non-reproducible layout is a
+non-reproducible reference.
+**Why it's not biting the W1.6 gate.** The pinned-path Option-1 plan pins both
+arms via `--physical-qubits` (`initial_layout=list(range(n))`), which sidesteps
+free-layout for that gate. REPRO-PLACEMENT-1 is the fix for the *general*
+(non-pinned) path.
+**Trigger to resolve.** Before banking any new free-layout (non-pinned)
+device-calibrated reference intended for reproduction or comparison.
+**Plan.** (1) Set a fixed `seed_transpiler` on the device-calibrated transpile
+(mirror the `orchestration/workflow.py:161` `seed_transpiler=42` precedent) so
+the free-layout becomes deterministic. (2) — the real provenance, per Red —
+**record the resolved logical→physical layout** in the run metadata. A seed only
+reproduces given identical Qiskit/rustworkx versions; the recorded layout is
+version-independent provenance and is what an auditor or a replay actually needs.
+Optionally, replay/assert against the recorded layout on re-run.
+**Guard until then.** Do not bank a free-layout device-calibrated reference for
+later comparison without either pinning the placement (`--physical-qubits`) or
+recording the resolved layout.
