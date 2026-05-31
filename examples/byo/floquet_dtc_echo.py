@@ -88,9 +88,14 @@ def build_circuit(
 ) -> QuantumCircuit:
     """Autocorrelator circuit: X-init, num_kicks forward periods, measure-all.
 
-    Identical in physics to floquet_dtc.build_circuit (AK7-derived). Provided
-    here so this script is a superset of the single-observable factory and can
-    be used wherever that one is.
+    Signature-compatible with floquet_dtc.build_circuit, but NOT identical in
+    physics: this echo factory applies the coupling as Jzz/2 per period
+    (AK10-derived; see _apply_forward_period), whereas floquet_dtc.build_circuit
+    applies Jzz with no /2 (AK7-derived). They diverge by a factor of two in the
+    rzz drive and are therefore NOT interchangeable -- in particular the W1.6
+    gate MUST use floquet_dtc.build_circuit, never this one. This builder exists
+    only so the echo script is a self-contained superset for the AK10
+    autocorrelator-vs-echo ratio; it is not a drop-in for the gate factory.
     """
     h_x = (1.0 - epsilon) * np.pi
     qc = QuantumCircuit(num_qubits, num_qubits)

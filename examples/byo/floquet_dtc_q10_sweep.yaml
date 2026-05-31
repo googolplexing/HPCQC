@@ -18,14 +18,17 @@
 #
 # Note on the device-calibrated arm reference. The banked
 # examples/reference/floquet_dtc_q10_device-cal_agg.dat was produced by the
-# disjoint runner pipeline (aggregate_floquet.py + build_relaxation_pass as
-# an Aer custom pass) and is byte-identical pre/post the PadDelay-fix merge
-# (commit 90d329d): the runner's idle-decoherence path was always wired and
-# unaffected by the PadDelay scope. The reference is authoritative for
-# gate-2; no re-baseline is required. Acceptance is statistical per kick
-# (z_comb against the reference sem) -- the sweep-BYO pipeline (prepare.py
-# PadDelay + RelaxationNoisePass) and the runner are D9-disjoint, so
-# per-seed byte-identity is not the right bar. See FINDING-PADDELAY-SCOPE-v1_0.md
+# runner (floquet_runner_v2.py) driving the SHARED prepare_simulation seam
+# (patch 18: --physical-qubits / --disorder-file), the same seam the sweep-BYO
+# pipeline uses. Because both arms pin the canonical placement, read the file
+# disorder, build per-qubit T1/T2 from the same cal, and share the seed anchor
+# (resolve_instance_seed(0, s)), the device-calibrated arms are byte-identical,
+# not merely statistically close: the W1.6 Option-1 z_comb gate measured
+# worst_z = 0.00 across all 60 kicks (job 18958015). Acceptance is the pure 5-
+# sigma z_comb per kick; byte-identity is the expected and observed result, and
+# any future >5-sigma excursion is an engine finding (the two entry points
+# remain distinct code -- the D9 hazard -- which this gate empirically pins).
+# See FINDING-PADDELAY-SCOPE-v1_0.md, BLUE-REPORT-W1_6-GATE-CLOSURE-v1_0.md,
 # and RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 §F3.
 
 sweep:

@@ -13,12 +13,15 @@
 #
 # Submit (cd HPCQC root on LUMI first):
 #   sbatch --account=project_462001289 --partition=standard --nodes=1 \
-#     --ntasks=1 --cpus-per-task=256 --mem=0 --time=01:00:00 \
+#     --ntasks=1 --cpus-per-task=128 --mem=0 --time=01:00:00 \
 #     --job-name=gate_option1 \
 #     --output=slurm_logs/gate_option1.o%j --error=slurm_logs/gate_option1.e%j \
 #     --wrap 'cd "$SLURM_SUBMIT_DIR" && source "$SLURM_SUBMIT_DIR/env.sh" && \
 #       export SINGULARITYENV_PYTHONPATH="$HPCQC_ROOT/src" && \
 #       srun $HPCQC_CPU_WRAPPER $HPCQC_CPU_CONTAINER bash gate_option1.sh'
+#
+# (LUMI standard nodes are 128 physical cores = 2 sockets x 64; --cpus-per-task
+#  counts cores, so 128 here. sacct shows AllocCPUS=256 due to 2-way SMT.)
 #
 # Overridable via env: GATE_CFG, GATE_DISORDER, GATE_REF, GATE_OUTDIR, GATE_NSEEDS.
 set -uo pipefail

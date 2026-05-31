@@ -380,6 +380,28 @@ constraint and density matters.
 (proportional set size) read during a calibration run to measure the true
 marginal cost, and feed a marginal figure (not the standalone peak) into the cap
 default. Pairs naturally with the W1.4-2 measurement.
+## W1.5-OBS-1 — D1/D2 memory probe runs silently (no phase logging, non-standardized output)
+**Status:** open (tracked).
+**What.** The D1/D2 `per_unit_peak` probe (sweep_engine `_execute_byo_group`)
+runs ONE device-calibrated unit alone in `Pool(1)` before dispatching the main
+wave. For a q10 / 60-kick / 1000-shot unit that is ~12 min of wall during which
+the engine emits NOTHING -- the only trace is the `[probe:device_calibrated_
+VmHWM]` token folded into the post-probe `dispatching ...` line. From the
+outside it reads as a multi-minute hang at "1 manual placement(s)". The
+probe / dispatch / aggregate phases also use ad-hoc line formatting rather than
+one grammar.
+**Trigger to resolve.** Any time a human watches a device-calibrated BYO run
+(every gate / campaign run); first surfaced live during the W1.6 gate
+(job 18958015).
+**Plan.** (1) Emit a `── BYO memory probe (D1/D2) ──` section BEFORE the
+`Pool(1)` runs: which unit (seed, qubits, kicks, shots), why (binding heavy
+arm), that the main pool is deferred until it completes (~one unit wall), and
+that the probe result is kept (reused as a real seed, not discarded). (2) A
+standardized completion line: `probe complete: per_unit_peak=X GiB (VmHWM) |
+elapsed=Ns | kept seed=S`, then the existing dispatch line under a
+`── BYO dispatch ──` header. (3) Factor a single phase-line formatter
+(`key=value` grammar) reused across probe / dispatch / aggregate so the output
+is uniform. Observability only; does NOT change the cap math or any physics.
 ## PLACEMENT-1 — researcher cannot select physical qubits (replication is broken for the device-calibrated arm)
 **Status:** Phase 1 DONE — researcher-controlled placement ADOPTED per
 RED-RESP-GATE2-FAILURE-RECONCILIATION-AND-PLACEMENT-CONTROL-RULING §6 (conditions
