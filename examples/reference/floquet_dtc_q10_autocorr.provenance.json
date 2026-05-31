@@ -1,0 +1,49 @@
+{
+  "artifact": "examples/reference/floquet_dtc_q10_autocorr.csv",
+  "description": "W1.6 pinned-path Option-1 reference for the q10 Floquet DTC autocorrelator. Both arms consume the banked disorder file; the device-calibrated arm is pinned to the canonical solver top_1 placement through prepare_simulation. The gate compares the device_cal_* columns via pure z_comb (5-sigma).",
+  "supersedes": {
+    "commit": "cb33530",
+    "reason": "The prior reference was produced on legacy-drawn disorder and an unpinned (free-layout, non-reproducible) device-calibrated placement. This artifact is file-sourced disorder + a pinned canonical placement through the prepare_simulation seam -- a genuinely new artifact, not a re-pin."
+  },
+  "generator": {
+    "runner": "floquet_runner_v2.py",
+    "git_commit": "8c293968a2a7f921497e0a3faf835a91c88d5b3f",
+    "pipeline": "aggregate_floquet.py -> build_reference_csv.py"
+  },
+  "runs": {
+    "device_calibrated": {"slurm_job": 18957439, "output_dir": "results/ref_devcal_18957439", "wall": "00:13:25"},
+    "noiseless": {"slurm_job": 18957440, "output_dir": "results/ref_noiseless_18957440", "wall": "00:00:26"},
+    "aggregate_build": {"slurm_job": 18957722}
+  },
+  "disorder": {
+    "source": "file",
+    "file": "examples/byo/floquet_disorder_q10.json",
+    "sha256": "999176da541f500644850d24800746512d80b0fbfd43266f1b40d99b02b90ab6"
+  },
+  "placement": {
+    "device_calibrated": {
+      "pinned": true,
+      "physical_qubits": ["QB11", "QB5", "QB6", "QB7", "QB13", "QB21", "QB29", "QB28", "QB27", "QB26"],
+      "resolved_placement": ["QB11", "QB5", "QB6", "QB7", "QB13", "QB21", "QB29", "QB28", "QB27", "QB26"],
+      "note": "canonical solver deterministic top_1 for q10 on Q50 cal 08c3c70f; recorded order, guard-tested (tests/unit/test_canonical_placement_guard.py)"
+    },
+    "noiseless": {"pinned": false, "reason": "no placement-dependent physics"}
+  },
+  "calibration": {
+    "file": "examples/q50_calibration_20260524_08c3c70f.json",
+    "calibration_set_id": "08c3c70f",
+    "sha256": "e8ab38ee0be93ef700f17da320ddac98c9b3698c954fcefac9ff16bd2f6deb89"
+  },
+  "params": {
+    "num_qubits": 10, "num_instances": 40, "num_shots": 1000, "num_max_kicks": 60,
+    "master_seed": 0, "initial_state": 3, "epsilon": 0.03, "t2_mode": "ramsey"
+  },
+  "seed_anchor": {
+    "instance_0_seed": 3757552657,
+    "note": "resolve_instance_seed(0, 0); the seed_simulator value shared with the gate's file-disorder/pinned sweep arm, which is what makes the z_comb near-bit-level."
+  },
+  "columns": ["kick", "noiseless_mean", "noiseless_sem", "device_cal_mean", "device_cal_sem"],
+  "kicks": "0..59",
+  "provenance_home": "Each run's per-instance full.json records disorder_file + resolved_placement + master_seed + instance_seed (patch 18d). This file projects that run-self-described provenance onto the committed artifact; it is not a separate hand-authored source.",
+  "date": "2026-05-31"
+}
