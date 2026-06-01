@@ -1,0 +1,46 @@
+# F5a LIFT validation — multi-placement device_calibrated (Piece 3 smoke).
+#
+# RED-RULING-F5A-LIFT-APPROVED-v1.0. ONE experiment, TWO manual placements (the
+# Piece-2 HIGH and LOW chains) under device_calibrated in a SINGLE sweep. This
+# is the exact configuration the F5a clamp used to reject ("device_calibrated
+# with 2 manual placements is gated"); with the lift it runs, composing each
+# placement's noise model from its own qubits.
+#
+# Note this is ONE experiment carrying a list of two placements (physical_qubits:
+# [[HIGH],[LOW]]) — NOT two experiments. Two experiments differing only by
+# placement collapse into one BYO group (the group key excludes physical_qubits);
+# a list of placements on one experiment is the correct multi-placement form, and
+# the placement loop runs both.
+#
+# Expected post-lift:
+#   - runs (no F5a clamp error), 2 placement subtrees in the HDF5/dat layout;
+#   - device_calibrated records carry noise_placement_independent = FALSE
+#     (2 placements -> placement-DEPENDENT);
+#   - noiseless records carry FALSE (no per-placement noise);
+#   - each placement's device-cal .dat is BYTE-IDENTICAL to the corresponding
+#     single-placement Piece-2 run (HIGH == job 18984820, LOW == job 18984821),
+#     proving the multi-placement composition is per-placement with no cross-talk.
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: f5a_lift_multiplacement
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit            # autocorr
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid: {num_kicks: {range: [0, 40]}}        # 0..39
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      # TWO placements under device_calibrated — the lifted case.
+      physical_qubits:
+        - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]   # HIGH-T2
+        - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]  # LOW-T2
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      shots: 1000
+      noise_configs: [noiseless, device_calibrated]
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json

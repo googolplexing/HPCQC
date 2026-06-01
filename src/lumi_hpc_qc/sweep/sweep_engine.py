@@ -582,6 +582,26 @@ def _expand_byo_experiment(
     return task_counter
 
 
+def _noise_placement_independent(env_source: str, num_placements: int) -> bool:
+    """Whether a record's noise is independent of which placement it ran on.
+
+    True ONLY for a device_calibrated environment resolved to a SINGLE
+    placement: with one placement there is no cross-placement dependence, and
+    this is byte-identical to the pre-lift single-placement behaviour (flag
+    true). With >1 placement (F5a lifted — RED-RULING-F5A-LIFT-APPROVED-v1.0)
+    each placement is composed from its own qubits (per-placement, validated by
+    F5A-VALIDATION-PROVENANCE), so the records ARE placement-dependent and the
+    flag is false. Noiseless carries no per-placement noise, so it is always
+    false regardless of placement count (the field describes the noise model's
+    placement dependence; noiseless has none).
+
+    ``num_placements`` is the RESOLVED, post-dedup placement count for the group
+    (manual ∪ solver survivors) — the actual number that ran, not the requested
+    top-N.
+    """
+    return env_source == "device_calibrated" and num_placements == 1
+
+
 def _calibration_id(path: str) -> str:
     """Extract a short calibration ID from a file path."""
     name = Path(path).stem
@@ -2220,53 +2240,44 @@ class SweepEngine:
               f"({qsize}q, {len(connectivity)} 2q-edges, "
               f"{primary_axis}={place_task.circuit_params[primary_axis]})")
 
-        # ── F5a guardrail (D3a / RED-REVIEW §4 Q2/Q3): until per-placement
-        #    composition is verified end-to-end, a group containing
-        #    device_calibrated is solved on a SINGLE (top-fidelity) placement.
-        #    The noise_placement_independent flag is PER-ENV, set true ONLY on
-        #    device_calibrated records that ran without per-placement
-        #    composition (RED-REVIEW §4 Q3 — "set true only when
-        #    device_calibrated ran without per-placement composition"). It does
-        #    NOT apply to noiseless records (no per-placement noise to resolve),
-        #    which carry false. ──
-        wants_device_cal = any(
-            e.source == "device_calibrated"
-            for t in tasks for e in t.noise_configs
-        )
-        max_placements = 1 if wants_device_cal else representative.max_placements
-        # The single-placement guardrail is active for this group iff it runs
-        # device_calibrated; that makes each device_calibrated record's noise
-        # placement-independent.
-        guardrail_single_placement = bool(wants_device_cal)
+        # ── F5a guardrail LIFTED (RED-RULING-F5A-LIFT-APPROVED-v1.0, on the
+        #    Piece-2 evidence F5A-VALIDATION-PROVENANCE): device_calibrated with
+        #    >1 placement is now allowed, because each placement's noise model is
+        #    composed independently from that placement's own qubits
+        #    (build_control_readout_noise_model(physical_qubits=chain) per
+        #    placement — the BYO path's only composition mechanism, unchanged and
+        #    still required). The clamp this replaces was max_placements=1 plus a
+        #    hard error on >1 manual placement; both are gone, the per-placement
+        #    composition they guarded is preserved. noise_placement_independent
+        #    now tracks the RESOLVED placement count (set per-env at WorkerArgs:
+        #    true iff exactly one placement ran), so single-placement
+        #    device_calibrated stays byte-identical (flag true, as before) and
+        #    multi-placement records are honestly flagged placement-DEPENDENT
+        #    (false). Scope: this per-placement-composed device_calibrated path
+        #    only; NOT shared-model or QPU multi-placement (PLACEMENT-1 Phase 2,
+        #    separate review). ──
 
-        # ── Placements: researcher-specified (PLACEMENT-1) bypass the solver;
-        #    otherwise the solver self-selects from the circuit's connectivity
-        #    (top_1 = highest score, since find_all_placements is
-        #    score-descending). ──
+        # ── Placements: researcher-specified (PLACEMENT-1) ∪ solver top-N.
+        #    physical_qubits alone -> manual only (solver bypassed); a solver
+        #    top-N (max_placements) alone -> solver self-selects; BOTH -> the
+        #    PLACEMENT union (manual + the solver's top-N NEW chains, deduped).
+        #    All three modes go through the shared seam (solver.resolve_placements),
+        #    so new circuit types inherit the dispatch. ──
         manual_placements = getattr(representative, "physical_qubits", None)
+        solver_top_n = (
+            representative.max_placements
+            if (manual_placements and representative.max_placements is not None)
+            else None
+        )
         t_place_start = time.perf_counter()
-        # F5a device-cal guardrail stays here (per-executor noise policy): until
-        # per-placement device-calibrated noise is validated across multiple
-        # placements, a manual device_calibrated study with >1 placement is
-        # gated, not silently allowed (DEBT PLACEMENT-1). Resolution itself now
-        # goes through the shared seam below (solver.resolve_placements), so new
-        # circuit types inherit solver-bypass without re-implementing dispatch.
-        if manual_placements and wants_device_cal and len(manual_placements) > 1:
-            errors.append(
-                f"BYO: device_calibrated with {len(manual_placements)} "
-                f"manual placements is gated by the F5a single-placement "
-                f"guardrail; supply one placement for device_calibrated, "
-                f"or run noiseless for a multi-placement study "
-                f"(see DEBT PLACEMENT-1)."
-            )
-            return
         placements = self._solver.resolve_placements(
             circuit_edges=connectivity,
             circuit_qubits=qsize,
             device_id=device_cal.device_id,
             strategy="max_fidelity",
-            max_placements=max_placements,
+            max_placements=representative.max_placements,
             manual_qubit_name_lists=manual_placements,
+            solver_top_n=solver_top_n,
         )
         self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
         if not placements:
@@ -2275,12 +2286,15 @@ class SweepEngine:
                 f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
             )
             return
-        if manual_placements:
+        if manual_placements and solver_top_n is not None:
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"(union: manual ∪ solver top-{solver_top_n})")
+        elif manual_placements:
             print(f"    BYO: {len(placements)} manual placement(s) "
                   f"(researcher-specified, solver bypassed)")
         else:
             print(f"    BYO: {len(placements)} placement(s) "
-                  f"{'(top_1, device_calibrated guardrail)' if wants_device_cal else ''}")
+                  f"(solver top-{representative.max_placements or 'all'})")
 
         # Progress accounting: matches the non-BYO _execute_group convention
         # (line ~1701) -- count (placement, task) pairs explored.
@@ -2415,9 +2429,8 @@ class SweepEngine:
                         init_bit_array=list(init_bit_array),
                         primary_axis=primary_axis,
                         grid_points_sorted=grid_points_sorted,
-                        noise_placement_independent=(
-                            env.source == "device_calibrated"
-                            and guardrail_single_placement
+                        noise_placement_independent=_noise_placement_independent(
+                            env.source, len(placements)
                         ),
                     ))
 
