@@ -602,6 +602,36 @@ def _noise_placement_independent(env_source: str, num_placements: int) -> bool:
     return env_source == "device_calibrated" and num_placements == 1
 
 
+# Pre-lift device-cal default: an UNSPECIFIED device_calibrated solver run
+# resolves to the single best-scoring placement (top-1), never the full device.
+# The F5a lift (F5A-LIFT-EFFECTIVE-PIECE3) permits >1 placement WHEN ASKED FOR
+# (manual sets / solver-top-N / the diversity schema); it does NOT make "no
+# placement specified" mean "all placements" (find_all_placements(None) = every
+# valid chain, ~3e4 on Q50). This default restores the clamp's INTENT on the
+# pure-solver no-placement sub-path without restoring the clamp itself.
+_DEVICE_CAL_DEFAULT_SOLVER_PLACEMENTS = 1
+
+
+def _solver_placement_cap(
+    manual_placements: list | None,
+    explicit_max_placements: int | None,
+    wants_device_cal: bool,
+) -> int | None:
+    """Effective solver cap for the pure-solver (no-manual) placement path.
+
+    F5a-fanout-fix (F5A-LIFT-EFFECTIVE-PIECE3 §4 scope): a device_calibrated
+    solver run with NO manual placement and NO explicit max_placements defaults
+    to top-1 (the pre-lift meaning) instead of fanning out to every valid
+    placement. Noiseless is untouched (it was never clamped); an explicit
+    max_placements is honored verbatim. Irrelevant on the manual/union paths
+    (the seam ignores max_placements there) -- passed through unchanged so it
+    never injects a top-1 into a manual or union run.
+    """
+    if explicit_max_placements is None and not manual_placements and wants_device_cal:
+        return _DEVICE_CAL_DEFAULT_SOLVER_PLACEMENTS
+    return explicit_max_placements
+
+
 def _calibration_id(path: str) -> str:
     """Extract a short calibration ID from a file path."""
     name = Path(path).stem
@@ -2269,13 +2299,27 @@ class SweepEngine:
             if (manual_placements and representative.max_placements is not None)
             else None
         )
+        # ── F5a-fanout-fix (F5A-LIFT-EFFECTIVE-PIECE3 §4 scope): on the pure-
+        #    solver path with NO placement and NO max_placements, default device-
+        #    cal to top-1 (the pre-lift meaning) rather than fanning out to every
+        #    valid chain (find_all_placements(None) = ~3e4 on Q50). Noiseless
+        #    unchanged; explicit max_placements honored. resolve_placements ignores
+        #    this on the manual/union paths (it composes; noise policy is the
+        #    caller's, per its docstring). ──
+        wants_device_cal = any(
+            e.source == "device_calibrated"
+            for t in tasks for e in t.noise_configs
+        )
+        solver_max_placements = _solver_placement_cap(
+            manual_placements, representative.max_placements, wants_device_cal
+        )
         t_place_start = time.perf_counter()
         placements = self._solver.resolve_placements(
             circuit_edges=connectivity,
             circuit_qubits=qsize,
             device_id=device_cal.device_id,
             strategy="max_fidelity",
-            max_placements=representative.max_placements,
+            max_placements=solver_max_placements,
             manual_qubit_name_lists=manual_placements,
             solver_top_n=solver_top_n,
         )
@@ -2294,7 +2338,7 @@ class SweepEngine:
                   f"(researcher-specified, solver bypassed)")
         else:
             print(f"    BYO: {len(placements)} placement(s) "
-                  f"(solver top-{representative.max_placements or 'all'})")
+                  f"(solver top-{solver_max_placements or 'all'})")
 
         # Progress accounting: matches the non-BYO _execute_group convention
         # (line ~1701) -- count (placement, task) pairs explored.
