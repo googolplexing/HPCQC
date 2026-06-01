@@ -51,3 +51,9 @@ export HPCQC_SMALL_PARTITION="${HPCQC_SMALL_PARTITION:-standard}"
 # Scripts source this file, so HPCQC_ROOT is always set correctly
 # regardless of where sbatch is invoked from.
 export HPCQC_ROOT="${HPCQC_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# ── Container PYTHONPATH passthrough ──
+# Singularity only forwards host vars prefixed with SINGULARITYENV_ into the
+# container (where it appears as plain PYTHONPATH). lumi_hpc_qc runs from src/
+# (not pip-installed in the image), so every in-container `python3 -m ...`
+# needs this. Must come AFTER HPCQC_ROOT is set above.
+export SINGULARITYENV_PYTHONPATH="${SINGULARITYENV_PYTHONPATH:-$HPCQC_ROOT/src}"
