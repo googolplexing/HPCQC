@@ -51,12 +51,39 @@ def _chain(p: Placement) -> list[int]:
     return p.physical_indices
 
 
-def _print_chains(label: str, pls: list[Placement]) -> None:
+def _print_chains(
+    label: str,
+    pls: list[Placement],
+    name_to_index: dict[str, int] | None = None,
+) -> None:
+    """Diagnostic dump (pytest -s), readable across the three numberings.
+
+    Three distinct labellings are in play and must not be conflated:
+      - logical (L0..Ln-1): the circuit's own qubit index (the DTC chain is a
+        linear L0-L1-...-Ln-1);
+      - IQM name (QB5, QB11, ...): the hardware qubit label;
+      - graph index (0-based): the coupling-graph node id the solver works in.
+
+    Per placement we print, in LOGICAL/circuit order, each logical qubit paired
+    with its IQM name and -- when ``name_to_index`` is supplied (e.g. inverted
+    from the calibration's index_to_qubit_name) -- its graph index, so the line
+    reads straight across: ``L# = QBname (idx#)``. ``physical_indices`` is
+    printed separately as the SORTED set (the dedup key): order-independent and
+    deliberately NOT aligned to the placement above it.
+    """
     print(f"\n  {label}:")
     for p in pls:
-        print(f"    id={p.placement_id} source={p.source:<6} "
-              f"score={p.score:+.4f} chain={_chain(p)} "
-              f"names={[p.qubit_mapping[i] for i in range(len(p.qubit_mapping))]}")
+        names = [p.qubit_mapping[i] for i in range(len(p.qubit_mapping))]
+        if name_to_index is not None:
+            cells = "  ".join(
+                f"L{i}={nm}(idx{name_to_index[nm]})" for i, nm in enumerate(names)
+            )
+        else:
+            cells = "  ".join(f"L{i}={nm}" for i, nm in enumerate(names))
+        print(f"    id={p.placement_id:<6} source={p.source:<6} "
+              f"score={p.score:+.4f}")
+        print(f"        {cells}")
+        print(f"        physical set (sorted graph index, dedup key): {_chain(p)}")
 
 
 # A controlled "solver" ranking: four distinct 3q chains, score-descending
@@ -184,6 +211,10 @@ def test_real_q50_union_returns_solver_2nd_and_4th():
     solver = GeneralPlacementSolver()
     solver.add_device(cal)
     dev = cal.device_id
+    # name -> graph index (inverse of the calibration's index_to_qubit_name), so
+    # the dump shows each logical qubit's IQM name AND its graph index. Derived
+    # from the calibration, not assumed (no hardcoded QBk == idx k-1).
+    n2i = {name: idx for idx, name in cal.index_to_qubit_name.items()}
 
     # Genuine solver ranking (top 4 by score, F5 total order).
     ranked = solver.find_all_placements(
@@ -191,7 +222,7 @@ def test_real_q50_union_returns_solver_2nd_and_4th():
         device_ids=[dev], max_placements=4,
     )
     assert len(ranked) == 4
-    _print_chains("Q50 solver ranking (top 4)", ranked)
+    _print_chains("Q50 solver ranking (top 4)", ranked, n2i)
 
     # Feed the solver's #1 and #3 back as MANUAL (logical-order names).
     def names(p):
@@ -202,7 +233,7 @@ def test_real_q50_union_returns_solver_2nd_and_4th():
         circuit_edges=_CHAIN10_EDGES, circuit_qubits=10, device_id=dev,
         manual_qubit_name_lists=manual_lists, solver_top_n=2,
     )
-    _print_chains("Q50 UNION (manual #1,#3 + solver top-2)", merged)
+    _print_chains("Q50 UNION (manual #1,#3 + solver top-2)", merged, n2i)
 
     manual_out = [p for p in merged if p.source == "manual"]
     solver_out = [p for p in merged if p.source == "solver"]
