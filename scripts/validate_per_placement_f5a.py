@@ -179,10 +179,20 @@ def check_cal_tracking(run_dir_high: str, run_dir_low: str) -> dict:
     nl_sem = float(np.max(np.sqrt(snh ** 2 + snl ** 2)))
     control_ok = nl_max_abs_diff <= max(3.0 * nl_sem, 1e-9)
 
-    # Signal: device_calibrated HIGH decays slower than LOW.
+    # Signal: device_calibrated HIGH retains DTC order longer than LOW.
+    # The autocorrelator A(k) is a period-2 (subharmonic) order parameter: the
+    # Floquet pi-kick flips all spins each period, so A(k) ~ (-1)^k * envelope(k),
+    # and decoherence shrinks the ENVELOPE toward zero. Comparing the raw signed
+    # A(k) is meaningless (the two chains' curves cross every kick). Reduce to the
+    # staggered subharmonic parameter s(k) = (-1)^k * A(k) -- the standard DTC
+    # order parameter, a clean envelope (s(0)=+1 -> 0) -- then the higher-fidelity
+    # chain holds a LARGER s at late kicks (order survives longer). sem is unchanged
+    # by the sign flip.
     k, dh, sdh = _load_dat(_find_dat(run_dir_high, HIGH_T2_CHAIN, "device_calibrated"))
     _k, dl, sdl = _load_dat(_find_dat(run_dir_low, LOW_T2_CHAIN, "device_calibrated"))
-    diff = dh - dl
+    stag = np.where(k.astype(int) % 2 == 0, 1.0, -1.0)   # (-1)^k
+    sh, sl = stag * dh, stag * dl                          # subharmonic envelopes
+    diff = sh - sl
     comb_sem = np.sqrt(sdh ** 2 + sdl ** 2)
 
     late = k >= (k.max() * 2.0 / 3.0)          # last third of the kicks
@@ -190,9 +200,9 @@ def check_cal_tracking(run_dir_high: str, run_dir_low: str) -> dict:
     late_mean_sem = float(np.mean(comb_sem[late]))
     # Aggregate significance over late kicks (z = sum diff / sqrt(sum sem^2)).
     z_late = float(np.sum(diff[late]) / np.sqrt(np.sum(comb_sem[late] ** 2)))
-    # Monotonicity proxy: fraction of mid/late kicks with HIGH >= LOW.
+    # Monotonicity proxy: fraction of mid/late kicks with HIGH subharmonic >= LOW.
     midlate = k >= 3
-    frac_high_ge_low = float(np.mean(dh[midlate] >= dl[midlate]))
+    frac_high_ge_low = float(np.mean(sh[midlate] >= sl[midlate]))
 
     signal_ok = (late_mean_diff > 0) and (z_late > 3.0) and (frac_high_ge_low >= 0.8)
 
@@ -212,11 +222,16 @@ def check_cal_tracking(run_dir_high: str, run_dir_low: str) -> dict:
             "placement_independent": control_ok,
         },
         "device_calibrated_signal": {
+            "order_parameter": "staggered subharmonic s(k) = (-1)^k * A(k)",
+            "late_kick_mean_subharmonic_high": round(float(np.mean(sh[late])), 6),
+            "late_kick_mean_subharmonic_low": round(float(np.mean(sl[late])), 6),
             "late_kick_mean_diff_high_minus_low": round(late_mean_diff, 6),
             "late_kick_mean_combined_sem": round(late_mean_sem, 6),
             "late_kick_aggregate_z": round(z_late, 3),
             "fraction_kicks_high_ge_low": round(frac_high_ge_low, 3),
-            "direction": "HIGH-T2 decays slower than LOW-T2 (expected)",
+            "direction": "HIGH (higher fidelity on all axes) retains DTC subharmonic "
+                         "order longer than LOW (expected: higher-fidelity placement "
+                         "-> slower envelope decay)",
         },
         "n_kicks": int(len(k)),
     }
@@ -268,9 +283,11 @@ def emit_provenance(calibration_path: str, composition: dict,
         lines += [
             "",
             "## (b) Cal-tracking — results track calibration",
-            f"- device_calibrated: HIGH−LOW late-kick mean diff {s['late_kick_mean_diff_high_minus_low']} "
+            f"- device_calibrated (staggered subharmonic order parameter s(k)=(-1)^k·A(k)): "
+            f"HIGH late-kick mean {s['late_kick_mean_subharmonic_high']} vs LOW "
+            f"{s['late_kick_mean_subharmonic_low']}; HIGH−LOW {s['late_kick_mean_diff_high_minus_low']} "
             f"(combined sem {s['late_kick_mean_combined_sem']}), aggregate z {s['late_kick_aggregate_z']}, "
-            f"fraction kicks HIGH≥LOW {s['fraction_kicks_high_ge_low']} — {s['direction']}.",
+            f"fraction kicks HIGH≥LOW {s['fraction_kicks_high_ge_low']}. {s['direction']}.",
             f"- noiseless control: max |HIGH−LOW| {c['max_abs_diff']} ≤ 3×sem {c['max_combined_sem']} "
             f"→ placement-independent: {c['placement_independent']}.",
             f"- **{'PASS' if ct['passed'] else 'FAIL'}**",
