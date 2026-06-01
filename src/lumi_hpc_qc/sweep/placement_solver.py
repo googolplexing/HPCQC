@@ -93,6 +93,11 @@ class Placement:
     per_qubit_calibration: dict[str, dict[str, float]] = field(
         default_factory=dict
     )
+    # Provenance of how this placement entered the resolved set (PLACEMENT union):
+    # "manual" = researcher-supplied (physical_qubits); "solver" = chosen by the
+    # placement solver (find_all_placements, ranked by score). Lets the VIP's
+    # ranking be audited (which chains they pinned vs which the solver picked).
+    source: str = "solver"
 
 
 @dataclass
@@ -270,6 +275,7 @@ class GeneralPlacementSolver:
                     avg_gate_fidelity=avg_cz,
                     topology_hash=topo_hash,
                     per_qubit_calibration=per_q,
+                    source="solver",
                 ))
                 self._placement_counter += 1
 
@@ -512,8 +518,58 @@ class GeneralPlacementSolver:
                 per_qubit_calibration=self._per_qubit_calibration(
                     phys_indices, cal
                 ),
+                source="manual",
             ))
         return placements
+
+    def _compose_manual_solver(
+        self,
+        manual: list["Placement"],
+        solver: list["Placement"],
+        solver_top_n: int,
+    ) -> tuple[list["Placement"], dict]:
+        """Compose manual ∪ solver-top-N placements, deduped, manual-first.
+
+        PLACEMENT union (Piece 1). ``manual`` are researcher-supplied placements
+        (source="manual"); ``solver`` are the score-ranked solver placements
+        already fetched to depth N + len(manual) (source="solver"). Returns the
+        merged list and a stats dict.
+
+        Semantics (net-N-NEW solver chains):
+          - Dedup ``solver`` against ``manual`` on ``frozenset(physical_indices)``
+            (set-level; Red's F5 tie-break key). A solver placement covering the
+            same qubit SET as a manual one is dropped -- the manual entry wins
+            (precedence), preserving the researcher's logical ordering.
+          - Keep the top ``solver_top_n`` of the survivors (ranked). Because each
+            manual chain collides with at most one distinct solver placement,
+            D <= len(manual), so fetching N + len(manual) guarantees >= N
+            survivors UNLESS the device is exhausted of distinct chains -- in
+            which case fewer than N survive (S < N) and that shortfall is
+            reported, never padded or silently dropped.
+          - Concatenate manual-first, then solver-ranked. Re-assign placement_id
+            0..M-1 over the final order (placement_id is provenance only on the
+            BYO path -- identity is the qubit-name string -- so re-id is safe).
+        """
+        manual_sets = {frozenset(p.physical_indices) for p in manual}
+        survivors, deduped = [], 0
+        for p in solver:
+            if frozenset(p.physical_indices) in manual_sets:
+                deduped += 1
+            else:
+                survivors.append(p)
+        kept = survivors[:solver_top_n]
+        merged = list(manual) + kept
+        for new_id, p in enumerate(merged):
+            p.placement_id = new_id
+        stats = {
+            "k_manual": len(manual),
+            "n_requested": solver_top_n,
+            "s_solver": len(kept),
+            "d_deduped": deduped,
+            "fetch_depth": solver_top_n + len(manual),
+            "short_of_n": max(0, solver_top_n - len(kept)),
+        }
+        return merged, stats
 
     def resolve_placements(
         self,
@@ -524,24 +580,55 @@ class GeneralPlacementSolver:
         max_placements: int | None = None,
         call_limit: int = 100_000,
         manual_qubit_name_lists: list[list[str]] | None = None,
+        solver_top_n: int | None = None,
     ) -> list["Placement"]:
         """Single placement-resolution seam (PLACEMENT-1).
 
-        The one place any executor resolves placements: when
-        ``manual_qubit_name_lists`` is supplied the solver is bypassed via
-        ``placements_from_names`` (researcher placement control); otherwise the
-        solver self-selects via ``find_all_placements``. The manual-absent path
-        forwards its arguments unchanged, so it is byte-identical to calling
-        ``find_all_placements`` directly -- the invariant each executor relies
-        on for its field-absent behaviour. New circuit types resolve placements
-        by calling this method; they do not re-implement the dispatch.
+        Three modes:
+          - ``manual_qubit_name_lists`` given, ``solver_top_n`` None: solver
+            bypassed, exactly the researcher's placements (today's behaviour,
+            byte-identical).
+          - ``manual_qubit_name_lists`` None: solver self-selects via
+            ``find_all_placements`` (today's behaviour, byte-identical -- forwards
+            its arguments unchanged).
+          - BOTH given (PLACEMENT union): the researcher's manual placements PLUS
+            the solver's top ``solver_top_n`` NEW chains (deduped against the
+            manual set, net-N-new). See ``_compose_manual_solver``. The solver is
+            fetched to depth ``solver_top_n + len(manual)`` so N survive dedup.
 
         ``max_placements``/``call_limit`` apply only to the solver path
         (``placements_from_names`` returns exactly the supplied placements).
         Noise/guardrail policy (e.g. the F5a device-calibrated single-placement
         restriction) is deliberately left to the caller, since it differs per
-        executor.
+        executor -- this seam composes placements; it does not decide whether a
+        noise environment permits more than one.
         """
+        if manual_qubit_name_lists and solver_top_n is not None:
+            manual = self.placements_from_names(
+                qubit_name_lists=manual_qubit_name_lists,
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_id=device_id,
+                strategy=strategy,
+            )
+            solver = self.find_all_placements(
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_ids=[device_id],
+                strategy=strategy,
+                max_placements=solver_top_n + len(manual),
+                call_limit=call_limit,
+            )
+            merged, stats = self._compose_manual_solver(manual, solver, solver_top_n)
+            short = (f", {stats['short_of_n']} short of N"
+                     if stats["short_of_n"] else "")
+            print(
+                f"  PLACEMENT union: {stats['k_manual']} manual + "
+                f"{stats['s_solver']} solver (requested {stats['n_requested']}, "
+                f"fetched {stats['fetch_depth']} deep, "
+                f"{stats['d_deduped']} deduped against manual{short})"
+            )
+            return merged
         if manual_qubit_name_lists:
             return self.placements_from_names(
                 qubit_name_lists=manual_qubit_name_lists,
