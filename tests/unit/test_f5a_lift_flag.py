@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: SSPL-1.0
 """F5a lift (Piece 3) — noise_placement_independent flag semantics.
 
-After RED-RULING-F5A-LIFT-APPROVED-v1.0 the device_calibrated single-placement
+After the F5a single-placement guardrail is lifted (decision F5A-LIFT-APPROVED,
+on the per-placement composition evidence F5A-VALIDATION-PROVENANCE) the
+device_calibrated single-placement
 clamp is removed and the flag tracks the RESOLVED placement count rather than the
 (now-gone) guardrail boolean:
 

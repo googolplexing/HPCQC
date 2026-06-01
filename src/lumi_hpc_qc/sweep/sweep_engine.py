@@ -588,10 +588,10 @@ def _noise_placement_independent(env_source: str, num_placements: int) -> bool:
     True ONLY for a device_calibrated environment resolved to a SINGLE
     placement: with one placement there is no cross-placement dependence, and
     this is byte-identical to the pre-lift single-placement behaviour (flag
-    true). With >1 placement (F5a lifted — RED-RULING-F5A-LIFT-APPROVED-v1.0)
-    each placement is composed from its own qubits (per-placement, validated by
-    F5A-VALIDATION-PROVENANCE), so the records ARE placement-dependent and the
-    flag is false. Noiseless carries no per-placement noise, so it is always
+    true). With >1 placement (F5a single-placement guardrail lifted —
+    F5A-LIFT-APPROVED) each placement is composed from its own qubits
+    (per-placement, validated by F5A-VALIDATION-PROVENANCE), so the records ARE
+    placement-dependent and the flag is false. Noiseless carries no per-placement noise, so it is always
     false regardless of placement count (the field describes the noise model's
     placement dependence; noiseless has none).
 
@@ -2240,8 +2240,8 @@ class SweepEngine:
               f"({qsize}q, {len(connectivity)} 2q-edges, "
               f"{primary_axis}={place_task.circuit_params[primary_axis]})")
 
-        # ── F5a guardrail LIFTED (RED-RULING-F5A-LIFT-APPROVED-v1.0, on the
-        #    Piece-2 evidence F5A-VALIDATION-PROVENANCE): device_calibrated with
+        # ── F5a single-placement guardrail LIFTED (decision: F5A-LIFT-APPROVED;
+        #    evidence: F5A-VALIDATION-PROVENANCE): device_calibrated with
         #    >1 placement is now allowed, because each placement's noise model is
         #    composed independently from that placement's own qubits
         #    (build_control_readout_noise_model(physical_qubits=chain) per

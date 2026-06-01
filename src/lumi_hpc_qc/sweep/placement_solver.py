@@ -537,7 +537,8 @@ class GeneralPlacementSolver:
 
         Semantics (net-N-NEW solver chains):
           - Dedup ``solver`` against ``manual`` on ``frozenset(physical_indices)``
-            (set-level; Red's F5 tie-break key). A solver placement covering the
+            (set-level; the same physical-qubit identity _placement_sort_key
+            tie-breaks on, so dedup and ranking agree). A solver placement covering the
             same qubit SET as a manual one is dropped -- the manual entry wins
             (precedence), preserving the researcher's logical ordering.
           - Keep the top ``solver_top_n`` of the survivors (ranked). Because each

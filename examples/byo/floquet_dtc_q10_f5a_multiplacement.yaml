@@ -1,7 +1,8 @@
 # F5a LIFT validation — multi-placement device_calibrated (Piece 3 smoke).
 #
-# RED-RULING-F5A-LIFT-APPROVED-v1.0. ONE experiment, TWO manual placements (the
-# Piece-2 HIGH and LOW chains) under device_calibrated in a SINGLE sweep. This
+# Decision F5A-LIFT-APPROVED (evidence F5A-VALIDATION-PROVENANCE). ONE
+# experiment, TWO manual placements (the Piece-2 HIGH and LOW chains) under
+# device_calibrated in a SINGLE sweep. This
 # is the exact configuration the F5a clamp used to reject ("device_calibrated
 # with 2 manual placements is gated"); with the lift it runs, composing each
 # placement's noise model from its own qubits.
