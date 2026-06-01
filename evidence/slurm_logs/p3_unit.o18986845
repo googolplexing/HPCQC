@@ -1,0 +1,83 @@
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /pfs/lustref1/flash/project_462001289/mucciard/HPCQC/HPCQC
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.0.0, zarr-3.1.5
+collecting ... collected 11 items
+
+tests/unit/test_f5a_lift_flag.py::test_device_cal_single_placement_is_independent_true PASSED
+tests/unit/test_f5a_lift_flag.py::test_device_cal_multi_placement_is_dependent_false PASSED
+tests/unit/test_f5a_lift_flag.py::test_noiseless_is_always_false PASSED
+tests/unit/test_f5a_lift_flag.py::test_boundary_single_vs_multi PASSED
+tests/unit/test_placement_union.py::test_manual_only_passthrough_is_unchanged 
+  manual-only (solver bypassed):
+    id=-1 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+PASSED
+tests/unit/test_placement_union.py::test_dedup_in_action_manual_is_solver_best 
+  manual (= solver #1):
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+
+  solver ranking fetched:
+    id=-1 source=solver score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=solver score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+    id=-1 source=solver score=-0.3000 chain=[3, 4, 5] names=['QB3', 'QB4', 'QB5']
+    id=-1 source=solver score=-0.4000 chain=[4, 5, 6] names=['QB4', 'QB5', 'QB6']
+
+  UNION result:
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=solver score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+  stats: {'k_manual': 1, 'n_requested': 1, 's_solver': 1, 'd_deduped': 1, 'fetch_depth': 2, 'short_of_n': 0}
+PASSED
+tests/unit/test_placement_union.py::test_interleaved_dedup_first_and_third 
+  manual (= solver #1 and #3):
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=manual score=-0.3000 chain=[3, 4, 5] names=['QB3', 'QB4', 'QB5']
+
+  solver ranking fetched (N+K=4 deep):
+    id=-1 source=solver score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=2 source=solver score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+    id=-1 source=solver score=-0.3000 chain=[3, 4, 5] names=['QB3', 'QB4', 'QB5']
+    id=3 source=solver score=-0.4000 chain=[4, 5, 6] names=['QB4', 'QB5', 'QB6']
+
+  UNION result:
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=manual score=-0.3000 chain=[3, 4, 5] names=['QB3', 'QB4', 'QB5']
+    id=2 source=solver score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+    id=3 source=solver score=-0.4000 chain=[4, 5, 6] names=['QB4', 'QB5', 'QB6']
+  stats: {'k_manual': 2, 'n_requested': 2, 's_solver': 2, 'd_deduped': 2, 'fetch_depth': 4, 'short_of_n': 0}
+PASSED
+tests/unit/test_placement_union.py::test_net_n_trims_surplus_survivors   stats: {'k_manual': 1, 'n_requested': 2, 's_solver': 2, 'd_deduped': 1, 'fetch_depth': 3, 'short_of_n': 0}
+PASSED
+tests/unit/test_placement_union.py::test_short_of_n_when_solver_pool_exhausted 
+  manual (covers entire solver pool):
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=manual score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+
+  UNION result (no new solver chains):
+    id=0 source=manual score=-0.1000 chain=[1, 2, 3] names=['QB1', 'QB2', 'QB3']
+    id=1 source=manual score=-0.2000 chain=[2, 3, 4] names=['QB2', 'QB3', 'QB4']
+  stats: {'k_manual': 2, 'n_requested': 3, 's_solver': 0, 'd_deduped': 2, 'fetch_depth': 5, 'short_of_n': 3}
+PASSED
+tests/unit/test_placement_union.py::test_real_q50_union_returns_solver_2nd_and_4th   Device Q50: 30750 valid placements for 10q circuit
+
+  Q50 solver ranking (top 4):
+    id=5401 source=solver score=+0.9807 chain=[4, 5, 6, 10, 12, 20, 25, 26, 27, 28] names=['QB11', 'QB5', 'QB6', 'QB7', 'QB13', 'QB21', 'QB29', 'QB28', 'QB27', 'QB26']
+    id=26570 source=solver score=+0.9806 chain=[4, 5, 6, 12, 20, 24, 25, 26, 27, 28] names=['QB25', 'QB26', 'QB27', 'QB28', 'QB29', 'QB21', 'QB13', 'QB7', 'QB6', 'QB5']
+    id=7444 source=solver score=+0.9806 chain=[5, 6, 11, 12, 20, 24, 25, 26, 27, 28] names=['QB12', 'QB6', 'QB7', 'QB13', 'QB21', 'QB29', 'QB28', 'QB27', 'QB26', 'QB25']
+    id=26569 source=solver score=+0.9806 chain=[4, 5, 11, 12, 20, 24, 25, 26, 27, 28] names=['QB25', 'QB26', 'QB27', 'QB28', 'QB29', 'QB21', 'QB13', 'QB12', 'QB6', 'QB5']
+  Device Q50: 30750 valid placements for 10q circuit
+  PLACEMENT union: 2 manual + 2 solver (requested 2, fetched 4 deep, 2 deduped against manual)
+
+  Q50 UNION (manual #1,#3 + solver top-2):
+    id=0 source=manual score=+0.9807 chain=[4, 5, 6, 10, 12, 20, 25, 26, 27, 28] names=['QB11', 'QB5', 'QB6', 'QB7', 'QB13', 'QB21', 'QB29', 'QB28', 'QB27', 'QB26']
+    id=1 source=manual score=+0.9806 chain=[5, 6, 11, 12, 20, 24, 25, 26, 27, 28] names=['QB12', 'QB6', 'QB7', 'QB13', 'QB21', 'QB29', 'QB28', 'QB27', 'QB26', 'QB25']
+    id=2 source=solver score=+0.9806 chain=[4, 5, 6, 12, 20, 24, 25, 26, 27, 28] names=['QB25', 'QB26', 'QB27', 'QB28', 'QB29', 'QB21', 'QB13', 'QB7', 'QB6', 'QB5']
+    id=3 source=solver score=+0.9806 chain=[4, 5, 11, 12, 20, 24, 25, 26, 27, 28] names=['QB25', 'QB26', 'QB27', 'QB28', 'QB29', 'QB21', 'QB13', 'QB12', 'QB6', 'QB5']
+PASSED
+tests/unit/test_placement_union.py::test_real_q50_solver_only_unchanged_by_union_param   Device Q50: 30750 valid placements for 10q circuit
+  Device Q50: 30750 valid placements for 10q circuit
+PASSED
+
+============================= 11 passed in 40.45s ==============================

@@ -1,0 +1,44 @@
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+
+======================================================================
+  SWEEP ENGINE — 35f09c64
+======================================================================
+
+── Loading calibrations ──
+  Loaded: examples/q50_calibration_20260524_08c3c70f.json
+
+── Expanding sweep grid ──
+  Total tasks: 400
+  Experiments: 1
+  Calibrations: 1
+  Manifest created: 400 tasks
+  Task groups: 1 (hamiltonian × topology × calibration)
+
+── Executing sweep → results/f5a_validation_low_18984821/sweep.h5 ──
+
+  Group 1/1: examples/byo/floquet_dtc_echo.py / byo / cal_20260524
+    BYO: built examples/byo/floquet_dtc_echo.py (10q, 9 2q-edges, num_kicks=39)
+    BYO: 1 manual placement(s) (researcher-specified, solver bypassed)
+    BYO: WARN: memory budget fell through to node RealMemory (node:MemTotal(RealMemory)) — NOT allocation-aware. safe_mem=221.0 GiB. Set --mem or run under a cgroup memory limit for an allocation-aware cap.
+    BYO: dispatching 20 unit(s) to forkserver pool (cap=20; binding=num_units; 1 wave(s); all units treated as heavy [device_calibrated], D2 conservative). per_unit_peak=0.69 GiB [probe:device_calibrated_VmHWM]; safe_mem=221.0 GiB [node:MemTotal(RealMemory)]; usable_cores_physical=128; cpu_workers=128; mem_term=318.
+    BYO: computed 20 (seed x placement x env) autocorrelator series
+
+── Verifying WAL consistency ──
+  WAL entries: 20
+  HDF5 groups: 20
+  Consistent: True
+
+======================================================================
+  SWEEP COMPLETE — 35f09c64
+  Tasks: 400/400
+  Placements processed: 400
+  Simulations: 20
+  Deduplicated: 0
+  HDF5 writes: 20
+  Errors: 0
+  Elapsed: 578.8s
+  Output: results/f5a_validation_low_18984821/sweep.h5
+======================================================================
+
+  Benchmark Parquet: 1 rows → results/f5a_validation_low_18984821/sweep_benchmark.parquet
+Sweep complete: SweepResult(sweep_id='35f09c64', hdf5_path='results/f5a_validation_low_18984821/sweep.h5', total_tasks=400, total_placements=400, total_simulations=20, total_deduplicated=0, total_hdf5_writes=20, total_errors=0, elapsed_seconds=578.810964345932, errors=[], placement_summary={})
