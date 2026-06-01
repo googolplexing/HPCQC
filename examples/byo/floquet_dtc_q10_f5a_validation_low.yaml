@@ -1,0 +1,33 @@
+# F5a per-placement validation — LOW-T2 chain (run 2 of 2).
+#
+# RED-DIRECTIVE-VIP-MULTI-PLACEMENT Piece 2. Pairs with
+# floquet_dtc_q10_f5a_validation_high.yaml. See that file's header for why the two
+# chains are run as two SEPARATE sweeps (BYO groups key on circuit/cal/observable,
+# not placement; two placements in one sweep collapse to one group) and why each
+# single-placement sweep is F5a-legal.
+#
+# This is the LOW-T2 chain (mean T2 ~4.75us on cal 08c3c70f), a disjoint qubit set
+# from the HIGH chain (3.3x mean-T2 contrast), so cross-contamination cannot hide
+# behind a shared qubit. The harness reads this run dir as --run-dir-low.
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: f5a_validation_low_t2
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid: {num_kicks: {range: [0, 40]}}
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      physical_qubits:
+        - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      shots: 1000
+      noise_configs: [noiseless, device_calibrated]
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json

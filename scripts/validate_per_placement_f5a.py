@@ -32,8 +32,9 @@ lift scope is unambiguous and cannot later be argued as autocorr-only.
 Usage (LUMI, in-container):
   python3 scripts/validate_per_placement_f5a.py \
       --calibration examples/q50_calibration_20260524_08c3c70f.json \
-      --run-dir results/f5a_validation_<JOBID> \
-      --out-prefix results/f5a_validation_<JOBID>/F5A-VALIDATION-PROVENANCE
+      --run-dir-high results/f5a_validation_high_<JOBID> \
+      --run-dir-low  results/f5a_validation_low_<JOBID> \
+      --out-prefix   results/F5A-VALIDATION-PROVENANCE
   # composition-only (no run needed):
   python3 scripts/validate_per_placement_f5a.py --calibration <cal> --composition-only
 """
@@ -161,20 +162,26 @@ def _find_dat(run_dir: str, chain: list[str], env: str) -> str:
     return hits[0]
 
 
-def check_cal_tracking(run_dir: str) -> dict:
-    """Assert device-cal results track calibration; noiseless is the control."""
+def check_cal_tracking(run_dir_high: str, run_dir_low: str) -> dict:
+    """Assert device-cal results track calibration; noiseless is the control.
+
+    The two chains are run as SEPARATE single-placement sweeps (F5a-legal; see the
+    config headers for why), so HIGH is read from run_dir_high and LOW from
+    run_dir_low. Each run dir contains its chain's own noiseless + device_calibrated
+    .dat (keyed by that chain's phys-qubit string).
+    """
     import numpy as np
 
     # Control: noiseless is placement-independent -> HIGH ~ LOW.
-    k, nh, snh = _load_dat(_find_dat(run_dir, HIGH_T2_CHAIN, "noiseless"))
-    _k, nl, snl = _load_dat(_find_dat(run_dir, LOW_T2_CHAIN, "noiseless"))
+    k, nh, snh = _load_dat(_find_dat(run_dir_high, HIGH_T2_CHAIN, "noiseless"))
+    _k, nl, snl = _load_dat(_find_dat(run_dir_low, LOW_T2_CHAIN, "noiseless"))
     nl_max_abs_diff = float(np.max(np.abs(nh - nl)))
     nl_sem = float(np.max(np.sqrt(snh ** 2 + snl ** 2)))
     control_ok = nl_max_abs_diff <= max(3.0 * nl_sem, 1e-9)
 
     # Signal: device_calibrated HIGH decays slower than LOW.
-    k, dh, sdh = _load_dat(_find_dat(run_dir, HIGH_T2_CHAIN, "device_calibrated"))
-    _k, dl, sdl = _load_dat(_find_dat(run_dir, LOW_T2_CHAIN, "device_calibrated"))
+    k, dh, sdh = _load_dat(_find_dat(run_dir_high, HIGH_T2_CHAIN, "device_calibrated"))
+    _k, dl, sdl = _load_dat(_find_dat(run_dir_low, LOW_T2_CHAIN, "device_calibrated"))
     diff = dh - dl
     comb_sem = np.sqrt(sdh ** 2 + sdl ** 2)
 
@@ -287,8 +294,10 @@ def emit_provenance(calibration_path: str, composition: dict,
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="F5a per-placement validation harness")
     ap.add_argument("--calibration", required=True)
-    ap.add_argument("--run-dir", default=None,
-                    help="sweep output dir (omit with --composition-only)")
+    ap.add_argument("--run-dir-high", default=None,
+                    help="HIGH-T2 chain sweep output dir")
+    ap.add_argument("--run-dir-low", default=None,
+                    help="LOW-T2 chain sweep output dir")
     ap.add_argument("--composition-only", action="store_true")
     ap.add_argument("--out-prefix", default="F5A-VALIDATION-PROVENANCE")
     args = ap.parse_args(argv)
@@ -299,10 +308,11 @@ def main(argv=None) -> int:
 
     cal_tracking = None
     if not args.composition_only:
-        if not args.run_dir:
-            print("ERROR: --run-dir required unless --composition-only", file=sys.stderr)
+        if not (args.run_dir_high and args.run_dir_low):
+            print("ERROR: --run-dir-high and --run-dir-low required "
+                  "unless --composition-only", file=sys.stderr)
             return 2
-        cal_tracking = check_cal_tracking(args.run_dir)
+        cal_tracking = check_cal_tracking(args.run_dir_high, args.run_dir_low)
         s = cal_tracking["device_calibrated_signal"]
         print(f"(b) cal-tracking: PASS (z_late={s['late_kick_aggregate_z']}, "
               f"frac HIGH>=LOW {s['fraction_kicks_high_ge_low']})")

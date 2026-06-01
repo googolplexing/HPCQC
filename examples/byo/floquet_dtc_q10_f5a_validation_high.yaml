@@ -1,0 +1,41 @@
+# F5a per-placement validation — HIGH-T2 chain (run 1 of 2).
+#
+# RED-DIRECTIVE-VIP-MULTI-PLACEMENT Piece 2. Pairs with
+# floquet_dtc_q10_f5a_validation_low.yaml. The two chains MUST be run as two
+# SEPARATE sweeps, not two experiments in one sweep: the engine keys BYO groups
+# on (circuit_script, calibration, observable) and NOT on physical_qubits, so two
+# experiments differing only by placement collapse into one group that runs only
+# the representative's placement. Two separate single-placement sweeps is also the
+# honest pre-lift expression — F5a permits one placement per device_calibrated
+# group, so each sweep here is F5a-LEGAL and needs no lift to GENERATE the evidence.
+#
+# This is the HIGH-T2 chain (mean T2 ~15.75us on cal 08c3c70f). The harness
+# scripts/validate_per_placement_f5a.py reads this run dir as --run-dir-high and
+# the LOW run dir as --run-dir-low, then asserts the device-cal HIGH chain decays
+# slower than LOW (cal-tracking) with noiseless as the placement-independent control.
+#
+# See the harness for the full observable-independence rationale (validating on
+# autocorr certifies the echo path; the composition takes no observable argument).
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: f5a_validation_high_t2
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit            # autocorr (VIP circuit family)
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid: {num_kicks: {range: [0, 40]}}        # 0..39
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      # ONE placement -> F5a-legal under device_calibrated.
+      physical_qubits:
+        - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      shots: 1000                                # clean cal-tracking signal
+      noise_configs: [noiseless, device_calibrated]
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
