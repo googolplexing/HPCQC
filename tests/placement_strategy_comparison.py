@@ -170,8 +170,18 @@ def hr(ch="─", n=78):
     return ch * n
 
 
-def names(p, idx_to_name):
-    return [idx_to_name.get(i, f"QB{i}") for i in p.physical_indices]
+def names(p, idx_to_name=None):
+    """Qubit names in CIRCUIT (path) order, via the embedding's logical->physical
+    map, so consecutive entries are coupled. This is required, not cosmetic: the
+    manual physical_qubits loader validates positionally (placement_solver
+    placements_from_names: circuit edge (a,b) must map to a calibrated coupler), so
+    the emitted YAML and §4's resolve_placements call must use path order, not a
+    sorted qubit set. Falls back to sorted physical_indices only if a mapping is
+    somehow absent."""
+    mapping = getattr(p, "qubit_mapping", None)
+    if mapping:
+        return [mapping[i] for i in sorted(mapping)]
+    return [(idx_to_name or {}).get(i, f"QB{i}") for i in p.physical_indices]
 
 
 def noise_aggregates(p):
