@@ -148,7 +148,13 @@ def _walk_flags(hdf5_path):
         if isinstance(obj, h5py.Group) and "noise_source" in obj.attrs:
             phys = ""
             if "physical_qubit_set" in obj:
-                phys = "-".join(str(q) for q in obj["physical_qubit_set"][()])
+                # physical_qubit_set is stored as HDF5 bytes (b'QB34'); decode so
+                # the joined string matches the plain "QB34-QB35-..." form used by
+                # _dat_path and the expected-placement sets (no b'...' decoration).
+                phys = "-".join(
+                    q.decode() if isinstance(q, bytes) else str(q)
+                    for q in obj["physical_qubit_set"][()]
+                )
             rows.append((
                 str(obj.attrs.get("noise_source", "?")),
                 phys,

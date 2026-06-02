@@ -8,6 +8,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=0
 #SBATCH --time=00:10:00
+#SBATCH --output=slurm_logs/f5a_crosstalk.o%j
+#SBATCH --error=slurm_logs/f5a_crosstalk.e%j
 #
 # F5a no-cross-talk CI integration test
 # (BLUE-PROPOSAL-F5A-NO-CROSSTALK-CI; RED-RULING-F5A-NO-CROSSTALK-CI).
