@@ -1554,6 +1554,16 @@ class SweepEngine:
         print(f"  Task groups: {len(groups)} "
               f"(hamiltonian × topology × calibration)")
 
+        # ── BYO-FAMILY-COLLISION fix (b1): determine, at run level, which BYO
+        #    script stems host MORE THAN ONE circuit family. After the group-key
+        #    fix each family is its own group, so the collision is only visible
+        #    here, across groups. Form A (per RED-RULING): key on script_stem —
+        #    a stem with >1 distinct circuit_function disambiguates ALL its
+        #    families (incl. the default), since all families of a script share
+        #    connectivity hence placements/envs (asserted in the regression
+        #    test, not assumed). A one-family stem keeps the legacy "" layout. ──
+        self._byo_collision_stems = self._compute_byo_collision_stems(tasks)
+
         # ── Step 5: Open HDF5 and execute ──
         hdf5_path = str(output_dir / self._config.hdf5_filename)
 
@@ -1574,6 +1584,7 @@ class SweepEngine:
             enable_swmr=self._config.enable_swmr,
             debug_json=self._config.debug_json,
             debug_json_dir=str(output_dir / "debug_json") if self._config.debug_json else None,
+            byo_collision_stems=self._byo_collision_stems,
         ) as writer:
             for group_idx, (group_key, group_tasks) in enumerate(groups.items()):
                 ham_name, topo_name, cal_path, _params_key = group_key
@@ -1867,6 +1878,31 @@ class SweepEngine:
 
     # ── Internal: task grouping ──
 
+    @staticmethod
+    def _compute_byo_collision_stems(tasks: list[SweepTask]) -> set[str]:
+        """Script stems that host >1 distinct circuit family in this run.
+
+        BYO-FAMILY-COLLISION fix (b1), Form A. A BYO leaf path is
+        {script_stem}/{placement}/{env}[+subpath]; the synthesized-default
+        observable contributes "" for the subpath, so two single-observable
+        arms (different circuit_function, both observable_name="default") under
+        the same stem would collide on disk. We disambiguate by circuit_function
+        for exactly the stems where >1 family appears. Keyed on script_stem (not
+        the full (stem, placement, env) tuple) because every family of a script
+        shares the built circuit's connectivity, hence the same resolved
+        placements and envs — so stem-level collision is equivalent to
+        leaf-level collision here. That equivalence is asserted in
+        test_byo_family_grouping (placement-equivalence), not assumed.
+        """
+        from pathlib import Path as _P
+        funcs_by_stem: dict[str, set[str]] = {}
+        for t in tasks:
+            if t.experiment_type != "byo_circuit" or not t.circuit_script:
+                continue
+            stem = _P(t.circuit_script).stem
+            funcs_by_stem.setdefault(stem, set()).add(t.circuit_function)
+        return {stem for stem, funcs in funcs_by_stem.items() if len(funcs) > 1}
+
     def _group_tasks(
         self, tasks: list[SweepTask],
     ) -> dict[tuple[str, str, str, tuple], list[SweepTask]]:
@@ -1897,8 +1933,19 @@ class SweepEngine:
                 # except for the extra ("__observable__","default") entry, which
                 # does not change grouping (one family) — the placement solve and
                 # execution are byte-identical.
+                # BYO-FAMILY-COLLISION fix (extends D7-increment-2): the
+                # observable name alone is "default" for EVERY single-observable
+                # arm, so two arms differing only in circuit_function keyed
+                # identically and collapsed into one group (only tasks[0]'s
+                # function ran). Fold circuit_function in too, so each circuit
+                # family is its own group in the single-observable form as well.
+                # circuit_function is already on the task; the 4th key slot is
+                # opaque downstream (run() unpacks ham,topo,cal,_params_key and
+                # never inspects _params_key), so a one-arm sweep is byte-
+                # identical (one group either way).
                 byo_params_key = (
                     ("__observable__", task.observable_name),
+                    ("__circuit_function__", task.circuit_function),
                 ) + params_key
                 key = (task.circuit_script, "byo", task.calibration_path, byo_params_key)
             else:
@@ -2633,6 +2680,10 @@ class SweepEngine:
                 # representative's observable_name is correct for every unit in it.
                 # "default" -> legacy HDF5/.dat layout (byte-identical pre-D7).
                 "observable": representative.observable_name,
+                # BYO-FAMILY-COLLISION fix (b1): the family's factory function,
+                # carried so the .dat aggregator and HDF5 writer can disambiguate
+                # colliding default-family leaves in lockstep via the shared seam.
+                "circuit_function": representative.circuit_function,
                 "placement_id": r.placement_id,
                 "physical_qubit_set": r.physical_qubit_set,
                 "env": r.env_name,
@@ -2698,17 +2749,23 @@ class SweepEngine:
         if out_root is not None:
             by_pe: dict[tuple, list] = {}
             for r in byo_results:
-                key = (tuple(r["physical_qubit_set"]), r["env"], r["observable"])
+                key = (tuple(r["physical_qubit_set"]), r["env"],
+                       r["observable"], r["circuit_function"])
                 by_pe.setdefault(key, []).append((r["seed"], r["autocorrelator"]))
-            for (phys, env, observable), series in by_pe.items():
-                # D7 increment 2: the legacy subdir, then the observable level
-                # appended via the shared helper ("" for "default" -> byte-
-                # identical pre-D7; "/<name>" for a declared family). Same
-                # helper the HDF5 writer uses, so the two layouts cannot drift.
+            stem = Path(representative.circuit_script).stem
+            disambiguate = stem in getattr(self, "_byo_collision_stems", set())
+            for (phys, env, observable, circuit_function), series in by_pe.items():
+                # D7 increment 2 + BYO-FAMILY-COLLISION fix (b1): the legacy
+                # subdir, then the observable/family level appended via the
+                # shared helper ("" for a lone "default" family -> byte-identical
+                # pre-D7; "/<name>" for a declared family; "/<circuit_function>"
+                # for a default family when >1 family collides at this leaf in
+                # the resolved run). Same helper + same disambiguate flag the
+                # HDF5 writer uses, so the two layouts cannot drift.
                 sub = os.path.join(
-                    out_root, Path(representative.circuit_script).stem,
+                    out_root, stem,
                     "-".join(str(q) for q in phys), env,
-                ) + byo_observable_subpath(observable)
+                ) + byo_observable_subpath(observable, circuit_function, disambiguate)
                 aggregate_byo_autocorr(sorted(series), sub)
 
         # Progress accounting: this group's tasks are done. The BYO path

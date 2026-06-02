@@ -26,20 +26,39 @@ import numpy as np
 DEFAULT_OBSERVABLE_NAME = "default"
 
 
-def byo_observable_subpath(observable_name: str) -> str:
+def byo_observable_subpath(
+    observable_name: str,
+    circuit_function: str | None = None,
+    disambiguate_default: bool = False,
+) -> str:
     """Trailing path segment for a BYO observable's HDF5 group / .dat subdir.
 
     Single source of the legacy-vs-observable layout decision, consumed by BOTH
     the .dat aggregator (sweep_engine `_execute_byo_group`) and the HDF5 writer
     (`SweepHDF5Writer.write_byo_result`) so the two cannot drift:
 
+      - a declared observable -> "/<name>" (one extra level), so multiple
+        families under the same (placement, env) do not collide;
       - the synthesized default observable ("default") -> "" (LEGACY layout;
         the path is exactly what the single-observable path produced pre-D7, so
-        banked references and the W1.6 gate are untouched);
-      - any declared observable -> "/<name>" (one extra level), so multiple
-        families under the same (placement, env) do not collide.
+        banked references and the W1.6 gate are untouched) -- EXCEPT when the
+        resolved run has >1 circuit family sharing this leaf.
+
+    BYO-FAMILY-COLLISION fix (b1): when the caller has determined (at run level,
+    across groups) that more than one circuit family resolves to the same
+    (script_stem, placement, env) leaf, it sets ``disambiguate_default=True``
+    and ALL colliding families -- including the default one -- take a
+    "/<circuit_function>" segment. This is all-families-or-none, keyed on the
+    resolved run: the default family's path must NOT depend on whether some
+    other family happens to exist (that would be order-dependent and fragile).
+    The one-family case is the only "" case, so single-arm runs stay byte-
+    identical to the bank.
     """
-    return "" if observable_name == DEFAULT_OBSERVABLE_NAME else f"/{observable_name}"
+    if observable_name != DEFAULT_OBSERVABLE_NAME:
+        return f"/{observable_name}"
+    if disambiguate_default and circuit_function:
+        return f"/{circuit_function}"
+    return ""
 
 
 def get_autocorrelation(counts, init_bit_array, num_qubits):

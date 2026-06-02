@@ -193,6 +193,7 @@ class SweepHDF5Writer:
         wal_path: str | None = None,
         debug_json: bool = False,
         debug_json_dir: str | None = None,
+        byo_collision_stems: set[str] | None = None,
     ) -> None:
         self._hdf5_path = Path(hdf5_path)
         self._wal_path = Path(wal_path or str(hdf5_path) + ".wal")
@@ -200,6 +201,12 @@ class SweepHDF5Writer:
         self._enable_swmr = enable_swmr
         self._debug_json = debug_json
         self._debug_json_dir = Path(debug_json_dir) if debug_json_dir else None
+        # BYO-FAMILY-COLLISION fix (b1): script stems hosting >1 circuit family
+        # in this run (computed once at run level). For these, the default
+        # family's leaf is disambiguated by circuit_function via the shared
+        # byo_observable_subpath seam — in lockstep with the .dat aggregator.
+        # Empty/None => no collision => legacy "" layout (byte-identical).
+        self._byo_collision_stems = byo_collision_stems or set()
         self._h5file: h5py.File | None = None
         self._wal_file = None
         self._write_count = 0
@@ -427,13 +434,19 @@ class SweepHDF5Writer:
             byo_observable_subpath,
         )
         observable = result.get("observable", DEFAULT_OBSERVABLE_NAME)
+        # BYO-FAMILY-COLLISION fix (b1): disambiguate a default-family leaf by
+        # circuit_function iff this script stem hosts >1 family in the run
+        # (the run-level set passed at construction). Same seam + same flag the
+        # .dat aggregator uses, so the HDF5 and .dat layouts cannot drift.
+        circuit_function = result.get("circuit_function")
+        disambiguate = script_stem in self._byo_collision_stems
         # No leading slash — matches SweepResultEntry.group_path ("devices/...")
         # and the names h5py.visititems reports (root-relative). h5py.create_group
         # places it at /byo/... regardless, and f["/byo/..."] still resolves it.
         group_path = (
             f"byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
             f"placements/{phys}/{result['env']}"
-            f"{byo_observable_subpath(observable)}"
+            f"{byo_observable_subpath(observable, circuit_function, disambiguate)}"
         )
 
         # WAL append (crash-safe), tagged so recovery can distinguish BYO rows.
