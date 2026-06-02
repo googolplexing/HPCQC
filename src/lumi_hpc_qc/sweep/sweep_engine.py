@@ -53,6 +53,7 @@ from lumi_hpc_qc.sweep.placement_solver import (
     GeneralPlacementSolver,
     Placement,
     PackingRound,
+    PlacementDiversityConfig,
 )
 from lumi_hpc_qc.sweep.topology_library import (
     TOPOLOGY_LIBRARY,
@@ -173,6 +174,18 @@ class SweepExperimentConfig:
     # qubit-name lists; logical qubit i maps to physical_qubits[k][i] (the F5a
     # placement-keyed order, mirroring noise_model._resolve_selected).
     physical_qubits: list[list[str]] | None = None
+
+    # Workstream A: placement-diversity selection policy. Default-inactive
+    # (strategy="none") -> the resolution path is byte-identical to today; this
+    # config never enters resolve_placements's branches unless active. When
+    # active ("disjoint"), the solver self-selects the full ranked candidate
+    # list and select_disjoint_placements picks a spatially-independent subset.
+    # Mutually exclusive with physical_qubits (parse-time error). Carried onto
+    # SweepTask and read at the executor seam (the W1.6 silent-solver lesson:
+    # a field the executor can't see off the task defaults to inactive).
+    placement_diversity: PlacementDiversityConfig = field(
+        default_factory=PlacementDiversityConfig
+    )
 
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
@@ -307,6 +320,13 @@ class SweepTask:
     # _expand_byo_experiment. Without this carry the executor reads it off the
     # task and always sees None -> the W1.6 Step-1 silent-solver bug.
     physical_qubits: list[list[str]] | None = None
+    # Workstream A: placement-diversity policy carried onto each task so the
+    # executor seam reads it off the task (the W1.6 Step-1 lesson — a field the
+    # executor can't see defaults to inactive -> silent solver). Default-inactive
+    # PlacementDiversityConfig() -> today's path, byte-identical.
+    placement_diversity: PlacementDiversityConfig = field(
+        default_factory=PlacementDiversityConfig
+    )
 
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
@@ -578,6 +598,7 @@ def _expand_byo_experiment(
                         experiment_shots=exp.shots,
                         optimization_level=exp.optimization_level,
                         physical_qubits=exp.physical_qubits,
+                        placement_diversity=exp.placement_diversity,
                     ))
     return task_counter
 
@@ -905,6 +926,61 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
                 f"pending review); got experiment_type={exp.experiment_type!r}. "
                 f"Remove physical_qubits, or set type: byo_circuit."
             )
+
+        # Workstream A: parse placement_diversity block (default-inactive).
+        pd_dict = exp_dict.get("placement_diversity")
+        if pd_dict is not None:
+            if not isinstance(pd_dict, dict):
+                raise ValueError(
+                    f"placement_diversity must be a mapping; got "
+                    f"{type(pd_dict).__name__}"
+                )
+            strat = pd_dict.get("strategy", "none")
+            if strat not in ("none", "disjoint"):
+                raise ValueError(
+                    f"placement_diversity.strategy must be 'none' or "
+                    f"'disjoint'; got {strat!r}"
+                )
+            raw_count = pd_dict.get("count", "auto")
+            if raw_count != "auto":
+                if not isinstance(raw_count, int) or isinstance(raw_count, bool) \
+                        or raw_count <= 0:
+                    raise ValueError(
+                        f"placement_diversity.count must be 'auto' or a "
+                        f"positive int; got {raw_count!r}"
+                    )
+            raw_overlap = pd_dict.get("max_overlap", 0)
+            if not isinstance(raw_overlap, int) or isinstance(raw_overlap, bool) \
+                    or raw_overlap < 0:
+                raise ValueError(
+                    f"placement_diversity.max_overlap must be a non-negative "
+                    f"int; got {raw_overlap!r}"
+                )
+            exp.placement_diversity = PlacementDiversityConfig(
+                strategy=strat, max_overlap=raw_overlap, count=raw_count,
+            )
+
+        # Workstream A scope-gate: placement_diversity is a BYO-only solver-path
+        # policy, and it is mutually exclusive with manual physical_qubits — you
+        # cannot ask the solver to diversify a set you pinned by hand. Fail loud
+        # at parse rather than silently honour one (a warning that's ignored
+        # produces a run that did something other than the config asked — the
+        # "config lied" failure class). RED-RULING-WORKSTREAM-A §9.1.
+        if exp.placement_diversity.is_active():
+            if exp.experiment_type != "byo_circuit":
+                raise ValueError(
+                    f"placement_diversity is only supported for "
+                    f"experiment_type='byo_circuit' (Workstream A is BYO-only); "
+                    f"got experiment_type={exp.experiment_type!r}."
+                )
+            if exp.physical_qubits is not None:
+                raise ValueError(
+                    "placement_diversity and physical_qubits are mutually "
+                    "exclusive: physical_qubits pins an explicit placement set, "
+                    "while placement_diversity asks the solver to select a "
+                    "spatially-independent set — contradictory intents. Set one "
+                    "or the other, not both."
+                )
 
         # Parse seed_list (v1.4.0 — explicit seed list)
         raw_seeds = exp_dict.get("seed_list")
@@ -2341,6 +2417,7 @@ class SweepEngine:
         #    All three modes go through the shared seam (solver.resolve_placements),
         #    so new circuit types inherit the dispatch. ──
         manual_placements = getattr(representative, "physical_qubits", None)
+        diversity = getattr(representative, "placement_diversity", None)
         solver_top_n = (
             representative.max_placements
             if (manual_placements and representative.max_placements is not None)
@@ -2369,6 +2446,7 @@ class SweepEngine:
             max_placements=solver_max_placements,
             manual_qubit_name_lists=manual_placements,
             solver_top_n=solver_top_n,
+            diversity=diversity,
         )
         self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
         if not placements:
@@ -2377,7 +2455,10 @@ class SweepEngine:
                 f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
             )
             return
-        if manual_placements and solver_top_n is not None:
+        if diversity is not None and diversity.is_active():
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"(diversity: disjoint, no_crosstalk={diversity.no_crosstalk})")
+        elif manual_placements and solver_top_n is not None:
             print(f"    BYO: {len(placements)} placement(s) "
                   f"(union: manual ∪ solver top-{solver_top_n})")
         elif manual_placements:
@@ -2689,6 +2770,18 @@ class SweepEngine:
                 "env": r.env_name,
                 "noise_source": r.env_source,
                 "noise_placement_independent": r.noise_placement_independent,
+                # Workstream A: bank the diversity policy that selected this
+                # placement set, so the selection is auditable ("which chains,
+                # and why those?"). Per-group constant; recorded per-record so it
+                # rides the existing provenance path with no schema change.
+                # count_resolved = the number actually selected (the
+                # fidelity-ranked device-max for count=auto). no_crosstalk=False
+                # for max_overlap>0 (off the guarantee — RED-RULING §9.2).
+                "placement_diversity_strategy": representative.placement_diversity.strategy,
+                "placement_diversity_max_overlap": representative.placement_diversity.max_overlap,
+                "placement_diversity_count_requested": str(representative.placement_diversity.count),
+                "placement_diversity_count_resolved": len(placements),
+                "placement_diversity_no_crosstalk": representative.placement_diversity.no_crosstalk,
                 "num_kicks": r.num_kicks,
                 "autocorrelator": r.autocorrelator,
                 "shots": r.shots,

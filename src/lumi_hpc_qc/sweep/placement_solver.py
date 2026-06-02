@@ -64,6 +64,125 @@ def placement_internal_edges(
     return edges
 
 
+@dataclass
+class PlacementDiversityConfig:
+    """Per-experiment placement-diversity policy (Workstream A).
+
+    A *selection* policy layered on the solver path: instead of taking the
+    fidelity top-N (which cluster — the top chains are drawn from one
+    well-calibrated patch, so "N placements" can be one patch measured N
+    times), select N *spatially independent* placements.
+
+    Fields:
+      strategy: ``"none"`` (default; the path is byte-identical to today, this
+        config never enters the resolution branches) or ``"disjoint"``.
+      max_overlap: per-pair shared-CZ-edge budget. ``0`` (default) = strictly
+        disjoint (no shared qubit, no shared coupling edge — the
+        no-cross-talk-preserving case; the campaign default). ``d > 0`` admits a
+        placement sharing up to ``d`` CZ edges with the accepted union — which
+        REINTRODUCES a coupling between "independent" regions and is therefore
+        OFF the no-cross-talk guarantee; such a run MUST stamp
+        ``no_crosstalk=False`` in provenance (RED-RULING-WORKSTREAM-A §9.2).
+      count: ``"auto"`` (default) = the device-max disjoint placements this
+        strategy can pack on the calibration (computed by the greedy walk, never
+        a literal); a positive ``int`` = exactly that many, fail-loud if the
+        device cannot supply that many disjoint chains.
+    """
+    strategy: str = "none"        # "none" -> today's path, byte-identical
+    max_overlap: int = 0          # per-pair shared-edge budget; 0 = strict disjoint
+    count: int | str = "auto"     # "auto" -> device-max; int -> exactly that many
+
+    def is_active(self) -> bool:
+        return self.strategy not in ("none", None, "")
+
+    @property
+    def no_crosstalk(self) -> bool:
+        """True iff this policy preserves the no-cross-talk guarantee.
+
+        Strict disjoint (``max_overlap == 0``) shares no coupling edge between
+        regions, so per-placement noise composition stays independent (the F5a
+        property). ``max_overlap > 0`` does not — the provenance flag must say
+        so.
+        """
+        return self.max_overlap == 0
+
+
+def select_disjoint_placements(
+    candidates: list["Placement"],
+    cal: "DeviceCalibration",
+    *,
+    count: int | str = "auto",
+    max_overlap: int = 0,
+) -> list["Placement"]:
+    """Fidelity-ranked greedy selection of spatially-independent placements.
+
+    Walks ``candidates`` IN THE ORDER GIVEN (the caller passes the
+    ``_placement_sort_key``-sorted list — score desc, F5 physical-index
+    tie-break — so this inherits F5 determinism with no RNG) and accepts a
+    placement iff it shares no qubit with the accepted union AND shares at most
+    ``max_overlap`` CZ edges with it.
+
+    The ordering is the contract: "device-max" is ordering-dependent (a
+    connectivity-first pack yields a different, larger number than this
+    fidelity-ranked walk, because the top-scoring chains cluster and consuming
+    the best chain removes qubits the next-best ones needed). This function
+    pins the *fidelity-ranked* device-max. Any independent oracle MUST walk the
+    same ordering (RED-RULING-WORKSTREAM-A §3).
+
+    Args:
+        candidates: placements pre-sorted by ``_placement_sort_key``.
+        cal: device calibration (for the edge primitive).
+        count: ``"auto"`` -> accept until candidates exhausted (the accepted
+            count IS the fidelity-ranked device-max); ``int`` -> stop at that
+            many, and raise if the candidates are exhausted first.
+        max_overlap: shared-CZ-edge budget per acceptance (0 = strict).
+
+    Returns:
+        The selected placements, in acceptance (fidelity-ranked) order — so
+        scores are non-increasing.
+
+    Raises:
+        ValueError: ``count`` is a positive int and fewer than ``count``
+            disjoint placements exist on this calibration (fail-loud; a short
+            count that returns quietly is the family-collapse failure class).
+    """
+    want_auto = (count == "auto")
+    if not want_auto:
+        if not isinstance(count, int) or count <= 0:
+            raise ValueError(
+                f"placement_diversity.count must be 'auto' or a positive int; "
+                f"got {count!r}"
+            )
+
+    selected: list["Placement"] = []
+    used_qubits: set[int] = set()
+    used_edges: set[tuple[int, int]] = set()
+
+    for p in candidates:
+        p_qubits = set(p.physical_indices)
+        if p_qubits & used_qubits:
+            continue
+        p_edges = placement_internal_edges(p.physical_indices, cal)
+        if len(p_edges & used_edges) > max_overlap:
+            continue
+        selected.append(p)
+        used_qubits |= p_qubits
+        used_edges |= p_edges
+        if not want_auto and len(selected) == count:
+            break
+
+    if not want_auto and len(selected) < count:
+        raise ValueError(
+            f"placement_diversity: requested {count} disjoint placement(s) "
+            f"(max_overlap={max_overlap}), but only {len(selected)} fit on this "
+            f"calibration. Reduce count, raise max_overlap, or use a smaller "
+            f"circuit. (Not returning fewer silently — a short count is the "
+            f"family-collapse failure class.)"
+        )
+
+    return selected
+
+
 def _placement_sort_key(p: "Placement") -> tuple[float, list[int]]:
     """Deterministic total-order key for placement selection (F5 invariant).
 
@@ -603,10 +722,15 @@ class GeneralPlacementSolver:
         call_limit: int = 100_000,
         manual_qubit_name_lists: list[list[str]] | None = None,
         solver_top_n: int | None = None,
+        diversity: "PlacementDiversityConfig | None" = None,
     ) -> list["Placement"]:
         """Single placement-resolution seam (PLACEMENT-1).
 
-        Three modes:
+        Four modes:
+          - ``diversity`` active (``strategy != "none"``): solver self-selects
+            the full candidate list, then ``select_disjoint_placements`` picks a
+            spatially-independent subset (Workstream A). Mutually exclusive with
+            ``manual_qubit_name_lists`` (enforced at parse, asserted here).
           - ``manual_qubit_name_lists`` given, ``solver_top_n`` None: solver
             bypassed, exactly the researcher's placements (today's behaviour,
             byte-identical).
@@ -625,6 +749,38 @@ class GeneralPlacementSolver:
         executor -- this seam composes placements; it does not decide whether a
         noise environment permits more than one.
         """
+        if diversity is not None and diversity.is_active():
+            if manual_qubit_name_lists:
+                # Defence-in-depth: parse rejects this combination (manual +
+                # diversity are contradictory intents). If it ever reaches the
+                # seam, fail loud rather than silently pick one.
+                raise ValueError(
+                    "placement_diversity and manual physical_qubits are "
+                    "mutually exclusive (cannot diversify a hand-pinned set). "
+                    "This should have been caught at parse."
+                )
+            candidates = self.find_all_placements(
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_ids=[device_id],
+                strategy=strategy,
+                max_placements=None,   # need the full ranked list to select over
+                call_limit=call_limit,
+            )
+            selected = select_disjoint_placements(
+                candidates,
+                self._devices[device_id],
+                count=diversity.count,
+                max_overlap=diversity.max_overlap,
+            )
+            print(
+                f"  PLACEMENT diversity: strategy=disjoint "
+                f"max_overlap={diversity.max_overlap} "
+                f"count={diversity.count} -> {len(selected)} disjoint "
+                f"placement(s) selected from {len(candidates)} candidate(s) "
+                f"[no_crosstalk={diversity.no_crosstalk}]"
+            )
+            return selected
         if manual_qubit_name_lists and solver_top_n is not None:
             manual = self.placements_from_names(
                 qubit_name_lists=manual_qubit_name_lists,
