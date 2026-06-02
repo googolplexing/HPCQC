@@ -146,16 +146,22 @@ def explain_empty(shape: str, n: int, cal) -> str:
     bip, tri_free, maxdeg = device_props(cal)
     s = shape.lower()
     if s in ("ring", "cycle") and n % 2 == 1 and bip:
-        return (f"a {n}-cycle is an ODD cycle; {cal.device_id} is bipartite "
-                f"(no odd cycles), so an odd ring cannot embed. Try an even n.")
+        return (f"a ring of {n} qubits needs a cycle of length {n} in the device "
+                f"graph, but {cal.device_id}'s coupling graph is bipartite and has "
+                f"only even-length cycles, so an odd-N ring has no embedding "
+                f"(even N does).")
     if s == "star" and (n - 1) > maxdeg:
         return (f"a star with {n-1} leaves needs a qubit of degree {n-1}, but "
-                f"{cal.device_id}'s max degree is {maxdeg}; use n<={maxdeg+1}.")
+                f"{cal.device_id}'s maximum qubit degree is {maxdeg}, so a star "
+                f"supports at most {maxdeg} leaves (N <= {maxdeg+1}).")
     if s == "complete" and n >= 3 and tri_free:
-        return (f"K{n} contains a triangle; {cal.device_id} is triangle-free, so "
-                f"no clique of 3+ qubits embeds. Only K2 (a single edge) fits.")
-    return ("the shape's connectivity has no subgraph-isomorphic embedding on "
-            f"{cal.device_id}'s live coupling graph at this size.")
+        return (f"a complete graph K{n} (N >= 3) contains triangles, but "
+                f"{cal.device_id}'s coupling graph is triangle-free, so no all-to-"
+                f"all circuit of 3+ qubits embeds; only K2 (a single coupled pair) "
+                f"fits.")
+    return (f"no placement exists: no subgraph of {cal.device_id}'s current "
+            f"coupling graph matches this shape's required connectivity at "
+            f"{n} qubits.")
 
 
 # ── formatting helpers ──────────────────────────────────────────────────────
