@@ -33,6 +33,37 @@ from lumi_hpc_qc.plugins.calibration_adapters.base import (
 )
 
 
+def placement_internal_edges(
+    physical_indices: list[int], cal: "DeviceCalibration"
+) -> set[tuple[int, int]]:
+    """Canonical CZ coupling edges internal to a placement.
+
+    Returns the *set* of ``(min, max)`` qubit-index pairs for every coupling
+    edge whose both endpoints lie within ``physical_indices``. This is the
+    overlap-test primitive used by every packer/selector that must reject two
+    placements sharing a CZ edge (edge overlap → crosstalk, even with no shared
+    qubit).
+
+    Distinct from ``GeneralPlacementSolver._count_internal_edges``, which
+    returns the *count* (an ``int``) of the same edges: the count is used for
+    scoring (connectivity), the set is used for overlap testing. The three
+    packing sites (``_pack_dsatur``, ``_pack_greedy``, ``MixedPacker.pack``)
+    previously inlined this set construction identically; this is the single
+    shared primitive they now call, so a future change to edge canonicalisation
+    or calibration-format access happens in one place rather than four.
+
+    Pure: depends only on ``physical_indices`` and ``cal.adjacency``; no RNG, no
+    rustworkx, no I/O.
+    """
+    qset = set(physical_indices)
+    edges: set[tuple[int, int]] = set()
+    for qi in physical_indices:
+        for qj in cal.adjacency.get(qi, set()):
+            if qj in qset:
+                edges.add((min(qi, qj), max(qi, qj)))
+    return edges
+
+
 def _placement_sort_key(p: "Placement") -> tuple[float, list[int]]:
     """Deterministic total-order key for placement selection (F5 invariant).
 
@@ -354,15 +385,9 @@ class GeneralPlacementSolver:
 
         # Pre-compute qubit sets and edge sets per placement
         p_qubits = [set(p.physical_indices) for p in placements]
-        p_edges = []
-        for p in placements:
-            edges: set[tuple[int, int]] = set()
-            pq = set(p.physical_indices)
-            for qi in p.physical_indices:
-                for qj in cal.adjacency.get(qi, set()):
-                    if qj in pq:
-                        edges.add((min(qi, qj), max(qi, qj)))
-            p_edges.append(edges)
+        p_edges = [
+            placement_internal_edges(p.physical_indices, cal) for p in placements
+        ]
 
         # Build conflict graph
         conflict = rx.PyGraph()
@@ -417,11 +442,7 @@ class GeneralPlacementSolver:
                     still_remaining.append(p)
                     continue
 
-                p_edges = set()
-                for qi in p.physical_indices:
-                    for qj in cal.adjacency.get(qi, set()):
-                        if qj in p_qubits:
-                            p_edges.add((min(qi, qj), max(qi, qj)))
+                p_edges = placement_internal_edges(p.physical_indices, cal)
 
                 if p_edges & used_edges:
                     still_remaining.append(p)
