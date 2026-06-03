@@ -2216,6 +2216,23 @@ class SweepEngine:
                 ))
                 work_meta.append((task, placement, qubit_names, seed))
 
+        # ── Workstream-B cross-node fan-out: take this rank's slice of the flat
+        #    (seed, placement) work-unit list. Plain round-robin (NO strata):
+        #    each unit runs ALL noise envs inside one _battery_worker, so env
+        #    co-residency is structural — there is nothing a shard could
+        #    segregate (contrast the BYO path, where each env is a SEPARATE unit
+        #    and needs env-stratified round-robin). work_items and work_meta are
+        #    index-aligned (built in the same loop body), so the SAME idxs slice
+        #    both in lockstep. The default (single-node / flag unset) is the
+        #    no-op shard (_shard_nranks == 1 -> no slice). RED-RULING-ITEM3 §3.
+        if getattr(self, "_shard_nranks", 1) > 1:
+            from lumi_hpc_qc.sweep.fanout import shard_indices
+            idxs = shard_indices(
+                len(work_items), self._shard_rank, self._shard_nranks
+            )
+            work_items = [work_items[i] for i in idxs]
+            work_meta = [work_meta[i] for i in idxs]
+
         # ── Execute batteries ──
         t_exec_start = time.perf_counter()
         cpu_workers = self._config.cpu_workers

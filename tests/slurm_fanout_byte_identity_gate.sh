@@ -2,16 +2,20 @@
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
 #
-# Byte-identity GATE for the Workstream-B cross-node fan-out (BYO path).
-# Runs tests/fanout_byte_identity_gate.py inside the LUMI qiskit container: the
-# 8-unit fixture single-node vs 2-rank vs 3-rank, asserting the merged .dat tree
-# is byte-identical and the merged sweep.h5 /byo subtree matches at the dataset
-# level. ONE node suffices — each rank is a separate engine process with
-# HPCQC_SWEEP_SHARD=1 + SLURM_NNODES/SLURM_NODEID set by the gate, and a unit's
-# output is a pure function of its seed (allocation-shape-independent).
+# Byte-identity GATE for the Workstream-B cross-node fan-out (BYO + battery).
+# Runs tests/fanout_byte_identity_gate.py inside the LUMI qiskit container,
+# single-node vs 2-rank vs 3-rank, asserting the merged sweep.h5 subtree matches
+# single-node at the dataset level (plus the .dat tree on the BYO path). ONE node
+# suffices — each rank is a separate engine process with HPCQC_SWEEP_SHARD=1 +
+# SLURM_NNODES/SLURM_NODEID set by the gate, and a unit's output is a pure
+# function of its inputs (allocation-shape-independent).
+#
+# GATE_PATH selects the path (default: battery — the BYO gate already passed in
+# job 19018262; the battery gate is the item-3 genericity proof).
 #
 # Usage:
-#   sbatch tests/slurm_fanout_byte_identity_gate.sh
+#   sbatch tests/slurm_fanout_byte_identity_gate.sh              # battery (default)
+#   GATE_PATH=byo sbatch tests/slurm_fanout_byte_identity_gate.sh  # re-run BYO
 #   # then:  tail -f slurm_logs/fanout_gate.o<JOBID>
 #
 #SBATCH --job-name=fanout_gate
@@ -59,19 +63,21 @@ GATE_WORKDIR="${HPCQC_ROOT}/results/fanout_gate_job${SLURM_JOB_ID:-local}"
 mkdir -p "${GATE_WORKDIR}"
 export SINGULARITYENV_GATE_WORKDIR="${GATE_WORKDIR}"
 
-echo "═══ Running the gate (single vs 2-rank vs 3-rank) ═══"
+GATE_PATH="${GATE_PATH:-battery}"
+
+echo "═══ Running the ${GATE_PATH} gate (single vs 2-rank vs 3-rank) ═══"
 echo
 "${WRAPPER_PATH}" "${LUMI_QISKIT_SINGULARITY_CONTAINER_PATH}" \
     python3 -u tests/fanout_byte_identity_gate.py \
-        --config examples/byo/floquet_dtc_q10_fanout_gate_8unit.yaml \
+        --path "${GATE_PATH}" \
         --workdir "${GATE_WORKDIR}"
 RC=$?
 
 echo
 if [ "${RC}" -eq 0 ]; then
-    echo "═══ GATE PASSED (exit 0) ═══"
+    echo "═══ GATE PASSED [${GATE_PATH}] (exit 0) ═══"
 else
-    echo "═══ GATE FAILED (exit ${RC}) — artifacts in ${GATE_WORKDIR} ═══"
+    echo "═══ GATE FAILED [${GATE_PATH}] (exit ${RC}) — artifacts in ${GATE_WORKDIR} ═══"
 fi
 echo "Finished   : $(date)"
 exit "${RC}"

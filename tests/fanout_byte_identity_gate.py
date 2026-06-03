@@ -1,37 +1,42 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
-"""Byte-identity GATE for the Workstream-B cross-node fan-out (BYO path).
+"""Byte-identity GATE for the Workstream-B cross-node fan-out (BYO + battery).
 
-Runs the 8-unit fixture three ways and proves the shard+merge is byte-identical
-to a single-node run (RED-RULING-WORKSTREAM-B §6.1/§8.4;
-RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2 §7.3):
+Runs a fixture three ways and proves the shard+merge is byte-identical to a
+single-node run (RED-RULING-WORKSTREAM-B §6.1/§8.4;
+RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2 §7.3; RED-RULING-ITEM3 for the battery
+path). One harness, two paths via --path:
 
-  * single-node (HPCQC_SWEEP_SHARD unset) — the baseline;
-  * 2-rank shard (the divisor that would segregate envs under plain round-robin
-    — also the §3.3 env-co-residency check: each rank must hold BOTH envs);
-  * 3-rank shard (8 units / 3 -> 3/3/2, the non-dividing case where a shard
-    off-by-one would hide).
+  * --path byo (default): the floquet counts->autocorrelator path. Aggregates
+    into byo_dat/ (.dat) and keys the .h5 under /byo. Each (placement, seed, env)
+    is a SEPARATE unit, so the shard is env-stratified and the 2-rank run also
+    checks §3.3 env-co-residency.
+  * --path battery: the synthetic-channel hamiltonian twin battery. NO
+    aggregation (identity reduce — RED-RULING-ITEM3 §1); per-unit twin records
+    under /devices. Each (seed, placement) unit runs ALL envs inside one worker,
+    so co-residency is structural (no stratification, no co-residency check) and
+    there is no .dat to compare.
 
-Each rank is a separate engine process with HPCQC_SWEEP_SHARD=1 +
-SLURM_NNODES/SLURM_NODEID set, so the gate needs only ONE node (byte-identity is
-allocation-shape-independent — a unit's output is a pure function of its seed).
-After each shard run the gate merges the rank shards and asserts:
-
-  (a) the byo_dat .dat tree is byte-identical to single-node (raw bytes — the
-      certified comparison artifact, matching every prior gate: W1.6, no-cross-
-      talk CI);
-  (b) the merged sweep.h5 /byo subtree matches single-node at the DATASET level
-      (NOT raw .h5 bytes — HDF5 container layout legitimately differs between one
-      writer and a union): identical group/dataset path-set, exact np.array_equal
-      on every dataset, and equal per-node attributes (noise_placement_independent,
-      calibration_set_id, seed, ...). Run-level metadata attrs (created_at, etc.)
-      are not compared — they are not physics.
+Each path runs three ways: single-node (HPCQC_SWEEP_SHARD unset — the baseline);
+2-rank shard (a divisor of the unit count); and 3-rank shard (the NON-dividing
+case where a shard off-by-one would hide). Each rank is a separate engine process
+with HPCQC_SWEEP_SHARD=1 + SLURM_NNODES/SLURM_NODEID set, so the gate needs only
+ONE node (byte-identity is allocation-shape-independent — a unit's output is a
+pure function of its inputs). After each shard run the gate merges the rank
+shards and asserts the merged sweep.h5 subtree (/byo or /devices) matches
+single-node at the DATASET level — NOT raw .h5 bytes (HDF5 container layout
+legitimately differs between one writer and a union): identical group/dataset
+path-set, exact np.array_equal on every dataset, and equal per-node attributes.
+Run-level metadata attrs (created_at, etc.) are not compared — they are not
+physics. The BYO path additionally asserts the byo_dat .dat tree is byte-
+identical (raw bytes — the certified aggregation artifact).
 
 Exit 0 on pass, 1 on any mismatch. Requires the container (qiskit-aer + h5py).
 
 Usage (inside the container, from the repo root):
-  python3 tests/fanout_byte_identity_gate.py
+  python3 tests/fanout_byte_identity_gate.py                 # BYO path (default)
+  python3 tests/fanout_byte_identity_gate.py --path battery  # battery path
   python3 tests/fanout_byte_identity_gate.py --config <fixture.yaml> --workdir <dir>
 """
 
@@ -42,8 +47,16 @@ import os
 import subprocess
 import sys
 
-_DEFAULT_FIXTURE = "examples/byo/floquet_dtc_q10_fanout_gate_8unit.yaml"
-_ENVS = {"noiseless", "device_calibrated"}
+# Per-path fixtures, HDF5 subtree roots, and (BYO-only) env-co-residency sets.
+# The BYO path aggregates counts->autocorrelator into byo_dat/ and keys the .h5
+# under /byo; the battery path has no aggregation (identity reduce) and keys the
+# per-unit twin records under /devices (RED-RULING-ITEM3).
+_FIXTURES = {
+    "byo": "examples/byo/floquet_dtc_q10_fanout_gate_8unit.yaml",
+    "battery": "examples/battery/tfim_4q_fanout_gate.yaml",
+}
+_H5_ROOT = {"byo": "byo", "battery": "devices"}
+_ENVS = {"noiseless", "device_calibrated"}   # BYO co-residency check set
 
 
 # ── config helpers ──────────────────────────────────────────────────────────
@@ -86,14 +99,20 @@ def _spawn_run(cfg_path, *, shard, nranks=1, rank=0):
     return proc
 
 
-def _merge(output_dir, seeds):
+def _merge(output_dir, seeds, path):
     import glob
-    from lumi_hpc_qc.sweep.fanout_merge import ByoAutocorrReducer, merge_shards
+    from lumi_hpc_qc.sweep.fanout_merge import (
+        BatteryReducer, ByoAutocorrReducer, merge_shards,
+    )
     rank_h5s = sorted(glob.glob(os.path.join(output_dir, "sweep_rank*.h5")))
     manifests = sorted(
         glob.glob(os.path.join(output_dir, "campaign_manifest_rank*.json"))
     )
-    reducer = ByoAutocorrReducer(expected_seeds=seeds)  # default byo_dat layout
+    if path == "battery":
+        # identity reduce: union + completeness only, no .dat (out_root unused)
+        reducer = BatteryReducer(expected_seeds=seeds)
+    else:
+        reducer = ByoAutocorrReducer(expected_seeds=seeds)  # default byo_dat layout
     merge_shards(
         rank_h5_paths=rank_h5s,
         out_h5_path=os.path.join(output_dir, "sweep.h5"),
@@ -132,20 +151,20 @@ def _norm_attr(v):
     return v
 
 
-def _collect_byo_h5(h5path):
+def _collect_h5_subtree(h5path, root):
     import h5py
     import numpy as np
     ds_vals, node_attrs = {}, {}
     with h5py.File(h5path, "r") as f:
-        root = f.get("byo")
-        if root is None:
+        sub = f.get(root)
+        if sub is None:
             return ds_vals, node_attrs
 
         def visit(name, obj):
             node_attrs[name] = {k: _norm_attr(v) for k, v in obj.attrs.items()}
             if isinstance(obj, h5py.Dataset):
                 ds_vals[name] = np.asarray(obj[()])
-        root.visititems(visit)
+        sub.visititems(visit)
     return ds_vals, node_attrs
 
 
@@ -183,16 +202,19 @@ def _assert_dats_identical(single_dir, merged_dir, label, fails):
             fails.append(f"[{label}] .dat bytes differ at {rel}")
 
 
-def _assert_h5_byo_equal(single_h5, merged_h5, label, fails):
+def _assert_h5_subtree_equal(single_h5, merged_h5, root, label, fails):
     import numpy as np
-    ds_s, at_s = _collect_byo_h5(single_h5)
-    ds_m, at_m = _collect_byo_h5(merged_h5)
+    ds_s, at_s = _collect_h5_subtree(single_h5, root)
+    ds_m, at_m = _collect_h5_subtree(merged_h5, root)
+    # Empty-subtree guard, ROOT-PARAMETRIC (RED-RULING-ITEM3 §3 condition): a run
+    # that produced no records must FAIL, not pass vacuously on an empty path-set
+    # intersection — the guard travels with the root, not just the root string.
     if not at_s:
-        fails.append(f"[{label}] single-node sweep.h5 has no /byo subtree")
+        fails.append(f"[{label}] single-node sweep.h5 has no /{root} subtree")
         return
     if set(at_s) != set(at_m):
         fails.append(
-            f"[{label}] /byo path-set differs: "
+            f"[{label}] /{root} path-set differs: "
             f"only-single={sorted(set(at_s) - set(at_m))[:4]} "
             f"only-merged={sorted(set(at_m) - set(at_s))[:4]}"
         )
@@ -211,16 +233,24 @@ def _assert_h5_byo_equal(single_h5, merged_h5, label, fails):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Cross-node fan-out byte-identity gate.")
-    ap.add_argument("--config", default=_DEFAULT_FIXTURE)
+    ap.add_argument("--path", choices=("byo", "battery"), default="byo",
+                    help="which sweep path to gate (selects fixture, reducer, "
+                         "and HDF5 subtree root)")
+    ap.add_argument("--config", default=None,
+                    help="override fixture (default: the --path fixture)")
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--run-one", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
+    cfg_path = args.config or _FIXTURES[args.path]
+    root = _H5_ROOT[args.path]
+
     if args.run_one:
         # Single engine invocation; shard env (if any) is inherited from the
-        # parent's subprocess environment.
+        # parent's subprocess environment. The engine dispatches BYO vs battery
+        # by experiment type, so this branch is path-agnostic.
         from lumi_hpc_qc.sweep.sweep_engine import run_sweep_from_yaml
-        run_sweep_from_yaml(args.config)
+        run_sweep_from_yaml(cfg_path)
         return 0
 
     import tempfile
@@ -228,13 +258,14 @@ def main(argv=None):
         args.workdir or tempfile.mkdtemp(prefix="fanout_gate_")
     )
     os.makedirs(workdir, exist_ok=True)
-    base = _load_cfg(args.config)
+    base = _load_cfg(cfg_path)
     seeds = sorted({
         int(s)
         for e in base["sweep"]["experiments"]
         for s in e.get("seed_list", [])
     })
-    print(f"gate: fixture={args.config} seeds={seeds} workdir={workdir}")
+    print(f"gate: path={args.path} fixture={cfg_path} root=/{root} "
+          f"seeds={seeds} workdir={workdir}")
 
     fails = []
 
@@ -253,9 +284,13 @@ def main(argv=None):
         for r in range(nranks):
             _spawn_run(cfg, shard=True, nranks=nranks, rank=r)
 
-        # §3.3 env-co-residency: at the env-period-aligned divisor (2), each
-        # rank must hold BOTH envs (the stratified shard's whole point).
-        if nranks == 2:
+        # §3.3 env-co-residency (BYO only): at the env-period-aligned divisor
+        # (2), each rank must hold BOTH envs (the stratified shard's whole
+        # point). The battery path runs all envs INSIDE each (seed, placement)
+        # unit, so co-residency is structural, not a shard property — there is
+        # nothing a shard could segregate, so this check does not apply
+        # (RED-RULING-ITEM3 §3).
+        if args.path == "byo" and nranks == 2:
             for r in range(nranks):
                 envs = _envs_in_rank(os.path.join(d, f"sweep_rank{r}.h5"))
                 if envs != _ENVS:
@@ -265,12 +300,15 @@ def main(argv=None):
                     )
 
         print(f"gate: merge {nranks}-rank shards ...")
-        _merge(d, seeds)
-        _assert_dats_identical(single_dir, d, f"{nranks}-rank .dat", fails)
-        _assert_h5_byo_equal(
+        _merge(d, seeds, args.path)
+        # .dat byte-identity is the BYO aggregation artifact; the battery path
+        # has no .dat (identity reduce), so only the .h5 subtree is compared.
+        if args.path == "byo":
+            _assert_dats_identical(single_dir, d, f"{nranks}-rank .dat", fails)
+        _assert_h5_subtree_equal(
             os.path.join(single_dir, "sweep.h5"),
             os.path.join(d, "sweep.h5"),
-            f"{nranks}-rank .h5", fails,
+            root, f"{nranks}-rank .h5", fails,
         )
 
     if fails:
@@ -278,10 +316,15 @@ def main(argv=None):
         for fl in fails:
             print("  -", fl)
         return 1
+    if args.path == "byo":
+        detail = (".dat raw bytes + /byo dataset/path-set/attr equality; "
+                  "env co-residency held at 2-rank")
+    else:
+        detail = ("/devices dataset/path-set/attr equality (identity reduce — "
+                  "no .dat; envs co-resident by construction)")
     print(
-        "\nGATE PASSED: single vs 2-rank vs 3-rank byte-identical "
-        "(.dat raw bytes + /byo dataset/path-set/attr equality); "
-        f"env co-residency held at 2-rank; seeds={seeds}."
+        f"\nGATE PASSED [{args.path}]: single vs 2-rank vs 3-rank byte-identical "
+        f"({detail}); seeds={seeds}."
     )
     return 0
 

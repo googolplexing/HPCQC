@@ -318,3 +318,104 @@ class ByoAutocorrReducer:
 
         sub = os.path.join(out_root, self._out_subpath_fn(group_key))
         aggregate_byo_autocorr(series, sub)
+
+# ── the synthetic-channel battery reducer (the pluggable per-path piece) ─────
+
+class BatteryReducer:
+    """Hamiltonian twin-battery reducer (the non-BYO genericity proof). Per-unit
+    HDF5 groups are
+    ``devices/{device_prefix}/seeds/seed_{NNNN}/placements/{device_prefix}-{qubits}/calibrations/{cal_id}/{noise_config}[/params_{hash}]``,
+    each holding an ``energy_trajectory`` dataset (one final twin result). The
+    aggregation group is ``(device_prefix, placement, cal_id, noise_config,
+    params_tail)`` and the instance is the seed.
+
+    ``reduce`` is a NO-OP. The synthetic-channel battery writes each
+    ``(seed, placement, env)`` twin result as a final, self-contained HDF5
+    record — there is NO cross-instance aggregation in the battery path
+    (verified against the tree: no ``def aggregate_*`` for it, no post-loop
+    reduction in ``_execute_group``). ``union_hdf5`` already produced the per-unit
+    groups in the merged HDF5, so there is nothing for ``reduce`` to relocate.
+
+    The generic driver is still used for its COMPLETENESS assertion, which is the
+    value here: a lost rank shard would silently drop a node's units, and grouping
+    by ``(device, placement, cal, noise)`` + asserting the full ``seed_list`` per
+    group catches exactly that. So for the battery path the completeness guard
+    does everything and ``reduce`` does nothing — the cleanest demonstration that
+    the generic shard+union+completeness core is reducer-independent
+    (RED-RULING-ITEM3 §1/§2: an identity-reduce path satisfies the §4 genericity
+    requirement). There is no ``.dat`` tree, so no ``out_subpath_fn``.
+
+    ``params_tail`` is the battery analog of ``ByoAutocorrReducer``'s ``obs_tail``:
+    the LHS-mode ``params_{hash}`` sublevel (empty in grid mode), carried so units
+    that share ``(device, placement, cal, noise)`` but differ in hamiltonian
+    parameters do not collapse into one group. Grid-mode units have none, so the
+    group key reduces to exactly the approved 4-tuple.
+
+    ``expected_seeds`` is the run's seed_list — the complete instance set every
+    group must have; completeness is asserted against it.
+    """
+
+    def __init__(self, expected_seeds: Iterable[int]) -> None:
+        self._expected = set(int(s) for s in expected_seeds)
+
+    def extract(self, merged_h5_path: str) -> Iterable[dict]:
+        import h5py
+
+        out: list[dict] = []
+        with h5py.File(merged_h5_path, "r") as f:
+            def _visit(name, obj):
+                # sentinel: the per-unit energy_trajectory dataset (every battery
+                # unit writes exactly one) — the battery analog of BYO's
+                # autocorrelator. Yields one record per unit.
+                if not isinstance(obj, h5py.Dataset) or not name.endswith(
+                    "energy_trajectory"
+                ):
+                    return
+                # path: devices/{prefix}/seeds/seed_NNNN/placements/{placement}/
+                #       calibrations/{cal_id}/{noise}[/params_HASH]/energy_trajectory
+                parts = name.split("/")
+                try:
+                    di = parts.index("devices")
+                    si = parts.index("seeds")
+                    pi = parts.index("placements")
+                    ci = parts.index("calibrations")
+                except ValueError:
+                    return
+                device_prefix = parts[di + 1]
+                seed = int(parts[si + 1].split("_")[1])
+                placement = parts[pi + 1]
+                cal_id = parts[ci + 1]
+                noise_config = parts[ci + 2]
+                # LHS params sublevel (parts[ci+3 : -1]); empty in grid mode.
+                params_tail = "/".join(parts[ci + 3 : -1])
+                out.append(
+                    {
+                        "group": (
+                            device_prefix, placement, cal_id,
+                            noise_config, params_tail,
+                        ),
+                        "seed": seed,
+                    }
+                )
+            f.visititems(_visit)
+        return out
+
+    def group_key(self, record: dict) -> Hashable:
+        return record["group"]
+
+    def instance_key(self, record: dict) -> Hashable:
+        return record["seed"]
+
+    def payload(self, record: dict) -> Any:
+        return None  # identity reduce consumes no payload
+
+    def expected_instances(self, group_key: Hashable) -> Iterable[Hashable]:
+        return self._expected
+
+    def reduce(
+        self, group_key: Hashable, series: list[tuple[Hashable, Any]], out_root: str
+    ) -> None:
+        # No-op: the battery's per-unit HDF5 records (already unioned) are the
+        # final output; there is no cross-instance aggregation to relocate. The
+        # completeness assertion in assert_complete_and_reduce is the value here.
+        return

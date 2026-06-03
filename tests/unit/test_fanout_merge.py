@@ -187,6 +187,74 @@ def test_byo_reducer_default_out_subpath():
     assert red.expected_instances(("s", "p", "e", "")) == {0, 1}
 
 
+# ── BatteryReducer (the identity-reduce non-BYO path; RED-RULING-ITEM3) ──────
+#
+# extract() reads HDF5 (needs h5py — exercised by the LUMI battery gate). The
+# PURE logic — group/instance keys, expected_instances, the no-op reduce, and
+# the generic completeness driver over battery-shaped records — is offline-tested
+# here. Records mimic what extract() yields: {"group": 5-tuple, "seed": int}.
+
+def _battery_rec(device, placement, cal, noise, params_tail, seed):
+    return {"group": (device, placement, cal, noise, params_tail), "seed": seed}
+
+
+def test_battery_reducer_keys_and_identity_reduce():
+    red = fm.BatteryReducer(expected_seeds=[0, 1])
+    rec = _battery_rec("q50", "q50-QB1_QB2", "cal0", "noiseless", "", 0)
+    assert red.group_key(rec) == ("q50", "q50-QB1_QB2", "cal0", "noiseless", "")
+    assert red.instance_key(rec) == 0
+    assert red.payload(rec) is None  # identity reduce consumes no payload
+    assert red.expected_instances(red.group_key(rec)) == {0, 1}
+    # reduce is a no-op: returns None and writes nothing under out_root.
+    assert red.reduce(red.group_key(rec), [(0, None), (1, None)], "/out") is None
+
+
+def test_battery_reducer_driver_completeness_passes_when_full():
+    red = fm.BatteryReducer(expected_seeds=[0, 1])
+    recs = [
+        _battery_rec("q50", "p0", "cal0", "noiseless", "", 0),
+        _battery_rec("q50", "p0", "cal0", "noiseless", "", 1),
+        _battery_rec("q50", "p0", "cal0", "noise_readout_only", "", 0),
+        _battery_rec("q50", "p0", "cal0", "noise_readout_only", "", 1),
+    ]
+    # Two complete (placement, env) groups, each with both seeds -> no raise.
+    reduced = fm.assert_complete_and_reduce(recs, red, "/out")
+    assert len(reduced) == 2
+
+
+def test_battery_reducer_driver_fails_loud_on_lost_shard():
+    # A lost rank shard drops a node's units: here seed 1 of the noiseless group
+    # is missing. The completeness guard must refuse (the value the driver adds
+    # for the battery path even though reduce is empty).
+    red = fm.BatteryReducer(expected_seeds=[0, 1])
+    recs = [
+        _battery_rec("q50", "p0", "cal0", "noiseless", "", 0),  # seed 1 missing
+        _battery_rec("q50", "p0", "cal0", "noise_readout_only", "", 0),
+        _battery_rec("q50", "p0", "cal0", "noise_readout_only", "", 1),
+    ]
+    try:
+        fm.assert_complete_and_reduce(recs, red, "/out")
+    except ValueError as e:
+        assert "INCOMPLETE" in str(e) and "missing=[1]" in str(e)
+    else:
+        raise AssertionError("expected a short-count ValueError on the lost shard")
+
+
+def test_battery_reducer_params_tail_keeps_lhs_groups_distinct():
+    # LHS-mode units share (device, placement, cal, noise) but differ in the
+    # params_ sublevel; the params_tail in the group key keeps them distinct
+    # (the battery analog of BYO's obs_tail), so each is its own complete group.
+    red = fm.BatteryReducer(expected_seeds=[0, 1])
+    recs = [
+        _battery_rec("q50", "p0", "cal0", "noise_full", "params_aaa", 0),
+        _battery_rec("q50", "p0", "cal0", "noise_full", "params_aaa", 1),
+        _battery_rec("q50", "p0", "cal0", "noise_full", "params_bbb", 0),
+        _battery_rec("q50", "p0", "cal0", "noise_full", "params_bbb", 1),
+    ]
+    reduced = fm.assert_complete_and_reduce(recs, red, "/out")
+    assert len(reduced) == 2  # NOT collapsed into one group
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
