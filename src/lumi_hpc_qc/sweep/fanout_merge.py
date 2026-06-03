@@ -218,27 +218,44 @@ def merge_shards(
 
 # ── the BYO floquet reducer (the pluggable per-path piece) ──────────────────
 
+def byo_dat_subpath(group_key: Hashable) -> str:
+    """The byo_dat subdirectory (relative to out_root) for a BYO group key
+    ``(stem, phys, env, obs_tail)``, reproducing the single-node engine layout
+    EXACTLY. The engine builds
+    ``os.path.join(out_root, stem, phys, env) + byo_observable_subpath(...)``;
+    ``obs_tail`` is that observable subpath read back from the written HDF5 path,
+    so the merged and single-node layouts cannot drift."""
+    stem, phys, env, obs_tail = group_key
+    p = os.path.join(stem, phys, env)
+    if obs_tail:
+        p = os.path.join(p, obs_tail)
+    return p
+
+
 class ByoAutocorrReducer:
     """BYO/floquet reducer: per-unit HDF5 groups are
     ``/byo/{stem}/seeds/seed_{NNNN}/placements/{phys}/{env}{obs}`` with an
-    ``autocorrelator`` dataset; the aggregation group is (phys, env, obs,
-    circuit_function) and the instance is the seed. ``reduce`` is the certified
-    ``aggregate_byo_autocorr`` (relocated to merge-time, not reimplemented) over
-    the complete per-(placement,env) seed series.
+    ``autocorrelator`` dataset; the aggregation group is
+    ``(stem, phys, env, obs_tail)`` and the instance is the seed. ``reduce`` is
+    the certified ``aggregate_byo_autocorr`` (relocated to merge-time, not
+    reimplemented) over the complete per-group seed series. The series order is
+    immaterial to the output (the mean/sem are over axis 0 and each per-instance
+    .dat is named by its seed), so the merged .dat is byte-identical regardless
+    of gather order.
 
     ``expected_seeds`` is the run's seed_list — the complete instance set every
     group must have; completeness is asserted against it before aggregation.
-    ``out_subpath_fn`` maps a group key to its byo_dat subdirectory (the caller
-    supplies the same path helper the single-node writer uses, so the layouts
-    cannot drift)."""
+    ``out_subpath_fn`` maps a group key to its byo_dat subdirectory; it defaults
+    to ``byo_dat_subpath`` (the single-node layout) and is injectable for tests
+    or alternate layouts."""
 
     def __init__(
         self,
         expected_seeds: Iterable[int],
-        out_subpath_fn: Callable[[Hashable], str],
+        out_subpath_fn: Callable[[Hashable], str] | None = None,
     ) -> None:
         self._expected = set(int(s) for s in expected_seeds)
-        self._out_subpath_fn = out_subpath_fn
+        self._out_subpath_fn = out_subpath_fn or byo_dat_subpath
 
     def extract(self, merged_h5_path: str) -> Iterable[dict]:
         import h5py
@@ -258,13 +275,23 @@ class ByoAutocorrReducer:
                     pi = parts.index("placements")
                 except ValueError:
                     return
+                # The RESOLVED script stem the writer used is the segment before
+                # "seeds" (byo/{stem}/seeds/...). It already encodes whatever
+                # family-collision disambiguation the single-node path applied
+                # (that disambiguation lives in obs_tail, also read from the
+                # written path), so carrying the stem here reproduces the
+                # single-node byo_dat layout {stem}/{phys}/{env}{obs} EXACTLY.
+                # Dropping it (pre-RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2) left
+                # out_subpath_fn unable to rebuild the directory; the gate's
+                # path-set-equality assert proves the carried stem is correct.
+                stem = parts[si - 1]
                 seed = int(parts[si + 1].split("_")[1])
                 phys = parts[pi + 1]
                 env = parts[pi + 2]
                 obs_tail = "/".join(parts[pi + 3 : -1])  # observable/family levels
                 out.append(
                     {
-                        "group": (phys, env, obs_tail),
+                        "group": (stem, phys, env, obs_tail),
                         "seed": seed,
                         "vector": list(obj[()]),
                     }

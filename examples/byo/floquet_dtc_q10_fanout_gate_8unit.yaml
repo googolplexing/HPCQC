@@ -1,0 +1,43 @@
+# Fan-out byte-identity gate fixture — 8 units (RED-REVIEW-WORKSTREAM-B-
+# INCREMENTS-1-2 §5; RED-RULING-WORKSTREAM-B §5/§8.4).
+#
+# 2 manual placements x seed_list [0,1] x {noiseless, device_calibrated} = 8
+# work units — the smallest fixture that exercises the shard at allocations that
+# divide (2-rank) and do NOT divide (3-rank -> 3/3/2) the unit count, plus the
+# §3.3 env-co-residency check (the 2-rank run must keep both envs per rank).
+#
+# Manual placements (physical_qubits, the Piece-2 HIGH/LOW chains) are used so
+# the placements are DETERMINISTIC — no solver variability — making the
+# single-node vs merged byte-identity a clean comparison. This is the same
+# multi-placement device_calibrated form the F5a lift enabled (per-placement
+# noise composition, no cross-talk); restricted here to 2 seeds for the gate.
+#
+# Byte-identity is unit-count-independent (a deterministic unit's output does not
+# depend on how many siblings it has), so 8 units proves the shard+merge as well
+# as 240 would.
+
+sweep:
+  output_dir: sweep_output/fanout_gate_8unit   # overridden per-run by the gate
+
+  experiments:
+    - type: byo_circuit
+      label: fanout_gate_8unit
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid: {num_kicks: {range: [0, 20]}}        # 0..19 — small grid, fast gate
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      # TWO deterministic manual placements (HIGH-T2 / LOW-T2 chains).
+      physical_qubits:
+        - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]   # HIGH-T2
+        - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]  # LOW-T2
+      seed_list: [0, 1]
+      shots: 1000
+      noise_configs: [noiseless, device_calibrated]
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json

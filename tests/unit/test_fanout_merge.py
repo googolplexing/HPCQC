@@ -168,6 +168,25 @@ def test_byo_reducer_reduce_writes_aggregated_dat():
         assert "mean" in head and "sem" in head
 
 
+def test_byo_dat_subpath_reproduces_single_node_layout():
+    # The merge must rebuild the single-node byo_dat layout
+    # {stem}/{phys}/{env}{obs} from the group key carried out of the HDF5 path.
+    # Lone-default family (obs_tail ""): stem/phys/env. Declared/disambiguated
+    # family (obs_tail "name"): stem/phys/env/name. (RED-REVIEW-INCREMENTS-1-2:
+    # the carried stem + obs must reproduce the layout exactly.)
+    assert fm.byo_dat_subpath(("floquet_dtc", "QB8-QB16", "device_calibrated", "")) \
+        == os.path.join("floquet_dtc", "QB8-QB16", "device_calibrated")
+    assert fm.byo_dat_subpath(("floquet_dtc_echo", "QB8-QB16", "noiseless", "echo")) \
+        == os.path.join("floquet_dtc_echo", "QB8-QB16", "noiseless", "echo")
+
+
+def test_byo_reducer_default_out_subpath():
+    # Constructing the reducer without out_subpath_fn defaults to byo_dat_subpath.
+    red = fm.ByoAutocorrReducer(expected_seeds=[0, 1])
+    assert red._out_subpath_fn is fm.byo_dat_subpath
+    assert red.expected_instances(("s", "p", "e", "")) == {0, 1}
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]
