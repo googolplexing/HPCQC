@@ -28,8 +28,9 @@ shards and asserts the merged sweep.h5 subtree (/byo or /devices) matches
 single-node at the DATASET level — NOT raw .h5 bytes (HDF5 container layout
 legitimately differs between one writer and a union): identical group/dataset
 path-set, exact np.array_equal on every dataset, and equal per-node attributes.
-Run-level metadata attrs (created_at, etc.) are not compared — they are not
-physics. The BYO path additionally asserts the byo_dat .dat tree is byte-
+Run-level metadata attrs (experiment_id's per-process sweep_id, wall_time_seconds,
+created_at) are not compared — they are not physics (see _NONPHYSICS_ATTRS). The
+BYO path additionally asserts the byo_dat .dat tree is byte-
 identical (raw bytes — the certified aggregation artifact).
 
 Exit 0 on pass, 1 on any mismatch. Requires the container (qiskit-aer + h5py).
@@ -57,6 +58,23 @@ _FIXTURES = {
 }
 _H5_ROOT = {"byo": "byo", "battery": "devices"}
 _ENVS = {"noiseless", "device_calibrated"}   # BYO co-residency check set
+
+# Run-level metadata attrs that legitimately vary between a single-node run and
+# per-rank shard runs, so they are NOT part of byte-identity — excluded for every
+# path (the generalization of the BYO gate's created_at exclusion: "not physics").
+# These are provably non-physics:
+#   * wall_time_seconds — execution timing; differs even between two identical
+#     re-runs of the same unit.
+#   * experiment_id — "{sweep_id}_{task}_{placement}_{env}"; differs ONLY in the
+#     per-engine-process sweep_id prefix (each rank is its own engine process, so
+#     it mints its own sweep_id — same architectural property as the BYO path).
+#     The task/placement/env parts are deterministic and ARE verified, via the
+#     group path + the seed/noise_config attrs.
+#   * created_at — run timestamp (the BYO gate's original exclusion).
+# Every PHYSICS attr (best_energy, noise_fingerprint, per_edge_cz_fidelity,
+# per_qubit_calibration, placement_score, exact_ground_energy, topology_hash,
+# seed, noise_config, calibration_id, ...) and every dataset are still compared.
+_NONPHYSICS_ATTRS = frozenset({"experiment_id", "wall_time_seconds", "created_at"})
 
 
 # ── config helpers ──────────────────────────────────────────────────────────
@@ -161,7 +179,10 @@ def _collect_h5_subtree(h5path, root):
             return ds_vals, node_attrs
 
         def visit(name, obj):
-            node_attrs[name] = {k: _norm_attr(v) for k, v in obj.attrs.items()}
+            node_attrs[name] = {
+                k: _norm_attr(v) for k, v in obj.attrs.items()
+                if k not in _NONPHYSICS_ATTRS
+            }
             if isinstance(obj, h5py.Dataset):
                 ds_vals[name] = np.asarray(obj[()])
         sub.visititems(visit)
