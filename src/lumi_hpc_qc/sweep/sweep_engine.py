@@ -1596,8 +1596,28 @@ class SweepEngine:
         # gate-2 comparison artifact / per-seed average is never emitted by a
         # real run. Subtree layout (built in _execute_byo_group):
         #   {byo_dat}/{script_stem}/{phys-qubits}/{env}/aggregated_autocorr.dat
-        self._byo_dat_dir = str(output_dir / "byo_dat")
-        manifest_path = output_dir / "campaign_manifest.json"
+        # ── Workstream-B cross-node fan-out: resolve this process's shard. The
+        #    multi-node launcher (slurm_sweep_multinode.sh) sets
+        #    HPCQC_SWEEP_SHARD=1; (rank, nranks) come from SLURM_NODEID/NNODES.
+        #    Shard mode => this rank writes its OWN sweep_rank{r}.h5 + manifest
+        #    and DEFERS the .dat aggregation to the post-job merge (the merge
+        #    owns aggregation; byo_dat_dir=None below IS that deferral). The flag
+        #    is explicit (not keyed on nranks>1) so a stale ambient SLURM_NNODES
+        #    can never silently switch a single-node run into shard mode. With
+        #    the flag absent, every branch below is the single-node path,
+        #    byte-untouched. ──
+        from lumi_hpc_qc.sweep.fanout import resolve_rank_nranks
+        self._shard_mode = os.environ.get("HPCQC_SWEEP_SHARD") == "1"
+        self._shard_rank, self._shard_nranks = (
+            resolve_rank_nranks() if self._shard_mode else (0, 1)
+        )
+        self._byo_dat_dir = (
+            None if self._shard_mode else str(output_dir / "byo_dat")
+        )
+        manifest_path = output_dir / (
+            f"campaign_manifest_rank{self._shard_rank}.json"
+            if self._shard_mode else "campaign_manifest.json"
+        )
 
         from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
         from lumi_hpc_qc import __version__ as _fw_version
@@ -1641,7 +1661,12 @@ class SweepEngine:
         self._byo_collision_stems = self._compute_byo_collision_stems(tasks)
 
         # ── Step 5: Open HDF5 and execute ──
-        hdf5_path = str(output_dir / self._config.hdf5_filename)
+        # Shard mode: per-rank HDF5 (sweep_rank{r}.h5); the post-job merge unions
+        # these into the single-node-equivalent sweep.h5. Single-node: unchanged.
+        hdf5_path = str(output_dir / (
+            f"sweep_rank{self._shard_rank}.h5"
+            if self._shard_mode else self._config.hdf5_filename
+        ))
 
         sweep_attrs = {
             "sweep_id": self._config.sweep_id,
@@ -2619,6 +2644,20 @@ class SweepEngine:
         #    are unit-testable offline with mocked inputs. ──
         from lumi_hpc_qc.sweep import worker_cap as wc
 
+        # ── Workstream-B shard mode: take this rank's STRATIFIED slice of the
+        #    flat work-unit list (round-robin within env strata, so both noise
+        #    envs stay co-resident per rank — RED-RULING-WORKSTREAM-B §3.3 as
+        #    amended in RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2). nranks==1
+        #    (single-node / flag unset) is the no-op shard: the whole list,
+        #    byte-identical to the single-node path. The probe, cap, and pool
+        #    below then operate on this rank's slice (waves automatic). ──
+        if getattr(self, "_shard_nranks", 1) > 1:
+            from lumi_hpc_qc.sweep.fanout import shard
+            work_units = shard(
+                work_units, self._shard_rank, self._shard_nranks,
+                strata=[u.env_name for u in work_units],
+            )
+
         num_units = len(work_units)
         cpu_workers = self._config.cpu_workers
         usable_cores = wc.resolve_usable_cores_physical()
@@ -2839,6 +2878,17 @@ class SweepEngine:
         # Aggregate per (placement, env) across seeds -> mean + sem .dat. The
         # output dir mirrors the bank: one subdir per (placement, env).
         out_root = getattr(self, "_byo_dat_dir", None)
+        # ── Workstream-B coupling guard (RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2):
+        #    shard mode MUST have deferred aggregation to the post-job merge —
+        #    assert the deferral fired (byo_dat_dir is None) so a future refactor
+        #    cannot leave shard mode on while ALSO aggregating here (double-write
+        #    into the .dat tree). The flag and the deferral are thus provably the
+        #    same switch, not coincidentally aligned. ──
+        if getattr(self, "_shard_mode", False):
+            assert out_root is None, (
+                "shard mode active but byo_dat_dir is set — aggregation would "
+                "double-write; the merge owns aggregation in shard mode."
+            )
         if out_root is not None:
             by_pe: dict[tuple, list] = {}
             for r in byo_results:
