@@ -505,3 +505,28 @@ add `"ByoAutocorrReducer"` to `_REDUCERS_WITH_INVENTORY`. (3) add a BYO analog o
 includes a collision-disambiguated obs_tail (the BYO drift point).
 **Guard until then:** do NOT bank a single-seed BYO multi-node campaign. The
 launcher banner and the merge CLI docstring both carry this prohibition.
+
+## D11 — Regenerate the expected-group inventory on a manifest-resume (shard mode)
+**Status:** deferred (intentionally; fail-loud-safe, per RED-ACCEPT-OPTION-I-AND-BATTERY-MULTINODE-LIFT §3 flag 2).
+**What:** the engine writes `campaign_expected.json` only on a FRESH shard run
+(`self._manifest_fresh`). A manifest-RESUME (manifest present at start) executes
+only the remaining tasks, so it does NOT regenerate the inventory — by design, so
+a resume cannot clobber the authoritative fresh inventory with a partial set.
+**Why it's safe (not a correctness bug):** both states are safe — (a) a fresh run
+that finished wrote the full inventory → the merge group-set-checks it; (b) a
+fresh run that CRASHED before finalization left no inventory, and a subsequent
+resume writes none either → a multi-rank battery merge then FAILS LOUD (Q1,
+inventory-required), forcing a fresh re-run. Fail-loud, never silent-wrong.
+**Cost (usability only):** a crashed-then-resumed multi-rank battery campaign
+cannot be group-set-merged until it is re-run fresh.
+**Trigger to resolve:** when a long multi-rank battery campaign is expensive
+enough that re-running fresh after a mid-run crash (rather than resuming) is a
+real cost.
+**Plan:** on a resume in shard mode, rebuild the expected set from the FULL task
+list (before the manifest resume-filter at sweep_engine.py ~1628) — enumerate the
+inventory independent of which tasks still need executing — and write
+`campaign_expected.json` (idempotent: the full set is identical regardless of how
+many tasks remain). Then a resumed campaign is group-set-mergeable.
+**Guard until then:** if a multi-rank battery campaign crashes mid-run, re-run it
+FRESH (clear campaign_manifest_rank*.json / the output dir) rather than resuming,
+when the group-set merge is required.
