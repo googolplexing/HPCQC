@@ -1,0 +1,56 @@
+# Production battery (hamiltonian-twin) characterization campaign — q50 device.
+#
+# STARTING POINT, not a prescription: set the physics + scale knobs below to your
+# target. The schema, vocabulary, and structure are verified against the tree;
+# the numbers are conservative starter values.
+#
+# Lands in the repo at: examples/battery/q50_tfim_chain_characterization.yaml
+#
+# UNIT COUNT (per experiment) = placement x len(seed_list). Each unit runs ALL
+# noise_configs inside one _battery_worker. The fan-out shards units round-robin
+# across --nodes ranks; pick --nodes so units / nodes is a small integer for
+# balance (option (i) closed the wholly-absent-group case, so the old
+# "num_placements % nranks == 0" hazard no longer constrains the node count).
+#
+# This block: placement 8 x seed_list 8 = 64 units, each x 11 noise envs.
+# A second size = a SECOND experiment block (one self-consistent size+topology
+# each) — do NOT put [4,6,8] in one block (qubit_sizes x topologies pairing is
+# not 1:1). A commented second block is shown below.
+
+sweep:
+  output_dir: results/battery_q50_characterization   # overridden by HPCQC_SWEEP_OUTDIR / --output-dir
+
+  experiments:
+    - type: characterization
+      label: q50_tfim_8q_chain
+      hamiltonians: [tfim]
+      qubit_sizes: [8]
+      topologies: [8q_chain]          # registered: 4q_chain | 6q_chain | 8q_chain
+      placement: 8                    # top-N solver placements (deterministic; battery gates manual placement off)
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7]
+      noise_configs:                  # full channel tier set (device_calibrated excluded — the battery refuses it)
+        - noiseless
+        - topology_noiseless
+        - noise_1q_only
+        - noise_2q_only
+        - noise_t1_only
+        - noise_t2_only
+        - noise_readout_only
+        - noise_coherence
+        - noise_gates
+        - noise_gates_readout
+        - noise_full
+      shots: 4000
+
+    # - type: characterization          # add more sizes as their OWN blocks
+    #   label: q50_tfim_6q_chain
+    #   hamiltonians: [tfim]
+    #   qubit_sizes: [6]
+    #   topologies: [6q_chain]
+    #   placement: 8
+    #   seed_list: [0, 1, 2, 3, 4, 5, 6, 7]
+    #   noise_configs: [ ... same tier list ... ]
+    #   shots: 4000
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
