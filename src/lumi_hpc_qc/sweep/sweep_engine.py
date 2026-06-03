@@ -1611,6 +1611,10 @@ class SweepEngine:
         self._shard_rank, self._shard_nranks = (
             resolve_rank_nranks() if self._shard_mode else (0, 1)
         )
+        # Option (i): accumulate the EXPECTED battery group inventory across the
+        # _execute_group calls (RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN);
+        # written once, atomically, at finalization in shard mode on a fresh run.
+        self._expected_groups: set[tuple] = set()
         self._byo_dat_dir = (
             None if self._shard_mode else str(output_dir / "byo_dat")
         )
@@ -1622,6 +1626,7 @@ class SweepEngine:
         from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
         from lumi_hpc_qc import __version__ as _fw_version
 
+        self._manifest_fresh = not manifest_path.exists()
         if manifest_path.exists():
             self._manifest = CampaignManifest.load(manifest_path)
             completed = set(self._manifest.completed_tasks())
@@ -1819,6 +1824,37 @@ class SweepEngine:
                 print(f"  Benchmark Parquet: {n_rows} rows → {benchmark_path}")
         except Exception as e:
             print(f"  Benchmark Parquet: skipped ({e})")
+
+        # ── Option (i): write the expected-group inventory once, atomically, in
+        #    shard mode on a FRESH (non-resume) run. Every rank built the
+        #    identical full set above (the slice is applied after the build), so
+        #    this is shard-independent with no single-rank dependency — a dropped
+        #    rank cannot suppress its own expectations. The merge asserts the
+        #    unioned groups == this set, closing the wholly-absent-group blind
+        #    spot for battery. A manifest-RESUME run executes only the remaining
+        #    tasks (a partial set), so it does NOT regenerate the inventory; the
+        #    fresh run's file is authoritative, and a merge with no inventory
+        #    present fails loud at the CLI (Q1) rather than silently degrading. ──
+        if self._shard_mode and self._manifest_fresh and self._expected_groups:
+            import tempfile
+            from lumi_hpc_qc.sweep.battery_paths import inventory_to_json
+            inv_dst = output_dir / "campaign_expected.json"
+            fd, inv_tmp = tempfile.mkstemp(
+                dir=str(output_dir), prefix=".campaign_expected.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(inventory_to_json(self._expected_groups), f,
+                              indent=2, sort_keys=True)
+                os.replace(inv_tmp, str(inv_dst))  # atomic same-FS rename
+            except BaseException:
+                try:
+                    os.unlink(inv_tmp)
+                except OSError:
+                    pass
+                raise
+            print(f"  Option-(i) inventory: {len(self._expected_groups)} "
+                  f"expected group(s) → {inv_dst}")
 
         return sweep_result
 
@@ -2215,6 +2251,29 @@ class SweepEngine:
                     self._device, {},  # cache injected at subprocess level
                 ))
                 work_meta.append((task, placement, qubit_names, seed))
+
+        # ── Option (i): accumulate this group's EXPECTED battery inventory from
+        #    the FULL pre-shard unit set, BEFORE the shard slice below (so every
+        #    rank builds the identical full set, shard-independent). Built via the
+        #    writer's path source-of-truth (battery_group_path) and keyed by the
+        #    SAME parser the merge extractor uses (group_key_from_path), so the
+        #    merge's present-set and this expected-set cannot drift (Q2).
+        #    model_params is representative.model_params (the group-level value
+        #    the result entry writes); noise_config is env.name
+        #    (= twin_result.environment); the seed is the INSTANCE axis, dropped
+        #    by the key. Shard mode only (the single-node path never merges). ──
+        if self._shard_mode:
+            from lumi_hpc_qc.sweep.battery_paths import (
+                battery_group_path, group_key_from_path,
+            )
+            for meta_task, _meta_placement, meta_qubits, _meta_seed in work_meta:
+                for env in meta_task.noise_configs:
+                    gk = group_key_from_path(battery_group_path(
+                        device_cal.device_prefix, meta_task.seed, meta_qubits,
+                        cal_id, env.name, representative.model_params,
+                    ))
+                    if gk is not None:
+                        self._expected_groups.add(gk)
 
         # ── Workstream-B cross-node fan-out: take this rank's slice of the flat
         #    (seed, placement) work-unit list. Plain round-robin (NO strata):

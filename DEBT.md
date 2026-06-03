@@ -470,3 +470,38 @@ Optionally, replay/assert against the recorded layout on re-run.
 **Guard until then.** Do not bank a free-layout device-calibrated reference for
 later comparison without either pinning the placement (`--physical-qubits`) or
 recording the resolved layout.
+
+## D10 — BYO expected-group inventory generator (option (i), BYO half)
+**Status:** deferred (intentionally; battery half landed).
+**What:** option (i) closes the WHOLLY-ABSENT-group blind spot in the multi-node
+merge by writing an expected-group inventory (`campaign_expected.json`) the merge
+asserts the unioned group set against. The BATTERY generator shipped (the engine
+enumerates battery groups via `battery_paths.battery_group_path` keyed by
+`group_key_from_path`; the merge-side group-set assert in
+`assert_complete_and_reduce(..., expected_groups=...)` is reducer-AGNOSTIC). The
+BYO (`ByoAutocorrReducer`) generator is NOT written: the BYO group key carries an
+`obs_tail` resolved at WRITE time (`byo_observable_subpath(...)` + the
+`_byo_collision_stems` disambiguation, `hdf5_writer.py`:446-450), so predicting
+the BYO key at setup needs that logic hoisted/replicated — unlike the clean
+battery `group_path`.
+**Why it's safe to defer (exposure asymmetry, per Red §2):** a wholly-absent BYO
+group only escapes the existing short-count guard at `num_seeds == 1` (the merge
+sees no other seed to make the group "short"). The echo campaign is multi-seed
+(`num_seeds >= 2`), so it stays protected by the short-count guard. The merge CLI
+lists only `BatteryReducer` in `_REDUCERS_WITH_INVENTORY`, so a BYO merge skips
+the group-set check (no false failure) — and a multi-seed BYO merge does not need
+it.
+**Trigger to resolve:** before a SINGLE-SEED BYO multi-node campaign banks
+results. (Multi-seed BYO multi-node may bank now; battery multi-node may bank
+once the (i-b) gate is green.)
+**Plan:** (1) hoist the BYO write-time obs/collision logic into a pure
+`byo_group_path(...)` + `byo_group_key_from_path(...)` pair in a stdlib-only
+module (mirroring `battery_paths.py`), with the SAME single-source-of-truth
+discipline (the writer delegates; `ByoAutocorrReducer.extract` parses via the
+shared parser; the inventory builds + keys via the same pair). (2) accumulate the
+BYO expected set in the engine's BYO execute path (before the shard slice) and
+add `"ByoAutocorrReducer"` to `_REDUCERS_WITH_INVENTORY`. (3) add a BYO analog of
+`tests/fanout_negative_dropgroup.py` (i-b) and an offline round-trip test that
+includes a collision-disambiguated obs_tail (the BYO drift point).
+**Guard until then:** do NOT bank a single-seed BYO multi-node campaign. The
+launcher banner and the merge CLI docstring both carry this prohibition.

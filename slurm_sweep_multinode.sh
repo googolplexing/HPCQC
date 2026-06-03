@@ -14,22 +14,30 @@
 # merge step (scripts/merge_sweep_shards.py) unions the rank shards, SELECTS THE
 # REDUCER by the sweep's experiment type (byo_circuit -> aggregate the certified
 # autocorrelator into byo_dat; characterization|vqe_sweep -> identity reduce),
-# asserts each EXTRACTED (placement,env) group has its complete seed series, and
+# asserts each EXTRACTED (placement,env) group has its complete seed series AND
+# (option (i)) that the unioned group SET equals the engine-written
+# campaign_expected.json — closing the wholly-absent-group blind spot — and
 # concats the manifests -> sweep.h5 (+ byo_dat for BYO) + campaign_manifest.json,
 # byte-identical to a single-node run of the same units (proven by
 # tests/slurm_fanout_byte_identity_gate.sh).
 #
 # This launcher is sweep-type-agnostic at the shard/merge layer; the reducer is
-# selected by experiment type at merge (RED-RULING-MERGE-CLI-FOLLOWUP §3). The
-# completeness assert is a PARTIAL lost-shard guard: it catches a present group
-# missing seeds, NOT a group that vanished entirely (the common whole-rank-loss
-# shape when num_placements % nranks == 0). That blind spot is closed only by the
-# expected-group inventory (option (i), a separate patch).
+# selected by experiment type at merge (RED-RULING-MERGE-CLI-FOLLOWUP §3). Two
+# lost-shard guards run: the per-group completeness assert (a PARTIAL short-count
+# guard — a present group missing seeds) AND the option-(i) group-set assert (a
+# WHOLLY-ABSENT group — one that vanished entirely, the common whole-rank-loss
+# shape when num_placements % nranks == 0). The engine writes
+# campaign_expected.json on a fresh shard run; the merge compares the unioned
+# group set against it, and --nranks=SLURM_NNODES catches a whole-rank-FILE drop
+# at discovery (RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN option (i)).
 #
-# UNTIL (i) LANDS: do NOT use this launcher to BANK RESULTS for a battery
-# (characterization/vqe_sweep) config or a SINGLE-SEED byo_circuit config — both
-# are exposed to the wholly-absent-group blind spot. Multi-seed byo_circuit
-# (num_seeds >= 2, e.g. the echo campaign) is protected and clear.
+# BANKING RESULTS: a battery (characterization/vqe_sweep) multi-node campaign is
+# cleared to bank results once the (i-b) acceptance gate passes green
+# (tests/slurm_fanout_negative_dropgroup.sh). A SINGLE-SEED byo_circuit config is
+# still exposed — the BYO inventory generator is DEBT (the merge skips the
+# group-set check for BYO until it exists) — so do NOT bank single-seed BYO
+# multi-node. Multi-seed byo_circuit (num_seeds >= 2, e.g. the echo campaign) is
+# protected by the short-count guard and clear.
 #
 # Usage:
 #   # size the allocation with --nodes; point at a sweep YAML:
@@ -129,14 +137,17 @@ fi
 
 # ── Step 2: merge once (batch node, in-container for h5py). Unions the rank
 #    shards, selects the reducer by experiment type, asserts each EXTRACTED
-#    group has its complete seed series (PARTIAL short-count guard — see header),
+#    group has its complete seed series (PARTIAL short-count guard — see header)
+#    AND the unioned group SET == campaign_expected.json (option-(i) wholly-
+#    absent-group guard; --nranks catches a whole-rank-file drop at discovery),
 #    aggregates (BYO) / identity-reduces (battery), concats manifests. ──
 echo
 echo "═══ Step 2: merge rank shards ═══"
 "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
     python3 -u "${HPCQC_ROOT}/scripts/merge_sweep_shards.py" \
         --output-dir "${HPCQC_SWEEP_OUTDIR}" \
-        --config "${HPCQC_SWEEP_CONFIG}"
+        --config "${HPCQC_SWEEP_CONFIG}" \
+        --nranks "${SLURM_NNODES}"
 MERGE_RC=$?
 
 echo

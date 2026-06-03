@@ -26,7 +26,6 @@ Phase E — RED-DIRECTIVE-PHASE-E-ROADMAP-v1.0, System 5
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -102,33 +101,21 @@ class SweepResultEntry:
 
     @property
     def group_path(self) -> str:
-        """HDF5 group path for this result.
+        """HDF5 group path for this result — delegates to the single source of
+        truth (``battery_paths.battery_group_path``) so the on-disk path, the
+        merge extractor's parse, and the option-(i) expected-group inventory
+        cannot drift (RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN Q2).
 
-        Format: /devices/{device_prefix}/seeds/seed_{seed:04d}/
+        Format: devices/{device_prefix}/seeds/seed_{seed:04d}/
                 placements/{device_prefix}-{qubit_names}/
-                calibrations/{calibration_id}/{noise_config}/
-                [params_{hash}]   ← only when model_params non-empty (LHS mode)
-
-        The params hash suffix prevents path collisions when multiple
-        LHS samples share the same (device, seed, placement, calibration,
-        noise_config) combination but have different Hamiltonian parameters.
-        Grid-mode tasks have empty model_params → path unchanged.
+                calibrations/{calibration_id}/{noise_config}/[params_{hash}]
+        (the params suffix appears only in LHS mode; grid mode → unchanged).
         """
-        qubit_str = "_".join(self.placement_qubits)
-        base = (
-            f"devices/{self.device_prefix}/"
-            f"seeds/seed_{self.seed:04d}/"
-            f"placements/{self.device_prefix}-{qubit_str}/"
-            f"calibrations/{self.calibration_id}/"
-            f"{self.noise_config}"
+        from lumi_hpc_qc.sweep.battery_paths import battery_group_path
+        return battery_group_path(
+            self.device_prefix, self.seed, self.placement_qubits,
+            self.calibration_id, self.noise_config, self.model_params,
         )
-        if self.model_params:
-            params_str = ",".join(
-                f"{k}={v:.8f}" for k, v in sorted(self.model_params.items())
-            )
-            params_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
-            return f"{base}/params_{params_hash}"
-        return base
 
     def to_wal_dict(self) -> dict[str, Any]:
         """Serialize to a WAL-safe dict (JSON-serializable)."""

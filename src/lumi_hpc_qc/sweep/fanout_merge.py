@@ -77,7 +77,8 @@ class ShardReducer(Protocol):
 # ── generic: completeness-asserted reduce dispatch (PURE; offline-tested) ───
 
 def assert_complete_and_reduce(
-    records: Iterable[Any], reducer: ShardReducer, out_root: str
+    records: Iterable[Any], reducer: ShardReducer, out_root: str,
+    expected_groups: set[Hashable] | None = None,
 ) -> list[Hashable]:
     """Group ``records`` by ``reducer.group_key``, assert each group is COMPLETE
     against ``reducer.expected_instances`` (fail loud on any missing, extra, or
@@ -88,6 +89,16 @@ def assert_complete_and_reduce(
     series silently averaged would produce a wrong-but-plausible result, so
     completeness is a PRECONDITION of the reduce, not a post-hoc check. Pure +
     generic: it never interprets a key or payload.
+
+    ``expected_groups`` (option (i),
+    RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN): when given, assert the
+    present GROUP SET equals it BEFORE the per-group instance check. The
+    short-count guard sees only PRESENT groups, so a WHOLLY-ABSENT group (a lost
+    rank / dropped unit at ``num_placements % nranks == 0``) raises nothing
+    today; comparing against the engine-written inventory closes that. This check
+    is reducer-agnostic — it does pure set ops on whatever keys the reducer
+    produces, baking in no path-specific key structure. ``None`` (single-rank /
+    gate) skips it, preserving the prior behavior.
     """
     groups: OrderedDict[Hashable, OrderedDict[Hashable, Any]] = OrderedDict()
     for rec in records:
@@ -100,6 +111,20 @@ def assert_complete_and_reduce(
                 f"— a unit was written more than once across shards."
             )
         bucket[ik] = reducer.payload(rec)
+
+    if expected_groups is not None:
+        present = set(groups)
+        missing = sorted(expected_groups - present, key=repr)
+        unexpected = sorted(present - expected_groups, key=repr)
+        if missing or unexpected:
+            raise ValueError(
+                f"fan-out merge: group SET mismatch vs the expected-group "
+                f"inventory — missing={missing} unexpected={unexpected}. A "
+                f"MISSING group is a wholly-absent group (a lost rank / dropped "
+                f"unit the per-group short-count guard cannot see); an UNEXPECTED "
+                f"group should not exist. Refusing the merge "
+                f"(RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN option (i))."
+            )
 
     reduced: list[Hashable] = []
     for gk, bucket in groups.items():
@@ -239,14 +264,19 @@ def merge_shards(
     out_root: str,
     rank_manifest_paths: Sequence[str] | None = None,
     out_manifest_path: str | None = None,
+    expected_groups: set[Hashable] | None = None,
 ) -> list[Hashable]:
     """Full merge: union the per-rank HDF5, extract records via the reducer,
     assert completeness + reduce per group, and (optionally) concat manifests.
-    Returns the reduced group keys."""
+    Returns the reduced group keys. ``expected_groups`` (option (i)) is passed to
+    the completeness driver for the wholly-absent-group set check; ``None``
+    (single-rank / gate) skips it."""
     n_groups = union_hdf5(rank_h5_paths, out_h5_path)
     records = list(reducer.extract(out_h5_path))
     _assert_union_nonvacuous(n_groups, len(records), type(reducer).__name__)
-    reduced = assert_complete_and_reduce(records, reducer, out_root)
+    reduced = assert_complete_and_reduce(
+        records, reducer, out_root, expected_groups=expected_groups
+    )
     if rank_manifest_paths and out_manifest_path:
         concat_manifests(rank_manifest_paths, out_manifest_path)
     return reduced
@@ -396,6 +426,7 @@ class BatteryReducer:
 
     def extract(self, merged_h5_path: str) -> Iterable[dict]:
         import h5py
+        from lumi_hpc_qc.sweep.battery_paths import group_key_from_path
 
         out: list[dict] = []
         with h5py.File(merged_h5_path, "r") as f:
@@ -407,32 +438,22 @@ class BatteryReducer:
                     "energy_trajectory"
                 ):
                     return
-                # path: devices/{prefix}/seeds/seed_NNNN/placements/{placement}/
-                #       calibrations/{cal_id}/{noise}[/params_HASH]/energy_trajectory
+                # The GROUP key comes from the single source of truth
+                # (battery_paths.group_key_from_path), parsed from the unit's
+                # GROUP path (dirname of the energy_trajectory dataset) — the SAME
+                # parser the option-(i) inventory keys its built paths through, so
+                # the present-set and the expected-set cannot drift. The seed is
+                # the INSTANCE axis (not part of the group key), parsed here.
+                group = group_key_from_path(name.rsplit("/", 1)[0])
+                if group is None:
+                    return
                 parts = name.split("/")
                 try:
-                    di = parts.index("devices")
                     si = parts.index("seeds")
-                    pi = parts.index("placements")
-                    ci = parts.index("calibrations")
                 except ValueError:
                     return
-                device_prefix = parts[di + 1]
                 seed = int(parts[si + 1].split("_")[1])
-                placement = parts[pi + 1]
-                cal_id = parts[ci + 1]
-                noise_config = parts[ci + 2]
-                # LHS params sublevel (parts[ci+3 : -1]); empty in grid mode.
-                params_tail = "/".join(parts[ci + 3 : -1])
-                out.append(
-                    {
-                        "group": (
-                            device_prefix, placement, cal_id,
-                            noise_config, params_tail,
-                        ),
-                        "seed": seed,
-                    }
-                )
+                out.append({"group": group, "seed": seed})
             f.visititems(_visit)
         return out
 
