@@ -255,6 +255,86 @@ def test_battery_reducer_params_tail_keeps_lhs_groups_distinct():
     assert len(reduced) == 2  # NOT collapsed into one group
 
 
+# ── reducer selection (RED-RULING-MERGE-CLI-FOLLOWUP §3(a)/(b); PURE) ────────
+
+def test_select_reducer_byo_from_config():
+    red = fm.select_reducer({"byo_circuit"}, None, [0, 1])
+    assert type(red).__name__ == "ByoAutocorrReducer"
+
+
+def test_select_reducer_battery_characterization():
+    red = fm.select_reducer({"characterization"}, None, [0, 1])
+    assert type(red).__name__ == "BatteryReducer"
+
+
+def test_select_reducer_battery_vqe_sweep():
+    red = fm.select_reducer({"vqe_sweep"}, None, [0, 1])
+    assert type(red).__name__ == "BatteryReducer"
+
+
+def test_select_reducer_explicit_type_overrides_config():
+    # config says battery, explicit override says byo -> byo wins (precedence).
+    red = fm.select_reducer({"characterization"}, "byo_circuit", [0, 1])
+    assert type(red).__name__ == "ByoAutocorrReducer"
+
+
+def test_select_reducer_no_type_raises():
+    try:
+        fm.select_reducer(None, None, [0, 1])
+    except ValueError as e:
+        assert "provide --config" in str(e)
+        return
+    raise AssertionError("expected ValueError when no type is available")
+
+
+def test_select_reducer_mixed_types_raises():
+    try:
+        fm.select_reducer({"byo_circuit", "characterization"}, None, [0, 1])
+    except ValueError as e:
+        assert "mixed experiment types" in str(e)
+        assert "byo_circuit" in str(e) and "characterization" in str(e)
+        return
+    raise AssertionError("expected ValueError on a mixed-type config")
+
+
+def test_select_reducer_unknown_type_raises():
+    # random_regular is a graph_type, NOT an experiment type — must fail loud,
+    # never fall through to identity-reduce.
+    try:
+        fm.select_reducer({"random_regular"}, None, [0, 1])
+    except ValueError as e:
+        assert "unknown experiment type" in str(e) and "random_regular" in str(e)
+        return
+    raise AssertionError("expected ValueError on an unknown experiment type")
+
+
+# ── vacuous-merge guard (RED-RULING-MERGE-CLI-FOLLOWUP §3(c); PURE) ──────────
+
+def test_union_nonvacuous_ok_is_silent():
+    # union produced groups and the reducer matched records -> no raise.
+    fm._assert_union_nonvacuous(8, 8, "BatteryReducer")
+
+
+def test_union_nonvacuous_zero_groups_raises():
+    try:
+        fm._assert_union_nonvacuous(0, 0, "BatteryReducer")
+    except ValueError as e:
+        assert "0 leaf groups" in str(e)
+        return
+    raise AssertionError("expected ValueError on an empty union")
+
+
+def test_union_nonvacuous_zero_records_raises():
+    # the original bug: a battery file fed to the BYO reducer -> groups present
+    # but 0 records -> the silent exit-0 vacuous pass, now loud.
+    try:
+        fm._assert_union_nonvacuous(8, 0, "ByoAutocorrReducer")
+    except ValueError as e:
+        assert "extracted 0 records" in str(e) and "ByoAutocorrReducer" in str(e)
+        return
+    raise AssertionError("expected ValueError when the reducer matched 0 records")
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

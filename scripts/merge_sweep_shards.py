@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Michael Mucciardi
 # SPDX-License-Identifier: SSPL-1.0
-"""Post-job merge for the Workstream-B cross-node fan-out (BYO path).
+"""Post-job merge for the Workstream-B cross-node fan-out (type-dispatched).
 
 After a multi-node sweep where each rank wrote its own ``sweep_rank{r}.h5`` +
 ``campaign_manifest_rank{r}.json`` (HPCQC_SWEEP_SHARD=1), this CLI:
 
   1. unions the per-rank HDF5 into ``sweep.h5`` (disjoint per-unit groups ->
      straight copy-in);
-  2. asserts each (placement, env) group has the COMPLETE seed series — the
-     actual seed_list from --config (or --seeds) — failing loud on a gap (the
-     short-count guard, RED-RULING-WORKSTREAM-B §2);
-  3. aggregates each complete group via the certified ``aggregate_byo_autocorr``
-     into ``byo_dat/`` (byte-format-identical to the single-node .dat tree);
+  2. selects the REDUCER by the sweep's experiment type (NOT hardcoded —
+     RED-RULING-MERGE-CLI-FOLLOWUP §3(a)/(b)): byo_circuit ->
+     ``ByoAutocorrReducer`` (aggregates each complete (placement,env) seed series
+     via the certified ``aggregate_byo_autocorr`` into ``byo_dat/``);
+     characterization | vqe_sweep -> ``BatteryReducer`` (identity reduce, no
+     .dat); anything else / a mixed config / no type -> FAIL LOUD;
+  3. asserts each EXTRACTED group has its COMPLETE instance series — the actual
+     seed_list from --config (or --seeds) — failing loud on a short count (the
+     partial-group guard, RED-RULING-WORKSTREAM-B §2), and fails loud on a
+     vacuous merge (empty union, or a reducer that matched 0 records — §3(c));
   4. concats the per-rank manifests into ``campaign_manifest.json``.
 
-The result is byte-identical to a single-node run of the same units; the
-byte-identity gate (tests/fanout_byte_identity_gate.py) proves it. Requires h5py
-+ numpy (the container); run on LUMI after the multi-node job, or via the gate.
+NOTE (RED-RULING-MERGE-CLI-FOLLOWUP ask-2): the step-3 completeness assert is a
+PARTIAL lost-shard guard — it catches a present group missing instances, NOT a
+group that vanished entirely (the common whole-rank-loss shape when
+``num_placements % nranks == 0``). The wholly-absent-group case is closed only by
+the expected-group inventory (option (i), a separate patch). Until that lands, a
+battery / single-seed-BYO multi-node campaign must NOT bank results.
+
+The complete-run result is byte-identical to a single-node run of the same
+units; the byte-identity gate (tests/fanout_byte_identity_gate.py) proves it.
+Requires h5py + numpy (the container); run on LUMI after the multi-node job, or
+via the gate.
 
 Usage:
   python3 scripts/merge_sweep_shards.py --output-dir <dir> --config <sweep.yaml>
-  python3 scripts/merge_sweep_shards.py --output-dir <dir> --seeds 0,1
+  python3 scripts/merge_sweep_shards.py --output-dir <dir> --seeds 0,1 \
+      --experiment-type byo_circuit
 """
 
 from __future__ import annotations
@@ -55,18 +69,44 @@ def _read_seed_list(config_path: str) -> list[int]:
     return sorted(seeds)
 
 
+def _read_experiment_types(config_path: str) -> set[str]:
+    """The distinct experiment ``type``(s) in the sweep YAML — the same per-
+    experiment key the engine reads (default 'characterization', matching
+    sweep_engine.py). The reducer is selected from this set; a mixed set is
+    rejected by ``select_reducer`` (a single-reducer merge cannot carry a mixed
+    sweep)."""
+    import yaml
+
+    with open(config_path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    types: set[str] = set()
+    for exp in cfg.get("sweep", {}).get("experiments", []):
+        types.add(exp.get("type", "characterization"))
+    if not types:
+        raise SystemExit(f"merge: no experiments found in {config_path}")
+    return types
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Merge cross-node sweep shards (BYO).")
+    ap = argparse.ArgumentParser(
+        description="Merge cross-node sweep shards (reducer selected by type)."
+    )
     ap.add_argument("--output-dir", required=True,
                     help="dir holding sweep_rank*.h5 + campaign_manifest_rank*.json")
-    ap.add_argument("--config", help="sweep YAML to read the expected seed_list from")
+    ap.add_argument("--config", help="sweep YAML to read the expected seed_list "
+                                     "and the experiment type from")
     ap.add_argument("--seeds", help="explicit expected seeds, comma-separated "
                                     "(overrides --config)")
+    ap.add_argument("--experiment-type",
+                    choices=("byo_circuit", "characterization", "vqe_sweep"),
+                    default=None,
+                    help="reducer-selection override (wins over --config-derived "
+                         "type); required if --config is not given")
     ap.add_argument("--hdf5-name", default="sweep.h5",
                     help="name of the merged HDF5 (default: sweep.h5)")
     args = ap.parse_args(argv)
 
-    from lumi_hpc_qc.sweep.fanout_merge import ByoAutocorrReducer, merge_shards
+    from lumi_hpc_qc.sweep.fanout_merge import merge_shards, select_reducer
 
     if args.seeds:
         seeds = [int(x) for x in args.seeds.split(",") if x.strip() != ""]
@@ -81,7 +121,12 @@ def main(argv=None) -> int:
         raise SystemExit(f"merge: no sweep_rank*.h5 in {out}")
     manifests = sorted(glob.glob(os.path.join(out, "campaign_manifest_rank*.json")))
 
-    reducer = ByoAutocorrReducer(expected_seeds=seeds)  # default byo_dat layout
+    config_types = _read_experiment_types(args.config) if args.config else None
+    try:
+        reducer = select_reducer(config_types, args.experiment_type, seeds)
+    except ValueError as e:
+        raise SystemExit(f"merge: {e}")
+
     reduced = merge_shards(
         rank_h5_paths=rank_h5s,
         out_h5_path=os.path.join(out, args.hdf5_name),
@@ -94,7 +139,7 @@ def main(argv=None) -> int:
     )
     print(f"merge: unioned {len(rank_h5s)} rank shard(s) -> "
           f"{os.path.join(out, args.hdf5_name)}; "
-          f"aggregated {len(reduced)} (placement,env,observable) group(s); "
+          f"reducer={type(reducer).__name__}; reduced {len(reduced)} group(s); "
           f"expected seeds={seeds}.")
     return 0
 

@@ -11,15 +11,25 @@
 # its stratified slice of the flat work-unit list (SLURM_NODEID / SLURM_NNODES)
 # and writes its own sweep_rank{r}.h5 + campaign_manifest_rank{r}.json into the
 # shared OUTDIR, deferring .dat aggregation. After all ranks finish, a single
-# merge step unions the rank shards, asserts each (placement,env) seed series is
-# complete, aggregates via the certified aggregate_byo_autocorr, and concats the
-# manifests — producing sweep.h5 + byo_dat + campaign_manifest.json that are
+# merge step (scripts/merge_sweep_shards.py) unions the rank shards, SELECTS THE
+# REDUCER by the sweep's experiment type (byo_circuit -> aggregate the certified
+# autocorrelator into byo_dat; characterization|vqe_sweep -> identity reduce),
+# asserts each EXTRACTED (placement,env) group has its complete seed series, and
+# concats the manifests -> sweep.h5 (+ byo_dat for BYO) + campaign_manifest.json,
 # byte-identical to a single-node run of the same units (proven by
 # tests/slurm_fanout_byte_identity_gate.sh).
 #
-# This launcher is sweep-type-agnostic at the shard/merge layer; the BYO reducer
-# is what runs at merge. (The hamiltonian-battery reducer + its equivalence gate
-# — Workstream-B item 3 — is what proves the layer is generic, not BYO-only.)
+# This launcher is sweep-type-agnostic at the shard/merge layer; the reducer is
+# selected by experiment type at merge (RED-RULING-MERGE-CLI-FOLLOWUP §3). The
+# completeness assert is a PARTIAL lost-shard guard: it catches a present group
+# missing seeds, NOT a group that vanished entirely (the common whole-rank-loss
+# shape when num_placements % nranks == 0). That blind spot is closed only by the
+# expected-group inventory (option (i), a separate patch).
+#
+# UNTIL (i) LANDS: do NOT use this launcher to BANK RESULTS for a battery
+# (characterization/vqe_sweep) config or a SINGLE-SEED byo_circuit config — both
+# are exposed to the wholly-absent-group blind spot. Multi-seed byo_circuit
+# (num_seeds >= 2, e.g. the echo campaign) is protected and clear.
 #
 # Usage:
 #   # size the allocation with --nodes; point at a sweep YAML:
@@ -118,8 +128,9 @@ if [ "${SHARD_RC}" -ne 0 ]; then
 fi
 
 # ── Step 2: merge once (batch node, in-container for h5py). Unions the rank
-#    shards, asserts completeness vs the config seed_list (fail-loud short-count
-#    guard), aggregates, concats manifests -> sweep.h5 + byo_dat + manifest. ──
+#    shards, selects the reducer by experiment type, asserts each EXTRACTED
+#    group has its complete seed series (PARTIAL short-count guard — see header),
+#    aggregates (BYO) / identity-reduces (battery), concats manifests. ──
 echo
 echo "═══ Step 2: merge rank shards ═══"
 "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \

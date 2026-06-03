@@ -195,6 +195,41 @@ def union_hdf5(rank_h5_paths: Sequence[str], out_h5_path: str) -> int:
     return copied
 
 
+# ── generic: vacuous-merge guard (PURE; offline-tested) ─────────────────────
+
+def _assert_union_nonvacuous(
+    n_groups: int, n_records: int, reducer_name: str
+) -> None:
+    """Fail loud on a vacuous merge BEFORE the completeness assertion can pass
+    over an empty set (RED-RULING-MERGE-CLI-FOLLOWUP §3(c)). Two cases:
+
+      - the union produced NO leaf groups (empty/missing shards) — the CLI's
+        ``if not rank_h5s`` catches missing *files*, not present-but-empty ones;
+      - the union produced groups but the selected reducer extracted ZERO records
+        (a wrong-reducer mis-route, or total data loss). A battery file fed to
+        the BYO reducer matches no ``autocorrelator`` sentinel -> 0 records -> the
+        completeness loop never runs -> a silent exit-0 vacuous pass. This guard
+        makes that loud.
+
+    SCOPE: TOTAL loss / mis-route only. It does NOT cover a PARTIAL wholly-absent
+    group (some groups present, one gone) — extract still returns >0 records
+    there; that case is closed only by the expected-group inventory
+    (RED-RULING-MERGE-CLI-FOLLOWUP ask-2 option (i)).
+    """
+    if n_groups == 0:
+        raise ValueError(
+            "fan-out merge: the union produced 0 leaf groups — empty or missing "
+            "rank shards (nothing to merge)."
+        )
+    if n_records == 0:
+        raise ValueError(
+            f"fan-out merge: unioned {n_groups} leaf group(s) but reducer "
+            f"{reducer_name} extracted 0 records — wrong reducer for this data "
+            f"(reducer-selection mis-route) or total data loss. Refusing a "
+            f"vacuous exit-0 merge (RED-RULING-MERGE-CLI-FOLLOWUP §3(c))."
+        )
+
+
 # ── orchestrator ────────────────────────────────────────────────────────────
 
 def merge_shards(
@@ -208,8 +243,9 @@ def merge_shards(
     """Full merge: union the per-rank HDF5, extract records via the reducer,
     assert completeness + reduce per group, and (optionally) concat manifests.
     Returns the reduced group keys."""
-    union_hdf5(rank_h5_paths, out_h5_path)
+    n_groups = union_hdf5(rank_h5_paths, out_h5_path)
     records = list(reducer.extract(out_h5_path))
+    _assert_union_nonvacuous(n_groups, len(records), type(reducer).__name__)
     reduced = assert_complete_and_reduce(records, reducer, out_root)
     if rank_manifest_paths and out_manifest_path:
         concat_manifests(rank_manifest_paths, out_manifest_path)
@@ -419,3 +455,68 @@ class BatteryReducer:
         # final output; there is no cross-instance aggregation to relocate. The
         # completeness assertion in assert_complete_and_reduce is the value here.
         return
+
+
+# ── reducer selection by experiment type (PURE mapping; offline-tested) ─────
+
+_BYO_TYPES = frozenset({"byo_circuit"})
+_BATTERY_TYPES = frozenset({"characterization", "vqe_sweep"})
+
+
+def select_reducer(
+    experiment_types: Iterable[str] | None,
+    explicit_type: str | None,
+    expected_seeds: Iterable[int],
+):
+    """Pick the merge reducer from the sweep's experiment type(s)
+    (RED-RULING-MERGE-CLI-FOLLOWUP §3(a)/(b)). The production merge CLI MUST NOT
+    hardcode a reducer: a battery file fed to the BYO reducer silently
+    vacuous-passes (§3(c)). Mapping, all fail-loud:
+
+      - byo_circuit                  -> ByoAutocorrReducer (aggregating)
+      - characterization | vqe_sweep -> BatteryReducer     (identity reduce)
+      - anything else                -> raise (a new, possibly AGGREGATING type
+        must force a deliberate reducer choice; never fall through to
+        identity-reduce — that is the silent-wrong-merge class)
+
+    Precedence: an explicit type (the CLI's --experiment-type override) wins over
+    the config-derived set. Neither given -> raise (no silent default). A config
+    with MORE THAN ONE distinct type -> raise: a single-reducer merge cannot
+    carry a mixed sweep, and running one reducer would vacuous-pass the other
+    path's completeness guard.
+
+    (Allowlist note: the only experiment types in the tree are byo_circuit and
+    characterization; vqe_sweep is engine-recognized, non-aggregating, with no
+    example config yet — forward-looking. random_regular is a graph_type under
+    model_params, NOT an experiment type, so it is correctly absent here.)
+    """
+    if explicit_type is not None:
+        resolved = {explicit_type}
+    elif experiment_types is not None:
+        resolved = {str(t) for t in experiment_types}
+    else:
+        resolved = set()
+
+    if not resolved:
+        raise ValueError(
+            "no experiment type for reducer selection — provide --config (to "
+            "read the sweep type) or --experiment-type."
+        )
+    if len(resolved) > 1:
+        raise ValueError(
+            f"mixed experiment types {sorted(resolved)} in one config — a "
+            f"single-reducer merge cannot carry a mixed sweep (running one "
+            f"reducer would vacuous-pass the other path's completeness guard). "
+            f"Split the campaign by type, or merge per-type."
+        )
+    (exp_type,) = tuple(resolved)
+    if exp_type in _BYO_TYPES:
+        return ByoAutocorrReducer(expected_seeds=expected_seeds)
+    if exp_type in _BATTERY_TYPES:
+        return BatteryReducer(expected_seeds=expected_seeds)
+    raise ValueError(
+        f"unknown experiment type {exp_type!r} for reducer selection — known: "
+        f"{sorted(_BYO_TYPES | _BATTERY_TYPES)}. A new type must add an explicit "
+        f"reducer mapping (an aggregating type must NEVER fall through to "
+        f"identity-reduce)."
+    )
