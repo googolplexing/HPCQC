@@ -41,12 +41,27 @@
 
 set -uo pipefail
 
-export LUMI_QISKIT_SINGULARITY_CONTAINER_PATH="${LUMI_QISKIT_SINGULARITY_CONTAINER_PATH:-/appl/local/quantum/qiskit/qiskit_2.3.0_csc.sif}"
-export WRAPPER_PATH="${WRAPPER_PATH:-/appl/local/quantum/qiskit/run-singularity}"
+# Project environment: account (SBATCH_ACCOUNT), the CPU wrapper + container
+# (HPCQC_CPU_WRAPPER / HPCQC_CPU_CONTAINER), HPCQC_ROOT, SINGULARITYENV_PYTHONPATH
+# — same convention as the other launchers (slurm_floquet_parallel.sh etc.).
+source "${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}/env.sh"
 
 HPCQC_ROOT="${HPCQC_ROOT:-${SLURM_SUBMIT_DIR}}"
 mkdir -p "${HPCQC_ROOT}/slurm_logs"
 cd "${HPCQC_ROOT}" || { echo "cannot cd to ${HPCQC_ROOT}"; exit 2; }
+
+# ── CPU partition, NO inter-node MPI. This fan-out runs one INDEPENDENT engine
+#    per node (each writes its own shard to the shared FS; no rank communicates
+#    with another), so we want NO MPI bootstrap. env.sh sets a GPU-oriented Cray
+#    MPICH NIC policy (MPICH_OFI_NIC_POLICY=GPU) for the LUMI-G launchers; on the
+#    CPU standard partition a multi-node srun step aborts honoring it ("no
+#    ROCm-capable device is detected"). The CPU wrapper (run-singularity) already
+#    sets MPICH_GPU_SUPPORT_ENABLED=0 but does NOT touch the NIC policy, so
+#    override it to a CPU-valid value here, and run srun with --mpi=none below so
+#    no PMI/MPI bootstrap happens at all. SLURM_NODEID/SLURM_NNODES (our shard
+#    keys) are SLURM step variables, set regardless of the MPI plugin. ──
+export MPICH_OFI_NIC_POLICY=NUMA
+export MPICH_GPU_SUPPORT_ENABLED=0
 
 # Sweep config (a real default so it runs out-of-box) + a shared OUTDIR all ranks
 # and the merge agree on (the engine ranks write sweep_rank{r}.h5 here; the merge
@@ -66,6 +81,8 @@ export SINGULARITYENV_PYTHONUNBUFFERED=1
 export SINGULARITYENV_OMP_NUM_THREADS=1
 export SINGULARITYENV_OPENBLAS_NUM_THREADS=1
 export SINGULARITYENV_MKL_NUM_THREADS=1
+export SINGULARITYENV_MPICH_OFI_NIC_POLICY=NUMA
+export SINGULARITYENV_MPICH_GPU_SUPPORT_ENABLED=0
 
 echo "================================================================"
 echo " Workstream-B multi-node sweep (cross-node fan-out)"
@@ -75,7 +92,7 @@ echo "Nodes      : ${SLURM_NNODES:-?} (one engine rank per node)"
 echo "CPUs/node  : ${SLURM_CPUS_PER_TASK:-?}"
 echo "Config     : ${HPCQC_SWEEP_CONFIG}"
 echo "OutDir     : ${HPCQC_SWEEP_OUTDIR}"
-echo "Container  : ${LUMI_QISKIT_SINGULARITY_CONTAINER_PATH}"
+echo "Container  : ${HPCQC_CPU_CONTAINER}"
 echo "Started    : $(date)"
 echo
 
@@ -84,12 +101,12 @@ echo
 #    plus HPCQC_SWEEP_SHARD=1, so the engine resolves (rank, nranks) = (NODEID,
 #    NNODES), shards its slice, and writes sweep_rank{NODEID}.h5 + its manifest. ──
 echo "═══ Step 1: shard runs (one rank per node) ═══"
-srun --ntasks-per-node=1 bash -c '
+srun --ntasks-per-node=1 --mpi=none bash -c '
     export SINGULARITYENV_HPCQC_SWEEP_SHARD=1
     export SINGULARITYENV_SLURM_NODEID="${SLURM_NODEID}"
     export SINGULARITYENV_SLURM_NNODES="${SLURM_NNODES}"
     echo "  rank ${SLURM_NODEID}/${SLURM_NNODES} on $(hostname): shard run starting"
-    "${WRAPPER_PATH}" "${LUMI_QISKIT_SINGULARITY_CONTAINER_PATH}" \
+    "${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
         python3 -u -m lumi_hpc_qc.sweep.run_sweep \
             "${HPCQC_SWEEP_CONFIG}" --output-dir "${HPCQC_SWEEP_OUTDIR}"
 '
@@ -105,7 +122,7 @@ fi
 #    guard), aggregates, concats manifests -> sweep.h5 + byo_dat + manifest. ──
 echo
 echo "═══ Step 2: merge rank shards ═══"
-"${WRAPPER_PATH}" "${LUMI_QISKIT_SINGULARITY_CONTAINER_PATH}" \
+"${HPCQC_CPU_WRAPPER}" "${HPCQC_CPU_CONTAINER}" \
     python3 -u "${HPCQC_ROOT}/scripts/merge_sweep_shards.py" \
         --output-dir "${HPCQC_SWEEP_OUTDIR}" \
         --config "${HPCQC_SWEEP_CONFIG}"
