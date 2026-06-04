@@ -207,6 +207,15 @@ class SweepExperimentConfig:
     # byte-identically. The `derived`/ratio surface is increment 4 and is NOT
     # read here. See DESIGN-MULTI-OBSERVABLE-BYO-ECHO (Option A).
     observables: tuple[tuple[str, str], ...] | None = None
+    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (A): opt-out for the
+    # shared-solve connectivity guard. The guard engages ONLY when a solve is
+    # shared across >=2 observable families (single-observable runs never hit it);
+    # families whose connectivity differs fail loud by default, because a shared
+    # solve would mis-pair a ratio (autocorr(p) vs echo(p) on different p). Set
+    # true ONLY for genuinely-independent (non-ratio) multi-observable runs.
+    # NOTE: once `derived: ratio` (increment 4) lands, a declared ratio MUST force
+    # fail-loud regardless of this flag (ratio + opt-out is incoherent -> raise).
+    observables_independent: bool = False
     fixed: dict[str, Any] = field(default_factory=dict)
     disorder: dict[str, Any] = field(default_factory=dict)
     signature_check: bool = True
@@ -296,6 +305,9 @@ class SweepTask:
     # the result for the HDF5 group / .dat subdir and groups families separately
     # (folded into the group key in expand_grid). "default" -> legacy layout.
     observable_name: str = "default"
+    # RED-RULING-…-(A): rides from ExperimentSpec to the shared-solve guard in
+    # _execute_byo_group. See ExperimentSpec.observables_independent.
+    observables_independent: bool = False
     fixed_params: dict[str, Any] = field(default_factory=dict)
     disorder_instance: dict[str, Any] = field(default_factory=dict)
     disorder_gates: tuple[str, ...] = ("rz", "rzz")
@@ -533,8 +545,10 @@ def _expand_byo_experiment(
     # (observable folded into the group key), so it gets its own placement solve
     # and its own D1/D2 memory probe. Both families of a seed share the disorder
     # seed -> the same resolve_instance_seed(master_seed, seed), as the ratio
-    # contract's shared-seed finding requires. (The derived/ratio surface and the
-    # cross-family connectivity-equality guard are increment 4, not here.)
+    # contract's shared-seed finding requires. (The derived/ratio surface is
+    # increment 4, not here. The cross-family connectivity-equality guard now
+    # lives at the _execute_byo_group shared-solve seam, per RED-RULING-BYO-FLAT-
+    # DISPATCH-AND-NOISELESS-DEDUP (A) — superseding the earlier deferral.)
     observables = exp.observables or (
         (DEFAULT_OBSERVABLE_NAME, exp.circuit_function),
     )
@@ -591,6 +605,7 @@ def _expand_byo_experiment(
                         circuit_script=exp.circuit_script,
                         circuit_function=obs_func,
                         observable_name=obs_name,
+                        observables_independent=exp.observables_independent,
                         fixed_params=dict(exp.fixed),
                         disorder_instance=instance,
                         disorder_gates=gate_names,
@@ -905,6 +920,9 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             observables=_parse_observables(
                 exp_dict.get("observables"),
                 exp_dict.get("circuit_function", "build_circuit"),
+            ),
+            observables_independent=exp_dict.get(
+                "observables_independent", False
             ),
             fixed=exp_dict.get("fixed", {}),
             disorder=exp_dict.get("disorder", {}),
@@ -1494,6 +1512,13 @@ class SweepEngine:
 
         # Placement cache: (topology_name, device_id) → list[Placement]
         self._placement_cache: dict[tuple[str, str], list[Placement]] = {}
+
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (A): shared placement
+        # solve across BYO observable families. Keyed by the experiment's
+        # solve-identity WITHOUT connectivity or observable, so families that
+        # should ratio-pair collide here and the connectivity guard runs.
+        # Value: (placements, normalized_connectivity).
+        self._byo_placement_cache: dict[tuple, tuple[list, frozenset]] = {}
 
         # Project root for subprocess worker scripts
         self._project_dir = os.environ.get(
@@ -2539,23 +2564,77 @@ class SweepEngine:
             manual_placements, representative.max_placements, wants_device_cal
         )
         t_place_start = time.perf_counter()
-        placements = self._solver.resolve_placements(
-            circuit_edges=connectivity,
-            circuit_qubits=qsize,
-            device_id=device_cal.device_id,
-            strategy="max_fidelity",
-            max_placements=solver_max_placements,
-            manual_qubit_name_lists=manual_placements,
-            solver_top_n=solver_top_n,
-            diversity=diversity,
+        # ── A (RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP): shared placement
+        #    solve across observable families. The observable is folded into the
+        #    group key, so each family is a SEPARATE _execute_byo_group call; share
+        #    the (expensive) solve across families of one experiment via an
+        #    observable-INDEPENDENT cache. The key deliberately OMITS connectivity
+        #    and the observable, so two families that should ratio-pair collide
+        #    here and the connectivity guard runs — rather than silently solving
+        #    apart and mis-pairing autocorr(p)/echo(p) across different p. ──
+        conn_norm = frozenset(frozenset(e) for e in connectivity)
+        byo_solve_key = (
+            representative.circuit_script,
+            representative.calibration_path,
+            representative.topology_name,
+            qsize,
+            device_cal.device_id,
+            solver_max_placements,
+            solver_top_n,
+            tuple(tuple(m) for m in manual_placements)
+            if manual_placements else None,
+            repr(diversity) if diversity is not None else None,
         )
-        self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
-        if not placements:
-            errors.append(
-                f"BYO: no valid placements for {representative.circuit_script} "
-                f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
+        cached = self._byo_placement_cache.get(byo_solve_key)
+        placements = None
+        store_to_cache = cached is None
+        if cached is not None:
+            cached_placements, cached_conn = cached
+            if conn_norm == cached_conn:
+                placements = cached_placements
+            elif representative.observables_independent:
+                # Explicit opt-out: genuinely-independent (non-ratio) observables
+                # may legitimately solve apart. Fall back to a fresh per-family
+                # solve; do NOT poison or reuse the shared entry.
+                pass
+            else:
+                # FAIL-LOUD default: a shared solve across families with DIFFERENT
+                # connectivity would mis-pair a ratio (autocorr(p) vs echo(p) on
+                # different physical p) — silently meaningless, and the researcher
+                # can't be reached. Raise instead of falling back.
+                # TODO(derived:ratio, increment 4): once `derived` lands, a
+                # declared `derived: ratio` MUST force this fail-loud REGARDLESS of
+                # observables_independent (ratio + opt-out is incoherent and must
+                # itself raise). The opt-out is the only signal until then.
+                raise ValueError(
+                    "BYO shared placement solve: observable families under "
+                    f"{representative.circuit_script} have different connectivity "
+                    f"({len(connectivity)} vs {len(cached_conn)} 2q-edges) on "
+                    f"{device_cal.device_id} — a shared solve would mis-pair a "
+                    "ratio across different placements. If these observables are "
+                    "NOT ratio-combined, set 'observables_independent: true' on "
+                    "the experiment."
+                )
+        if placements is None:
+            placements = self._solver.resolve_placements(
+                circuit_edges=connectivity,
+                circuit_qubits=qsize,
+                device_id=device_cal.device_id,
+                strategy="max_fidelity",
+                max_placements=solver_max_placements,
+                manual_qubit_name_lists=manual_placements,
+                solver_top_n=solver_top_n,
+                diversity=diversity,
             )
-            return
+            if not placements:
+                errors.append(
+                    f"BYO: no valid placements for {representative.circuit_script} "
+                    f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
+                )
+                return
+            if store_to_cache:
+                self._byo_placement_cache[byo_solve_key] = (placements, conn_norm)
+        self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
         if diversity is not None and diversity.is_active():
             print(f"    BYO: {len(placements)} placement(s) "
                   f"(diversity: disjoint, no_crosstalk={diversity.no_crosstalk})")
