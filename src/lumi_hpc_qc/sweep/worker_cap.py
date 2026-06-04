@@ -525,3 +525,53 @@ def peak_hi_corpus_validated(methods, n: int) -> bool:
     """
     method_set = tuple(methods) if methods else ("statevector",)
     return all((m, n) in CORPUS_VALIDATED_PEAK_HI_SHAPES for m in method_set)
+
+
+# MEASURED per-unit VmHWM ceilings (bytes) for corpus-validated shapes. The
+# value is the MAX measured VmHWM over the §1.4 corpus for that (method, n),
+# heaviest observable family included — i.e. a measured upper bound on one
+# unit's true peak, NOT the conservative C1 formula. Source of truth is the
+# soundness corpus (_MEASURED_VMHWM_CORPUS in tests/unit/test_probe_skip_non_binding.py
+# / RED-RESP-W1-CAP-VERIFY §1.4); the (method, n) keys MUST stay identical to
+# CORPUS_VALIDATED_PEAK_HI_SHAPES (asserted in the unit test) so a shape can
+# never be skip-eligible without a measured peak to size the cap on.
+#
+# Used INSTEAD OF conservative_peak_hi for the probe-skip test (and the skipped
+# cap) on a corpus-validated shape: the conservative C1 bound (~3 GiB) exists
+# only because an UNMEASURED unit's peak is unknown; once a shape is measured,
+# its measured max is the correct, tighter upper bound, and using it lets a
+# provably non-binding run skip the probe AT FULL concurrency rather than under-
+# packing to the conservative mem_term. OOM-safety is unchanged: decide_probe_skip
+# proves `core_units_ceiling * bound <= safe_mem`, and `bound >= true_peak` holds
+# here because the value is the measured MAX times CORPUS_PEAK_SAFETY_FACTOR (>= 1).
+CORPUS_MEASURED_PEAK_BYTES: dict[tuple[str, int], int] = {
+    ("statevector", 10): int(1.32 * GIB),  # §1.4: max measured (autocorr arm)
+}
+
+# Margin applied to the measured corpus peak before it is used as the bound.
+# Red-owned safety knob: 1.0 uses the measured max directly (the D3 safe_mem
+# reserve already covers OS / page-cache / parent-heap headroom, so the per-unit
+# value need not be inflated again); raise it to add per-unit variance headroom
+# at the cost of pushing some runs back onto the probe. Documented and ruled in
+# BLUE-TO-RED-CORPUS-PEAK-PROBE-SKIP.
+CORPUS_PEAK_SAFETY_FACTOR = 1.0
+
+
+def corpus_measured_peak_hi(methods, n: int) -> int | None:
+    """Measured per-unit peak bound (bytes) for this shape, or None if unmeasured.
+
+    PURE. Returns ``max measured VmHWM over the present methods * factor`` iff
+    EVERY method present has a ``(method, n)`` entry in
+    ``CORPUS_MEASURED_PEAK_BYTES`` (same "every method present" semantics as
+    ``peak_hi_corpus_validated``); otherwise None, so the caller falls back to
+    ``conservative_peak_hi``. Empty ``methods`` defaults to statevector.
+
+    The returned bound is a valid upper bound on one unit's true peak (measured
+    max * factor>=1) and is <= ``conservative_peak_hi`` for the same shape — a
+    tighter-but-still-sound bound that the probe-skip can size on.
+    """
+    method_set = tuple(methods) if methods else ("statevector",)
+    if not all((m, n) in CORPUS_MEASURED_PEAK_BYTES for m in method_set):
+        return None
+    base = max(CORPUS_MEASURED_PEAK_BYTES[(m, n)] for m in method_set)
+    return int(base * CORPUS_PEAK_SAFETY_FACTOR)

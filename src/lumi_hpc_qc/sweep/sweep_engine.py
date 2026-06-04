@@ -2948,12 +2948,26 @@ class SweepEngine:
         _methods = {e.method for e in representative.noise_configs}
         _n = representative.qubit_size
         _peak_hi = wc.conservative_peak_hi(_methods, _n)
+        # For a corpus-validated shape, size the skip test (and the skipped cap)
+        # on the MEASURED per-unit peak rather than the conservative C1 bound:
+        # the conservative bound exists only for UNMEASURED shapes, and using it
+        # for a measured shape under-packs a provably non-binding run (forcing a
+        # probe purely to re-discover a peak the §1.4 corpus already measured).
+        # _corpus_peak is None for any unmeasured shape -> fall back to _peak_hi
+        # (unchanged behavior). _bound is what the skip arithmetic and the
+        # skipped cap rest on; OOM-safety is identical (decide_probe_skip proves
+        # core_units_ceiling * _bound <= safe_mem, and _bound >= true_peak).
+        _corpus_peak = wc.corpus_measured_peak_hi(_methods, _n)
+        _bound = _corpus_peak if _corpus_peak is not None else _peak_hi
+        _bound_label = (
+            "corpus-measured" if _corpus_peak is not None else "conservative"
+        )
         _skip = wc.decide_probe_skip(
             cpu_workers=cpu_workers,
             num_units=num_units,
             usable_cores_physical=usable_cores,
             safe_mem_bytes=safe_mem,
-            peak_hi_bytes=_peak_hi,
+            peak_hi_bytes=_bound,
         )
         # Test-only escape hatch for the RED-DIRECTIVE-PROBE-SKIP §6 A/B gate:
         # HPCQC_FORCE_PROBE=1 forces the probe even when the skip condition
@@ -2989,12 +3003,18 @@ class SweepEngine:
             worker_results: list[WorkerResult] = probe_results
         else:
             if _do_skip:
-                # Probe skipped: feed the conservative bound; compute_worker_cap
-                # returns core_units_ceiling (memory cannot bind). D4(a) cannot
-                # fire here (mem_term_lo >= core_units_ceiling >= 1 => peak_hi <=
-                # safe_mem).
+                # Probe skipped: feed the bound the skip was decided on (the
+                # corpus-measured peak on a validated shape, else the
+                # conservative C1 bound). compute_worker_cap returns
+                # core_units_ceiling (memory cannot bind). D4(a) cannot fire here
+                # (mem_term >= core_units_ceiling >= 1 => _bound <= safe_mem).
                 per_unit_peak = _skip.peak_hi_bytes
-                peak_source = _skip.peak_source
+                if _corpus_peak is not None:
+                    peak_source = "skip:corpus_measured:" + ",".join(
+                        f"{m}@{_n}" for m in sorted(_methods)
+                    )
+                else:
+                    peak_source = _skip.peak_source
             else:
                 _peaks = [r.peak_rss_kib * 1024 for r in probe_results
                           if r.peak_rss_kib > 0]
@@ -3047,11 +3067,11 @@ class SweepEngine:
             )
             if _do_skip:
                 print(
-                    f"    BYO: probe SKIPPED [skip:mem_non_binding] — memory "
+                    f"    BYO: probe SKIPPED [{peak_source}] — memory "
                     f"cannot bind the cap: safe_mem // peak_hi = "
-                    f"{safe_mem // _peak_hi} >= core_units_ceiling="
+                    f"{safe_mem // _bound} >= core_units_ceiling="
                     f"{_skip.core_units_ceiling} (peak_hi="
-                    f"{_peak_hi / wc.GIB:.2f} GiB, conservative bound). "
+                    f"{_bound / wc.GIB:.2f} GiB, {_bound_label} bound). "
                     f"No serial probe wave run."
                 )
 
