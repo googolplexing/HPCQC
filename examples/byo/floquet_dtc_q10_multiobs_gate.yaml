@@ -26,7 +26,7 @@ sweep:
         - {name: autocorr, function: build_circuit}
         - {name: echo,     function: build_circuit_echo}
       fixed: {num_qubits: 10, epsilon: 0.03}
-      grid: {num_kicks: {range: [0, 20]}}        # 0..19 — small grid, fast gate
+      grid: {num_kicks: {range: [0, 4]}}        # 0..19 — small grid, fast gate
       disorder:
         source: file
         file: examples/byo/floquet_disorder_q10_echo_ak10.json
