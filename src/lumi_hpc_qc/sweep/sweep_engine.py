@@ -2945,10 +2945,9 @@ class SweepEngine:
         # (safe_mem // peak_hi >= core_units_ceiling) the probe's result cannot
         # change the cap, so it is not run. OOM-safe by construction (see
         # decide_probe_skip). safe_mem unknown -> not skipped (probe / D4 raise).
-        _peak_hi = wc.conservative_peak_hi(
-            {e.method for e in representative.noise_configs},
-            representative.qubit_size,
-        )
+        _methods = {e.method for e in representative.noise_configs}
+        _n = representative.qubit_size
+        _peak_hi = wc.conservative_peak_hi(_methods, _n)
         _skip = wc.decide_probe_skip(
             cpu_workers=cpu_workers,
             num_units=num_units,
@@ -2960,8 +2959,13 @@ class SweepEngine:
         # HPCQC_FORCE_PROBE=1 forces the probe even when the skip condition
         # holds, so the harness can compare skip vs probe on IDENTICAL config and
         # prove the cap change is physics-invariant. Unset in production.
+        # RED-VERIFY-PROBE-SKIP-CLOSURE §2(b): only skip at a (method, n) whose
+        # peak_hi is corpus-validated; otherwise fall through to the probe (never
+        # skip on a never-measured bound).
         _do_skip = (
-            _skip.skip and os.environ.get("HPCQC_FORCE_PROBE") != "1"
+            _skip.skip
+            and wc.peak_hi_corpus_validated(_methods, _n)
+            and os.environ.get("HPCQC_FORCE_PROBE") != "1"
         )
         probe_idxs: list[int] = []
         _seen_probe_fams: set[str] = set()

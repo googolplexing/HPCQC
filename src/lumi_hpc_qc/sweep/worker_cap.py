@@ -499,3 +499,29 @@ def decide_probe_skip(
         peak_hi_bytes=peak_hi_bytes,
         peak_source="skip:mem_non_binding" if skip else None,
     )
+
+
+# RED-VERIFY-PROBE-SKIP-CLOSURE §2 condition (b): the runtime skip is gated to
+# (method, n) shapes whose peak_hi bound has been validated against a MEASURED
+# VmHWM corpus (the soundness gate). A skip never fires at an n whose bound was
+# never measured — at an unvalidated shape the engine falls through to the probe,
+# so OOM-safety never rests on the peak_hi FORMULA alone, only on a measured
+# bound. Extend this set (AND the soundness corpus that backs it) when a new
+# (method, n) is measured.
+CORPUS_VALIDATED_PEAK_HI_SHAPES: frozenset[tuple[str, int]] = frozenset({
+    ("statevector", 10),   # §1.4 corpus: max measured 1.32 GiB << peak_hi ~3 GiB
+})
+
+
+def peak_hi_corpus_validated(methods, n: int) -> bool:
+    """Whether peak_hi(method, n) is corpus-validated for EVERY method present.
+
+    PURE. True iff every method's ``(method, n)`` is in
+    ``CORPUS_VALIDATED_PEAK_HI_SHAPES`` — i.e. peak_hi was checked against a
+    measured VmHWM there. Empty ``methods`` defaults to statevector (matching
+    ``conservative_peak_hi``). The runtime skip ANDs this in, so an unvalidated
+    shape falls through to the probe rather than skipping on a never-measured
+    bound (RED-VERIFY-PROBE-SKIP-CLOSURE §2 condition b).
+    """
+    method_set = tuple(methods) if methods else ("statevector",)
+    return all((m, n) in CORPUS_VALIDATED_PEAK_HI_SHAPES for m in method_set)

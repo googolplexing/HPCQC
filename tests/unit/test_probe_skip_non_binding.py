@@ -174,3 +174,30 @@ def test_corpus_covers_both_families_at_the_campaign_point():
     fams = {family for _m, n, family, _meas, _p in _MEASURED_VMHWM_CORPUS
             if n == 10}
     assert {"autocorr", "echo"} <= fams
+
+
+# ── RED-VERIFY-PROBE-SKIP-CLOSURE §2(b): runtime corpus-gate ─────────────────
+
+def test_peak_hi_corpus_validated_campaign_shape_true():
+    assert wc.peak_hi_corpus_validated({"statevector"}, 10) is True
+    assert wc.peak_hi_corpus_validated(set(), 10) is True   # defaults statevector
+
+
+def test_peak_hi_corpus_validated_unmeasured_shapes_false():
+    # n>10 (never measured) and density_matrix (never measured) must NOT count as
+    # validated -> the engine falls through to the probe at those shapes.
+    assert wc.peak_hi_corpus_validated({"statevector"}, 14) is False
+    assert wc.peak_hi_corpus_validated({"density_matrix"}, 10) is False
+    # mixed: any unvalidated method present -> not validated.
+    assert wc.peak_hi_corpus_validated(
+        {"statevector", "density_matrix"}, 10) is False
+
+
+def test_every_validated_shape_is_backed_by_measured_corpus():
+    # The runtime gate must not claim a shape the soundness corpus does not
+    # actually cover with peak_hi >= measured (keeps the gate and corpus in sync).
+    for method, n in wc.CORPUS_VALIDATED_PEAK_HI_SHAPES:
+        rows = [meas for m, nn, _f, meas, _p in _MEASURED_VMHWM_CORPUS
+                if m == method and nn == n]
+        assert rows, f"validated shape ({method},{n}) has no measured corpus row"
+        assert wc.conservative_peak_hi({method}, n) >= max(rows)
