@@ -2956,10 +2956,17 @@ class SweepEngine:
             safe_mem_bytes=safe_mem,
             peak_hi_bytes=_peak_hi,
         )
+        # Test-only escape hatch for the RED-DIRECTIVE-PROBE-SKIP §6 A/B gate:
+        # HPCQC_FORCE_PROBE=1 forces the probe even when the skip condition
+        # holds, so the harness can compare skip vs probe on IDENTICAL config and
+        # prove the cap change is physics-invariant. Unset in production.
+        _do_skip = (
+            _skip.skip and os.environ.get("HPCQC_FORCE_PROBE") != "1"
+        )
         probe_idxs: list[int] = []
         _seen_probe_fams: set[str] = set()
         probe_results: list[WorkerResult] = []
-        if not _skip.skip:
+        if not _do_skip:
             for _i, _u in enumerate(work_units):
                 if (_u.env_source == "device_calibrated"
                         and _u.observable_name not in _seen_probe_fams):
@@ -2977,7 +2984,7 @@ class SweepEngine:
             # the main pool. Surface via the standard error-aggregation path.
             worker_results: list[WorkerResult] = probe_results
         else:
-            if _skip.skip:
+            if _do_skip:
                 # Probe skipped: feed the conservative bound; compute_worker_cap
                 # returns core_units_ceiling (memory cannot bind). D4(a) cannot
                 # fire here (mem_term_lo >= core_units_ceiling >= 1 => peak_hi <=
@@ -3034,7 +3041,7 @@ class SweepEngine:
                 f"usable_cores_physical={usable_cores}; cpu_workers={cpu_workers}; "
                 f"mem_term={decision.mem_term}."
             )
-            if _skip.skip:
+            if _do_skip:
                 print(
                     f"    BYO: probe SKIPPED [skip:mem_non_binding] — memory "
                     f"cannot bind the cap: safe_mem // peak_hi = "

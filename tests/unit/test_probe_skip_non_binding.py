@@ -121,38 +121,56 @@ def test_no_skip_when_safe_mem_unavailable():
 
 # ── peak_hi SOUNDNESS over the corpus (load-bearing) ────────────────────────
 
-# (method, n, family, measured_VmHWM_bytes). The bound must dominate EVERY row.
-# Only the Red-verified 10q device-cal point is banked so far; the rest are TODO
-# (paste from evidence/W1/ over the skipping n range, heaviest family included).
+# Banked device-calibrated VmHWM measurements (the per_unit_peak the live probe
+# recorded), all at n=10 — the framework's operating size; no larger-n sweep has
+# run, so the skipping range in production is 10q. peak_hi must dominate the MAX
+# (1.32 GiB). The echo runs (f5a/p3) are LIGHTER than the autocorr canary,
+# confirming echo's extra gates cost time, not state memory
+# (RED-DIRECTIVE-PROBE-SKIP §5) — the heaviest-family obligation is met by the
+# 1.32 GiB autocorr point. (method, n, family, measured_bytes, provenance)
 _MEASURED_VMHWM_CORPUS = [
-    # RED-RESP-W1-CAP-VERIFY §1.4: ~1.32 GiB device-cal (statevector) at 10q.
-    ("statevector", 10, "echo", int(1.32 * G)),
-    ("statevector", 10, "autocorr", int(1.32 * G)),
-    # TODO: extend across the skipping n range + both families from evidence/W1/.
+    ("statevector", 10, "autocorr", int(1.32 * G),
+     "job 18924351 evidence/W1/w1_3-canary-clean"),
+    ("statevector", 10, "autocorr", int(1.30 * G),
+     "job 18938950 evidence/W1/d5-multiwave"),
+    ("statevector", 10, "autocorr", int(1.28 * G),
+     "job 18943612 evidence/W1/gate2-fail-18943612"),
+    ("statevector", 10, "echo", int(0.99 * G),
+     "job 18984339 evidence/slurm_logs/f5a_val"),
+    ("statevector", 10, "echo", int(0.70 * G),
+     "job 18986846 evidence/slurm_logs/p3_single"),
+    ("statevector", 10, "echo", int(0.69 * G),
+     "job 18984820 evidence/slurm_logs/f5a_hi"),
+    # No n>10 measurements exist (no larger-n sweep has run). When one is run,
+    # capture its VmHWM and add it here; until then the skip is corpus-validated
+    # only at n=10, and the binding-regime probe is the backstop at any n where
+    # peak_hi has not been corpus-checked.
 ]
 
 
 def test_peak_hi_dominates_measured_corpus():
-    for method, n, family, measured in _MEASURED_VMHWM_CORPUS:
+    for method, n, family, measured, prov in _MEASURED_VMHWM_CORPUS:
         bound = wc.conservative_peak_hi({method}, n)
         assert bound >= measured, (
             f"peak_hi({method},{n})={bound / G:.2f} GiB < measured "
-            f"{measured / G:.2f} GiB ({family}) — bound is NOT conservative; "
-            f"bump FIXED_OVERHEAD/STATE_FACTOR before any skip on this shape"
+            f"{measured / G:.2f} GiB ({family}, {prov}) — bound is NOT "
+            f"conservative; bump FIXED_OVERHEAD/STATE_FACTOR before any skip "
+            f"on this shape"
         )
 
 
 def test_soundness_check_actually_catches_an_underbound():
-    # Self-check (non-vacuity of the gate above): a peak_hi that is BELOW a
-    # corpus measurement must be detectable as a failure, not silently pass.
-    method, n, _family, measured = _MEASURED_VMHWM_CORPUS[0]
+    # Self-check (non-vacuity of the gate above): a peak_hi BELOW a corpus
+    # measurement must be detectable as a failure, not silently pass.
+    method, n, _family, measured, _prov = _MEASURED_VMHWM_CORPUS[0]
     underbound = measured - 1
     assert not (underbound >= measured)               # the gate's predicate
     assert wc.conservative_peak_hi({method}, n) >= measured  # real bound passes
 
 
-def test_corpus_covers_at_least_the_campaign_point():
-    # Until the full corpus is pasted, assert the campaign shape (10q) is
-    # covered so the gate is not vacuously empty.
-    assert any(n == 10 and method == "statevector"
-               for method, n, _f, _m in _MEASURED_VMHWM_CORPUS)
+def test_corpus_covers_both_families_at_the_campaign_point():
+    # The skipping shape is 10q; assert BOTH observable families are represented
+    # so the heaviest-family soundness obligation is not vacuously met.
+    fams = {family for _m, n, family, _meas, _p in _MEASURED_VMHWM_CORPUS
+            if n == 10}
+    assert {"autocorr", "echo"} <= fams
