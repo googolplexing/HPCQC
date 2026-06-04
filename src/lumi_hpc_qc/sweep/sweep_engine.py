@@ -2737,7 +2737,7 @@ class SweepEngine:
                     # with placement_id + physical_qubit_set re-stamped. Off by
                     # default -> per-placement compute, byte-identical to pre-C.
                     if (representative.byo_noiseless_dedup
-                            and env.source == "noiseless"
+                            and env.name == "noiseless"
                             and placement.placement_id
                             != placements[0].placement_id):
                         continue
@@ -3095,7 +3095,7 @@ class SweepEngine:
                 "calibration_set_id": cal_id,
             }
             if (representative.byo_noiseless_dedup
-                    and r.env_source == "noiseless"):
+                    and r.env_name == "noiseless"):
                 # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C): broadcast
                 # the placement-INDEPENDENT noiseless payload to every placement,
                 # RE-STAMPING placement_id + physical_qubit_set per placement (the
