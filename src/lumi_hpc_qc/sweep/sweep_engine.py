@@ -2938,39 +2938,67 @@ class SweepEngine:
         # device-cal unit contributes no probe; if NO family has one (all-
         # noiseless), fall back to the C1 static constant below. Probe units are
         # real work, joined to the results (not recomputed).
+        # RED-DIRECTIVE-PROBE-SKIP-WHEN-NON-BINDING: skip the serial Pool(1)
+        # probe when memory provably cannot bind the cap. peak_hi is a
+        # conservative upper bound on one device-cal unit's VmHWM for this
+        # (method, n); if even that bound leaves memory non-binding
+        # (safe_mem // peak_hi >= core_units_ceiling) the probe's result cannot
+        # change the cap, so it is not run. OOM-safe by construction (see
+        # decide_probe_skip). safe_mem unknown -> not skipped (probe / D4 raise).
+        _peak_hi = wc.conservative_peak_hi(
+            {e.method for e in representative.noise_configs},
+            representative.qubit_size,
+        )
+        _skip = wc.decide_probe_skip(
+            cpu_workers=cpu_workers,
+            num_units=num_units,
+            usable_cores_physical=usable_cores,
+            safe_mem_bytes=safe_mem,
+            peak_hi_bytes=_peak_hi,
+        )
         probe_idxs: list[int] = []
         _seen_probe_fams: set[str] = set()
-        for _i, _u in enumerate(work_units):
-            if (_u.env_source == "device_calibrated"
-                    and _u.observable_name not in _seen_probe_fams):
-                _seen_probe_fams.add(_u.observable_name)
-                probe_idxs.append(_i)
         probe_results: list[WorkerResult] = []
-        if probe_idxs:
-            with ctx.Pool(processes=1) as ppool:
-                probe_results = list(
-                    ppool.map(run_one_unit, [work_units[i] for i in probe_idxs])
-                )
+        if not _skip.skip:
+            for _i, _u in enumerate(work_units):
+                if (_u.env_source == "device_calibrated"
+                        and _u.observable_name not in _seen_probe_fams):
+                    _seen_probe_fams.add(_u.observable_name)
+                    probe_idxs.append(_i)
+            if probe_idxs:
+                with ctx.Pool(processes=1) as ppool:
+                    probe_results = list(
+                        ppool.map(run_one_unit,
+                                  [work_units[i] for i in probe_idxs])
+                    )
 
         if any(r.error for r in probe_results):
             # A probe failed (e.g. a resurfaced device-cal crash): do NOT spend
             # the main pool. Surface via the standard error-aggregation path.
             worker_results: list[WorkerResult] = probe_results
         else:
-            _peaks = [r.peak_rss_kib * 1024 for r in probe_results
-                      if r.peak_rss_kib > 0]
-            if _peaks:
-                per_unit_peak = max(_peaks)
-                peak_source = (
-                    "probe:device_calibrated_VmHWM" if len(probe_idxs) == 1
-                    else "probe:device_calibrated_VmHWM_per_family_max"
-                )
-            elif not probe_idxs:
-                per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
-                peak_source = "c1_fallback:no_device_cal_unit"
+            if _skip.skip:
+                # Probe skipped: feed the conservative bound; compute_worker_cap
+                # returns core_units_ceiling (memory cannot bind). D4(a) cannot
+                # fire here (mem_term_lo >= core_units_ceiling >= 1 => peak_hi <=
+                # safe_mem).
+                per_unit_peak = _skip.peak_hi_bytes
+                peak_source = _skip.peak_source
             else:
-                per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
-                peak_source = "c1_fallback:probe_returned_no_vmhwm"
+                _peaks = [r.peak_rss_kib * 1024 for r in probe_results
+                          if r.peak_rss_kib > 0]
+                if _peaks:
+                    per_unit_peak = max(_peaks)
+                    peak_source = (
+                        "probe:device_calibrated_VmHWM" if len(probe_idxs) == 1
+                        else "probe:device_calibrated_VmHWM_per_family_max"
+                    )
+                elif not probe_idxs:
+                    per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                    peak_source = "c1_fallback:no_device_cal_unit"
+                else:
+                    per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                    peak_source = "c1_fallback:probe_returned_no_vmhwm"
 
             # Resolve the cap. Raises ForcedSerialError on D4(a)/(b) (fail-loud).
             decision = wc.compute_worker_cap(
@@ -3006,6 +3034,15 @@ class SweepEngine:
                 f"usable_cores_physical={usable_cores}; cpu_workers={cpu_workers}; "
                 f"mem_term={decision.mem_term}."
             )
+            if _skip.skip:
+                print(
+                    f"    BYO: probe SKIPPED [skip:mem_non_binding] — memory "
+                    f"cannot bind the cap: safe_mem // peak_hi = "
+                    f"{safe_mem // _peak_hi} >= core_units_ceiling="
+                    f"{_skip.core_units_ceiling} (peak_hi="
+                    f"{_peak_hi / wc.GIB:.2f} GiB, conservative bound). "
+                    f"No serial probe wave run."
+                )
 
             # ── Main dispatch over the REMAINING units (the probe result is
             #    reused, not recomputed). The probe ran-then-exited before this

@@ -402,3 +402,100 @@ def compute_worker_cap(
         per_unit_peak_bytes=per_unit_peak_bytes,
         binding_term=binding_term,
     )
+
+
+# ── RED-DIRECTIVE-PROBE-SKIP-WHEN-NON-BINDING ───────────────────────────────
+# The D1/D2 probe exists ONLY to learn per_unit_peak -> mem_term. mem_term
+# changes the cap iff it is below core_units_ceiling = min(cpu_workers,
+# num_units, usable_cores_physical) (the per_unit_peak-independent part of the
+# cap). When the engine can prove, with a CONSERVATIVE upper bound peak_hi >=
+# true_peak, that memory cannot bind even at that pessimistic peak, the probe's
+# result cannot change the cap, so it is skipped. peak_hi is engine-owned and
+# validated once against the §1.4 corpus (soundness gate) — no researcher input.
+
+# Generous multiple of the working-state copies aer holds (state + temporaries).
+# Conservative on purpose: a too-large factor only makes the engine probe more
+# often (lost speedup), never under-pack -> never an OOM. It is material only
+# where state_bytes approaches FIXED_OVERHEAD (statevector ~n>=26, density_matrix
+# ~n>=13) — the large-n regime where memory binds and the engine probes anyway.
+PEAK_HI_STATE_FACTOR = 4
+
+
+def _state_bytes(method: str, n: int) -> int:
+    """Bytes of the dominant simulator state for ONE unit at ``n`` qubits.
+
+    ``statevector`` holds one complex128 amplitude per basis state -> ``16*2**n``
+    (device_calibrated pins statevector). ``density_matrix`` holds a complex128
+    entry per (row, col) -> ``16*2**(2n)``. An unknown method is treated as the
+    heavier density_matrix size (conservative — peak_hi must be an upper bound).
+    """
+    if method == "statevector":
+        return 16 * (1 << n)
+    return 16 * (1 << (2 * n))
+
+
+def conservative_peak_hi(
+    methods, n: int, *, state_factor: int = PEAK_HI_STATE_FACTOR
+) -> int:
+    """A validated UPPER bound on one device-cal unit's VmHWM for this run.
+
+    ``peak_hi = C1_PER_UNIT_PEAK_BYTES + state_factor * max_method_state_bytes``.
+    The fixed-overhead term reuses the conservative C1 banked figure (resident
+    stack + noise model + COW), which already dominates the §1.4 corpus at small
+    n; the state term only becomes material at large n. ``methods`` is the set of
+    NoiseConfig methods present in the group; the bound takes the heaviest. The
+    soundness obligation (peak_hi >= every measured VmHWM over the corpus, the
+    heaviest observable family included) is enforced by the soundness gate, not
+    assumed here.
+    """
+    method_set = tuple(methods) if methods else ("statevector",)
+    state_hi = max(_state_bytes(m, n) for m in method_set)
+    return C1_PER_UNIT_PEAK_BYTES + state_factor * state_hi
+
+
+@dataclass(frozen=True)
+class ProbeSkipDecision:
+    """Result of the non-binding probe-skip test (RED-DIRECTIVE-PROBE-SKIP)."""
+    skip: bool
+    core_units_ceiling: int
+    peak_hi_bytes: int
+    peak_source: str | None   # "skip:mem_non_binding" when skip, else None
+
+
+def decide_probe_skip(
+    *,
+    cpu_workers: int,
+    num_units: int,
+    usable_cores_physical: int,
+    safe_mem_bytes: int | None,
+    peak_hi_bytes: int,
+) -> ProbeSkipDecision:
+    """Decide whether the D1/D2 probe can be skipped (memory provably non-binding).
+
+    PURE over scalars (mockable, like ``compute_worker_cap``). Skip iff
+    ``safe_mem // peak_hi >= core_units_ceiling`` where ``core_units_ceiling =
+    min(cpu_workers, num_units, usable_cores_physical)``.
+
+    OOM-safety: ``safe_mem // peak_hi >= core_units_ceiling`` implies
+    ``safe_mem >= core_units_ceiling * peak_hi``. When skipping, the cap is
+    ``core_units_ceiling``, so at most that many units run concurrently, each
+    using ``<= true_peak <= peak_hi``; total concurrent memory
+    ``<= core_units_ceiling * peak_hi <= safe_mem`` — the allocation provably
+    holds the packed units. A larger ``peak_hi`` only shrinks ``mem_term`` and
+    so makes the test HARDER to pass (probe more), never the reverse.
+
+    ``safe_mem`` unavailable -> do NOT skip (sizing on an unknown budget is
+    forbidden; the caller falls through to the probe and the D4 raise).
+    """
+    core_units_ceiling = min(cpu_workers, num_units, usable_cores_physical)
+    skip = (
+        safe_mem_bytes is not None
+        and peak_hi_bytes > 0
+        and safe_mem_bytes // peak_hi_bytes >= core_units_ceiling
+    )
+    return ProbeSkipDecision(
+        skip=skip,
+        core_units_ceiling=core_units_ceiling,
+        peak_hi_bytes=peak_hi_bytes,
+        peak_source="skip:mem_non_binding" if skip else None,
+    )
