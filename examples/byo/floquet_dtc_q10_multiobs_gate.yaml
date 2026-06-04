@@ -1,0 +1,45 @@
+# Multi-observable fan-out + dedup gate fixture
+# (RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP).
+#
+# The 8-unit gate's 2 DETERMINISTIC manual placements + small grid + 2 seeds,
+# but TWO observable families (autocorr + echo) and both envs, so it exercises
+# Patch B (un-fold + (env,observable) strata + per-family-max cap) AND Patch C
+# (noiseless placement-dedup broadcast/re-stamp). Deterministic manual
+# placements -> no solver variability -> a clean byte-identity comparison.
+#
+# Units (dedup off): 2 obs x 2 placements x 2 seeds x 2 envs = 16.
+# Units (dedup on):  device-cal 2x2x2=8 + noiseless (2 obs x 2 seeds)=4 -> 12.
+#
+# byo_noiseless_dedup is NOT pinned here: it is false by default (the fan-out /
+# reference comparison), and the §5.4 dedup gate writes a variant with it true.
+# `derived: ratio` is intentionally omitted (engine increment 4, not landed);
+# the two observable ARMS are what the flat-dispatch patches target.
+
+sweep:
+  output_dir: sweep_output/multiobs_gate   # overridden per-run by the gate
+
+  experiments:
+    - type: byo_circuit
+      label: multiobs_gate
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      observables:
+        - {name: autocorr, function: build_circuit}
+        - {name: echo,     function: build_circuit_echo}
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid: {num_kicks: {range: [0, 20]}}        # 0..19 — small grid, fast gate
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      # TWO deterministic manual placements (HIGH-T2 / LOW-T2 chains), shared by
+      # both observable families (the shared-solve guard pairs them per seed).
+      physical_qubits:
+        - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]   # HIGH-T2
+        - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]  # LOW-T2
+      seed_list: [0, 1]
+      shots: 1000
+      noise_configs: [noiseless, device_calibrated]
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
