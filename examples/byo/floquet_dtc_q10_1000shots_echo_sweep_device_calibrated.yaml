@@ -1,0 +1,141 @@
+# Copyright (c) 2026 Michael Mucciardi
+# SPDX-License-Identifier: SSPL-1.0
+#
+# Standalone AK10 echo fidelity study (SPEC-002 §7.5, DEBT D7).
+# Faithful replication of Floquet_DTC_AK10_echo.py as a BYO circuit family.
+#
+# AK10 parameters reproduced exactly:
+#   num_qubits        = 10
+#   num_max_kicks     = 40        -> grid num_kicks range [0, 40) = 0..39
+#   num_shots         = 100
+#   num_gate_instances= 10        -> seed_list 0..9 (disorder from JSON below)
+#   epsilon           = 0.03
+#   Initial_state     = 3         (polarized, all-zero init)
+#   Jz_on/hz_on=True, Jz_frozen=False (random Jzz in [-1.5pi,-0.5pi],
+#                                      random hz in [-pi,pi])
+#   backend_code      = 1 (AerSimulator, noiseless)  -> 'noiseless' arm
+#
+# THIS IS THE BANKED CAMPAIGN CONFIG: 12 placements (solver top-12), autocorr +
+# echo, 10 seeds, noiseless + device_calibrated, noiseless placement-dedup ON.
+# A+B+C accepted in RED-SIGNOFF-ABC-AND-DEDUP-DISCRIMINATOR (HEAD 6412b87).
+#
+# This config defines TWO observables (autocorrelator + echo). The multi-
+# observable flat-dispatch surface ('observables:') is LANDED and accepted
+# (A+B+C), so this runs as ONE cross-observable sweep. The derived ratio
+# A(0)A(T)/A_0 (DESIGN-MULTI-OBSERVABLE-BYO-ECHO-v1_0.md, Option A) is engine
+# increment 4 and is NOT landed -- the 'derived:' block is commented out below
+# and the ratio is computed OFFLINE from the two banked arms:
+#   A_0 = sqrt(|echo|);  headline DTC signal = autocorr / A_0.
+# (The Option B split-into-two-experiments fallback at the bottom is no longer
+# required for the arms -- 'observables:' runs them in one sweep -- but is kept
+# as the offline-join reference for the ratio.)
+#
+# NOTE: This is a STANDALONE study, NOT the D3.5 gate-2 comparison. The banked
+# device-cal reference (60k/1000s/40seed, SeedSequence RNG, no echo arm) is a
+# different experiment. Disorder here uses AK10's default_rng(1234) stream
+# (frozen into floquet_disorder_q10_echo_ak10.json), deliberately NOT the
+# repo's SeedSequence convention, to match AK10's exact numbers.
+
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_echo_ak10
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      observables:
+        - {name: autocorr, function: build_circuit}
+        - {name: echo,     function: build_circuit_echo}
+      # derived: NOT landed (engine increment 4 -- see TODO(derived:ratio) in
+      # sweep_engine.py). The engine silently ignores this key today, so it is
+      # commented out to keep the banked artifact honest; compute the ratio
+      # offline from the two arms (A_0 = sqrt(|echo|); signal = autocorr / A_0).
+      #   - {name: ratio, expr: "autocorr / sqrt(abs(echo))"}
+      # ── PLACEMENT SOURCING ────────────────────────────────────────────────
+      # CAMPAIGN SETTING: solver top-12 by max_fidelity.
+      #   `find_all_placements(strategy="max_fidelity")[:12]` -> 12 placements.
+      # CAVEAT (scientific): on calibration 08c3c70f these 12 CLUSTER into ~one
+      # best-calibrated patch -- the top-3 already share 8/10 qubits
+      # (BLUE-PROPOSAL-WORKSTREAM-A §3). So this is deep statistics on the best
+      # region, NOT spatially-independent device coverage. Chosen deliberately.
+      placement: top_12
+      #
+      # ── ALTERNATIVE SOURCING MODES (use EXACTLY ONE; they are mutually
+      #    exclusive -- placement / placement_diversity / physical_qubits) ──
+      #
+      # (a) GENUINELY INDEPENDENT REGIONS (Red-approved selector, RULING §9.4).
+      #     Replace `placement: top_12` above with the block below. The disjoint
+      #     device-max for a 10-qubit chain on 08c3c70f is 3, so `count: auto`
+      #     resolves to 3 spatially-disjoint chains. (count: 12 would FAIL LOUD
+      #     -- the device cannot supply 12 disjoint 10-qubit chains; this was
+      #     verified in BLUE-FINDING-WORKSTREAM-A.)
+      #   placement_diversity: {strategy: disjoint, count: auto}   # -> 3 regions
+      #
+      # (b) MANUAL T2-SPREAD CHAINS (the multiobs-gate axis: device quality, not
+      #     spatial independence -- overlap is irrelevant here). Replace
+      #     `placement: top_12` with explicit chains spanning the T2 range, e.g.:
+      #   physical_qubits:
+      #     - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]   # HIGH-T2
+      #     - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]  # LOW-T2
+      #     # ... add the remaining chains across the quality range.
+      # ──────────────────────────────────────────────────────────────────────
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03
+      grid:
+        num_kicks: {range: [0, 40]}        # stop-exclusive -> 0..39 (AK10 num_max_kicks=40)
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # AK10 num_gate_instances=10
+      shots: 1000                                 # AK10 num_shots=100
+      # CFG-1 (commit 8903f1d) threads experiment-level shots end-to-end
+      # (precedence: experiment shots > env.shots > DEFAULT_SMOKE_SHOTS), so
+      # this 'shots: 100' IS honored on the BYO path now -- the old
+      # byo_shots=1000 hardcode is gone. Verify per-result shots==100 before
+      # the VIP run. NOTE: AK10 itself is AerSimulator/noiseless only; the
+      # device_calibrated arm below is an HPCQC extension (Q50 noise), not part
+      # of AK10 -- this 'shots' pins it to 100 as well.
+      noise_configs: [device_calibrated]
+      # Noiseless arm is placement-independent: one solve is broadcast and per-
+      # placement re-stamped across all 12 placements (Patch C; discriminator
+      # env.name=="noiseless", which correctly EXCLUDES topology_noiseless --
+      # ruled sound in RED-SIGNOFF). Collapses ~12x redundant noiseless work on
+      # this arm. ON for banking.
+      byo_noiseless_dedup: true
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json
+
+# ──────────────────────────────────────────────────────────────────────────
+# OPTION B FALLBACK (runnable on the CURRENT engine, no multi-observable code):
+# Split the two observables into two independent single-observable experiments
+# and compute the ratio offline. Uncomment to use before increments 3-5 land.
+# The autocorr and echo experiments MUST share seed_list, disorder file, grid,
+# shots, calibration, and noise_configs so the offline join is well-defined.
+#
+# sweep:
+#   experiments:
+#     - type: byo_circuit
+#       label: floquet_dtc_echo_ak10_autocorr
+#       circuit_script: examples/byo/floquet_dtc_echo.py
+#       circuit_function: build_circuit
+#       fixed: {num_qubits: 10, epsilon: 0.03}
+#       grid: {num_kicks: {range: [0, 40]}}
+#       disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+#       disorder_gates: [rz, rzz]
+#       seed_list: [0,1,2,3,4,5,6,7,8,9]
+#       shots: 100
+#       noise_configs: [noiseless, device_calibrated]
+#     - type: byo_circuit
+#       label: floquet_dtc_echo_ak10_echo
+#       circuit_script: examples/byo/floquet_dtc_echo.py
+#       circuit_function: build_circuit_echo
+#       fixed: {num_qubits: 10, epsilon: 0.03}
+#       grid: {num_kicks: {range: [0, 40]}}
+#       disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+#       disorder_gates: [rz, rzz]
+#       seed_list: [0,1,2,3,4,5,6,7,8,9]
+#       shots: 100
+#       noise_configs: [noiseless, device_calibrated]
+#   calibrations:
+#     - examples/q50_calibration_20260524_08c3c70f.json
