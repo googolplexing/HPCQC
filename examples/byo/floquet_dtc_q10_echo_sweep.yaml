@@ -15,14 +15,20 @@
 #                                      random hz in [-pi,pi])
 #   backend_code      = 1 (AerSimulator, noiseless)  -> 'noiseless' arm
 #
-# This config defines TWO observables (autocorrelator + echo) and ONE derived
-# ratio A(0)A(T)/A_0, per the multi-observable design
-# (DESIGN-MULTI-OBSERVABLE-BYO-ECHO-v1_0.md, Option A). The 'observables',
-# 'derived' surface requires the staged engine increments 3-5 from that design;
-# until those land, this YAML is the executable spec the increments are
-# verified against. The single-observable arms can be run TODAY by splitting
-# into two experiments (Option B fallback) -- see the commented block at the
-# bottom.
+# THIS IS THE BANKED CAMPAIGN CONFIG: 12 placements (solver top-12), autocorr +
+# echo, 10 seeds, noiseless + device_calibrated, noiseless placement-dedup ON.
+# A+B+C accepted in RED-SIGNOFF-ABC-AND-DEDUP-DISCRIMINATOR (HEAD 6412b87).
+#
+# This config defines TWO observables (autocorrelator + echo). The multi-
+# observable flat-dispatch surface ('observables:') is LANDED and accepted
+# (A+B+C), so this runs as ONE cross-observable sweep. The derived ratio
+# A(0)A(T)/A_0 (DESIGN-MULTI-OBSERVABLE-BYO-ECHO-v1_0.md, Option A) is engine
+# increment 4 and is NOT landed -- the 'derived:' block is commented out below
+# and the ratio is computed OFFLINE from the two banked arms:
+#   A_0 = sqrt(|echo|);  headline DTC signal = autocorr / A_0.
+# (The Option B split-into-two-experiments fallback at the bottom is no longer
+# required for the arms -- 'observables:' runs them in one sweep -- but is kept
+# as the offline-join reference for the ratio.)
 #
 # NOTE: This is a STANDALONE study, NOT the D3.5 gate-2 comparison. The banked
 # device-cal reference (60k/1000s/40seed, SeedSequence RNG, no echo arm) is a
@@ -38,9 +44,39 @@ sweep:
       observables:
         - {name: autocorr, function: build_circuit}
         - {name: echo,     function: build_circuit_echo}
-      derived:
-        # A_0 = sqrt(|echo|); headline DTC signal = autocorr / A_0.
-        - {name: ratio, expr: "autocorr / sqrt(abs(echo))"}
+      # derived: NOT landed (engine increment 4 -- see TODO(derived:ratio) in
+      # sweep_engine.py). The engine silently ignores this key today, so it is
+      # commented out to keep the banked artifact honest; compute the ratio
+      # offline from the two arms (A_0 = sqrt(|echo|); signal = autocorr / A_0).
+      #   - {name: ratio, expr: "autocorr / sqrt(abs(echo))"}
+      # ── PLACEMENT SOURCING ────────────────────────────────────────────────
+      # CAMPAIGN SETTING: solver top-12 by max_fidelity.
+      #   `find_all_placements(strategy="max_fidelity")[:12]` -> 12 placements.
+      # CAVEAT (scientific): on calibration 08c3c70f these 12 CLUSTER into ~one
+      # best-calibrated patch -- the top-3 already share 8/10 qubits
+      # (BLUE-PROPOSAL-WORKSTREAM-A §3). So this is deep statistics on the best
+      # region, NOT spatially-independent device coverage. Chosen deliberately.
+      placement: top_12
+      #
+      # ── ALTERNATIVE SOURCING MODES (use EXACTLY ONE; they are mutually
+      #    exclusive -- placement / placement_diversity / physical_qubits) ──
+      #
+      # (a) GENUINELY INDEPENDENT REGIONS (Red-approved selector, RULING §9.4).
+      #     Replace `placement: top_12` above with the block below. The disjoint
+      #     device-max for a 10-qubit chain on 08c3c70f is 3, so `count: auto`
+      #     resolves to 3 spatially-disjoint chains. (count: 12 would FAIL LOUD
+      #     -- the device cannot supply 12 disjoint 10-qubit chains; this was
+      #     verified in BLUE-FINDING-WORKSTREAM-A.)
+      #   placement_diversity: {strategy: disjoint, count: auto}   # -> 3 regions
+      #
+      # (b) MANUAL T2-SPREAD CHAINS (the multiobs-gate axis: device quality, not
+      #     spatial independence -- overlap is irrelevant here). Replace
+      #     `placement: top_12` with explicit chains spanning the T2 range, e.g.:
+      #   physical_qubits:
+      #     - [QB8, QB16, QB15, QB23, QB24, QB25, QB17, QB18, QB26, QB27]   # HIGH-T2
+      #     - [QB34, QB35, QB43, QB49, QB50, QB54, QB53, QB52, QB48, QB47]  # LOW-T2
+      #     # ... add the remaining chains across the quality range.
+      # ──────────────────────────────────────────────────────────────────────
       fixed:
         num_qubits: 10
         epsilon: 0.03
@@ -61,6 +97,12 @@ sweep:
       # device_calibrated arm below is an HPCQC extension (Q50 noise), not part
       # of AK10 -- this 'shots' pins it to 100 as well.
       noise_configs: [noiseless, device_calibrated]
+      # Noiseless arm is placement-independent: one solve is broadcast and per-
+      # placement re-stamped across all 12 placements (Patch C; discriminator
+      # env.name=="noiseless", which correctly EXCLUDES topology_noiseless --
+      # ruled sound in RED-SIGNOFF). Collapses ~12x redundant noiseless work on
+      # this arm. ON for banking.
+      byo_noiseless_dedup: true
   calibrations:
     - examples/q50_calibration_20260524_08c3c70f.json
 
