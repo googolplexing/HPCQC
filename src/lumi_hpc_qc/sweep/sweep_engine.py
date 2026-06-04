@@ -216,6 +216,14 @@ class SweepExperimentConfig:
     # NOTE: once `derived: ratio` (increment 4) lands, a declared ratio MUST force
     # fail-loud regardless of this flag (ratio + opt-out is incoherent -> raise).
     observables_independent: bool = False
+    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C): noiseless placement-
+    # dedup. When true, the noiseless arm of a BYO group is computed ONCE per
+    # (family, seed) on the canonical placement and broadcast to every placement
+    # at merge, re-stamping only placement_id + physical_qubit_set (the noiseless
+    # payload is placement-independent; the record is not). Default false =
+    # per-placement compute, byte-identical to pre-C. Gated by the §5.4 full-
+    # group byte-identity proof (grid + LHS).
+    byo_noiseless_dedup: bool = False
     fixed: dict[str, Any] = field(default_factory=dict)
     disorder: dict[str, Any] = field(default_factory=dict)
     signature_check: bool = True
@@ -308,6 +316,9 @@ class SweepTask:
     # RED-RULING-…-(A): rides from ExperimentSpec to the shared-solve guard in
     # _execute_byo_group. See ExperimentSpec.observables_independent.
     observables_independent: bool = False
+    # RED-RULING-…-(C): rides from ExperimentSpec; consulted in _execute_byo_group
+    # (build skips non-canonical noiseless; merge broadcasts + re-stamps).
+    byo_noiseless_dedup: bool = False
     fixed_params: dict[str, Any] = field(default_factory=dict)
     disorder_instance: dict[str, Any] = field(default_factory=dict)
     disorder_gates: tuple[str, ...] = ("rz", "rzz")
@@ -606,6 +617,7 @@ def _expand_byo_experiment(
                         circuit_function=obs_func,
                         observable_name=obs_name,
                         observables_independent=exp.observables_independent,
+                        byo_noiseless_dedup=exp.byo_noiseless_dedup,
                         fixed_params=dict(exp.fixed),
                         disorder_instance=instance,
                         disorder_gates=gate_names,
@@ -923,6 +935,9 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             ),
             observables_independent=exp_dict.get(
                 "observables_independent", False
+            ),
+            byo_noiseless_dedup=exp_dict.get(
+                "byo_noiseless_dedup", False
             ),
             fixed=exp_dict.get("fixed", {}),
             disorder=exp_dict.get("disorder", {}),
@@ -2715,6 +2730,17 @@ class SweepEngine:
                 # seed (preserved at expansion). Both arms see the SAME dict.
                 disorder_instance = dict(seed_tasks_sorted[0].disorder_instance)
                 for env in envs:
+                    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C):
+                    # noiseless dedup -- compute the placement-INDEPENDENT
+                    # noiseless arm ONCE on the canonical placement
+                    # (placements[0]); the merge broadcasts it to every placement
+                    # with placement_id + physical_qubit_set re-stamped. Off by
+                    # default -> per-placement compute, byte-identical to pre-C.
+                    if (representative.byo_noiseless_dedup
+                            and env.source == "noiseless"
+                            and placement.placement_id
+                            != placements[0].placement_id):
+                        continue
                     # CFG-1 precedence: experiment shots > env.shots >
                     # DEFAULT_SMOKE_SHOTS. noiseless's intrinsic shots=0 is
                     # patched up to DEFAULT_SMOKE_SHOTS so it samples counts
@@ -3022,7 +3048,7 @@ class SweepEngine:
         #    pre-W1 serial path's output. ──
         byo_results: list[dict] = []
         for r in worker_results:
-            byo_results.append({
+            rec = {
                 "seed": r.seed,
                 "script": representative.circuit_script,
                 # D7 increment 2 / RED-RULING-…(B): which circuit family this
@@ -3067,7 +3093,25 @@ class SweepEngine:
                 # self._cal_cache[cal_path] (@~2026) — parent-side, so it is not
                 # round-tripped through WorkerArgs/WorkerResult per unit.
                 "calibration_set_id": cal_id,
-            })
+            }
+            if (representative.byo_noiseless_dedup
+                    and r.env_source == "noiseless"):
+                # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C): broadcast
+                # the placement-INDEPENDENT noiseless payload to every placement,
+                # RE-STAMPING placement_id + physical_qubit_set per placement (the
+                # payload is placement-independent; the record is not). This
+                # reproduces the per-placement noiseless records a non-deduped run
+                # would have written -- the §5.4 full-group byte-identity target.
+                for placement in placements:
+                    bcopy = dict(rec)
+                    bcopy["placement_id"] = placement.placement_id
+                    bcopy["physical_qubit_set"] = [
+                        placement.qubit_mapping[i]
+                        for i in range(len(placement.qubit_mapping))
+                    ]
+                    byo_results.append(bcopy)
+            else:
+                byo_results.append(rec)
         self._timing.setdefault("byo_exec_s", 0.0)
         self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
         # Progress accounting: each (seed, placement, env) entry is one
