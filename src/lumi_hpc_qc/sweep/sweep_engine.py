@@ -2105,10 +2105,15 @@ class SweepEngine:
                 # opaque downstream (run() unpacks ham,topo,cal,_params_key and
                 # never inspects _params_key), so a one-arm sweep is byte-
                 # identical (one group either way).
-                byo_params_key = (
-                    ("__observable__", task.observable_name),
-                    ("__circuit_function__", task.circuit_function),
-                ) + params_key
+                # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): un-fold
+                # the observable / circuit_function from the BYO group key so one
+                # group carries ALL observable families of an experiment, and
+                # _execute_byo_group flat-dispatches them into a single pool. The
+                # family loop there builds each family's circuit and routes
+                # results per-unit, superseding the pre-B fold (which kept
+                # families in separate groups). A single-observable sweep is
+                # unchanged: one family -> one group, byte-identical.
+                byo_params_key = params_key
                 key = (task.circuit_script, "byo", task.calibration_path, byo_params_key)
             else:
                 key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
@@ -2458,58 +2463,17 @@ class SweepEngine:
 
     # ── Internal: BYO counts execution (SPEC-002 §7.5 / D3.4) ──
 
-    def _execute_byo_group(
-        self,
-        tasks: list[SweepTask],
-        writer: SweepHDF5Writer,
-        errors: list[str],
-    ) -> None:
-        """Execute a group of byo_circuit tasks (counts -> autocorrelator).
-
-        Unlike the hamiltonian twin battery (_execute_group), the BYO path:
-          - builds each task's circuit via _build_byo_circuit (the Gap A seam),
-          - solves placements from the BUILT circuit's connectivity
-            (extract_connectivity), NOT a topology_library entry,
-          - runs each placement x noise env for COUNTS via prepare_simulation
-            (device_calibrated -> statevector + per-placement F5a noise;
-            noiseless -> statevector), and
-          - computes the counts->autocorrelator observable, stored with the
-            placement + the noise_placement_independent guardrail flag.
-
-        D3.4a (this step): grouping + dispatch + build + placement solve +
-        guardrail resolution. The per-(placement,env) counts run and the
-        autocorrelator are stubbed (D3.4b); storage is D3.4c.
-        """
-        if not tasks:
-            return
-
-        representative = tasks[0]
+    def _byo_family_work_units(self, fam_tasks, representative,
+                               primary_axis, errors):
+        """RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): build ONE
+        observable family's BYO work units. Extracted from _execute_byo_group
+        so the families of an un-folded group flat-dispatch into one pool.
+        Shares the placement solve across families via self._byo_placement_cache
+        (Patch A) -- the connectivity guard runs across families. Returns
+        (work_units, placements), or (None, None) on error (appended to errors)."""
         cal_path = representative.calibration_path
         cal_id, cal_json, device_cal = self._cal_cache[cal_path]
-
-        # Primary grid axis = the (single) key in circuit_params (e.g.
-        # num_kicks). Resolved up front: it's needed both to pick the
-        # placement-defining circuit (below) and to order the autocorrelator
-        # series. Multi-axis BYO counts is a later increment (DEBT).
-        primary_axes = {k for t in tasks for k in t.circuit_params}
-        if len(primary_axes) != 1:
-            errors.append(
-                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
-                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
-                f"increment (DEBT)."
-            )
-            return
-        primary_axis = next(iter(primary_axes))
-
-        # ── Build the placement-defining circuit from the MAXIMAL grid point,
-        #    not tasks[0]. A degenerate low point (e.g. num_kicks=0) builds a
-        #    circuit with NO 2q gates -> empty connectivity -> the solver would
-        #    place disconnected qubits, and the batched higher-kick circuits
-        #    (which DO have 2q gates) then fail to transpile onto that layout.
-        #    The full 2q pattern lives at the high point; connectivity is
-        #    grid-independent above the degenerate point (same lesson as the
-        #    two-highest cross-grid check). ──
-        place_task = max(tasks, key=lambda t: t.circuit_params[primary_axis])
+        place_task = max(fam_tasks, key=lambda t: t.circuit_params[primary_axis])
         t_build_start = time.perf_counter()
         loaded = self._build_byo_circuit(place_task)
         qsize = loaded.num_qubits
@@ -2558,7 +2522,7 @@ class SweepEngine:
         #    caller's, per its docstring). ──
         wants_device_cal = any(
             e.source == "device_calibrated"
-            for t in tasks for e in t.noise_configs
+            for t in fam_tasks for e in t.noise_configs
         )
         solver_max_placements = _solver_placement_cap(
             manual_placements, representative.max_placements, wants_device_cal
@@ -2631,7 +2595,7 @@ class SweepEngine:
                     f"BYO: no valid placements for {representative.circuit_script} "
                     f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
                 )
-                return
+                return None, None
             if store_to_cache:
                 self._byo_placement_cache[byo_solve_key] = (placements, conn_norm)
         self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
@@ -2650,7 +2614,7 @@ class SweepEngine:
 
         # Progress accounting: matches the non-BYO _execute_group convention
         # (line ~1701) -- count (placement, task) pairs explored.
-        self._progress.total_placements += len(placements) * len(tasks)
+        self._progress.total_placements += len(placements) * len(fam_tasks)
 
         # ── D3.4b: batched-per-seed counts run -> autocorrelator. Mirrors the
         #    banked floquet_runner_v2 exactly (confirmed by the researcher: one
@@ -2697,7 +2661,7 @@ class SweepEngine:
         # by seed; within a seed the grid-point tasks share one disorder
         # instance (identity-shared at expansion, §7.5.4).
         by_seed: dict[int, list[SweepTask]] = {}
-        for t in tasks:
+        for t in fam_tasks:
             by_seed.setdefault(t.seed, []).append(t)
 
         # The set of distinct noise envs (same across tasks in a group).
@@ -2726,7 +2690,7 @@ class SweepEngine:
                 f"BYO: disorder instance has no init_bit_array "
                 f"(needed for the autocorrelator) — {representative.circuit_script}"
             )
-            return
+            return None, None
 
         # ── Build the WorkerArgs list (one per (seed, placement, env)). The
         #    parent does the bookkeeping (placement -> phys_qubits/edges, grid
@@ -2774,7 +2738,8 @@ class SweepEngine:
                         optimization_level=exp_opt_level,
                         qsize=qsize,
                         factory_script=representative.circuit_script,
-                        factory_function=representative.circuit_function,
+                        factory_function=place_task.circuit_function,
+                        observable_name=place_task.observable_name,
                         fixed_params=dict(representative.fixed_params),
                         disorder_instance=disorder_instance,
                         disorder_gates=tuple(representative.disorder_gates),
@@ -2785,6 +2750,103 @@ class SweepEngine:
                             env.source, len(placements)
                         ),
                     ))
+
+        return work_units, placements
+
+    def _execute_byo_group(
+        self,
+        tasks: list[SweepTask],
+        writer: SweepHDF5Writer,
+        errors: list[str],
+    ) -> None:
+        """Execute a group of byo_circuit tasks (counts -> autocorrelator).
+
+        Unlike the hamiltonian twin battery (_execute_group), the BYO path:
+          - builds each task's circuit via _build_byo_circuit (the Gap A seam),
+          - solves placements from the BUILT circuit's connectivity
+            (extract_connectivity), NOT a topology_library entry,
+          - runs each placement x noise env for COUNTS via prepare_simulation
+            (device_calibrated -> statevector + per-placement F5a noise;
+            noiseless -> statevector), and
+          - computes the counts->autocorrelator observable, stored with the
+            placement + the noise_placement_independent guardrail flag.
+
+        D3.4a (this step): grouping + dispatch + build + placement solve +
+        guardrail resolution. The per-(placement,env) counts run and the
+        autocorrelator are stubbed (D3.4b); storage is D3.4c.
+        """
+        if not tasks:
+            return
+
+        representative = tasks[0]
+        cal_path = representative.calibration_path
+        cal_id, cal_json, device_cal = self._cal_cache[cal_path]
+
+        # Primary grid axis = the (single) key in circuit_params (e.g.
+        # num_kicks). Resolved up front: it's needed both to pick the
+        # placement-defining circuit (below) and to order the autocorrelator
+        # series. Multi-axis BYO counts is a later increment (DEBT).
+        primary_axes = {k for t in tasks for k in t.circuit_params}
+        if len(primary_axes) != 1:
+            errors.append(
+                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
+                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
+                f"increment (DEBT)."
+            )
+            return
+        primary_axis = next(iter(primary_axes))
+
+        # ── Build the placement-defining circuit from the MAXIMAL grid point,
+        #    not tasks[0]. A degenerate low point (e.g. num_kicks=0) builds a
+        #    circuit with NO 2q gates -> empty connectivity -> the solver would
+        #    place disconnected qubits, and the batched higher-kick circuits
+        #    (which DO have 2q gates) then fail to transpile onto that layout.
+        #    The full 2q pattern lives at the high point; connectivity is
+        #    grid-independent above the degenerate point (same lesson as the
+        #    two-highest cross-grid check). ──
+        # ── RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): the
+        #    un-folded group carries every observable family; flat-dispatch
+        #    all families' units into ONE parallel pool. Split into families
+        #    (first-seen order), build each via the shared seam, accumulate.
+        #    Patch A's placement cache shares the solve across families, so
+        #    the connectivity guard runs across them here. ──
+        from lumi_hpc_qc.sweep.byo_worker import (
+            WorkerArgs, WorkerResult, run_one_unit,
+        )
+        families: dict[tuple[str, str], list[SweepTask]] = {}
+        for t in tasks:
+            families.setdefault(
+                (t.observable_name, t.circuit_function), []
+            ).append(t)
+
+        t_exec_start = time.perf_counter()
+        work_units: list[WorkerArgs] = []
+        placements = None
+        for fam_tasks in families.values():
+            fam_units, fam_placements = self._byo_family_work_units(
+                fam_tasks, representative, primary_axis, errors,
+            )
+            if fam_units is None:
+                return
+            # Patch A shares the solve across families: when connectivity
+            # matches, every family resolves to the SAME placements. Assert
+            # it so a divergence the guard should have caught is loud.
+            if placements is None:
+                placements = fam_placements
+            else:
+                assert (
+                    [p.placement_id for p in fam_placements]
+                    == [p.placement_id for p in placements]
+                ), (
+                    "BYO flat dispatch: observable families resolved to "
+                    "different placements despite the shared solve -- the "
+                    "connectivity guard should have prevented this"
+                )
+            work_units.extend(fam_units)
+        # TODO(observables_independent): once the opt-out lets families solve
+        # apart, `placements` (hence placement_diversity_count_resolved in
+        # the merge) becomes per-family; carry it per-record from the
+        # producing family rather than this single group value.
 
         # ── W1.4 allocation-aware worker cap (RED-RESP-W1.3-VERIFY-AND-W1.4-
         #    CAP-RULINGS-v1.0 D1-D6; Q6 formula). Replaces the W1.3 placeholder
@@ -2843,25 +2905,41 @@ class SweepEngine:
         #    /proc/<child>. Probe-unit selection is deterministic (first
         #    device_calibrated unit in the deterministic work_units order). If no
         #    device-cal unit exists, fall back to the C1 banked constant. ──
-        probe_idx = next(
-            (i for i, u in enumerate(work_units)
-             if u.env_source == "device_calibrated"),
-            None,
-        )
-        probe_result: WorkerResult | None = None
-        if probe_idx is not None:
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B) cap: size
+        # per_unit_peak to the per-family MAX. Probe ONE device-cal unit per
+        # observable family (the echo arm is heavier than autocorr; a single
+        # probe of the lighter family under-sizes -> OOM). A family with no
+        # device-cal unit contributes no probe; if NO family has one (all-
+        # noiseless), fall back to the C1 static constant below. Probe units are
+        # real work, joined to the results (not recomputed).
+        probe_idxs: list[int] = []
+        _seen_probe_fams: set[str] = set()
+        for _i, _u in enumerate(work_units):
+            if (_u.env_source == "device_calibrated"
+                    and _u.observable_name not in _seen_probe_fams):
+                _seen_probe_fams.add(_u.observable_name)
+                probe_idxs.append(_i)
+        probe_results: list[WorkerResult] = []
+        if probe_idxs:
             with ctx.Pool(processes=1) as ppool:
-                probe_result = ppool.map(run_one_unit, [work_units[probe_idx]])[0]
+                probe_results = list(
+                    ppool.map(run_one_unit, [work_units[i] for i in probe_idxs])
+                )
 
-        if probe_result is not None and probe_result.error:
-            # Probe failed (e.g. a resurfaced device-cal crash): do NOT spend the
-            # main pool. Surface via the standard error-aggregation path below.
-            worker_results: list[WorkerResult] = [probe_result]
+        if any(r.error for r in probe_results):
+            # A probe failed (e.g. a resurfaced device-cal crash): do NOT spend
+            # the main pool. Surface via the standard error-aggregation path.
+            worker_results: list[WorkerResult] = probe_results
         else:
-            if probe_result is not None and probe_result.peak_rss_kib > 0:
-                per_unit_peak = probe_result.peak_rss_kib * 1024
-                peak_source = "probe:device_calibrated_VmHWM"
-            elif probe_idx is None:
+            _peaks = [r.peak_rss_kib * 1024 for r in probe_results
+                      if r.peak_rss_kib > 0]
+            if _peaks:
+                per_unit_peak = max(_peaks)
+                peak_source = (
+                    "probe:device_calibrated_VmHWM" if len(probe_idxs) == 1
+                    else "probe:device_calibrated_VmHWM_per_family_max"
+                )
+            elif not probe_idxs:
                 per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
                 peak_source = "c1_fallback:no_device_cal_unit"
             else:
@@ -2908,17 +2986,14 @@ class SweepEngine:
             #    pool, so peak concurrency is `cap`, not cap+1. Each unit's
             #    run_one_unit is byte-identical regardless of pool grouping, so
             #    the 2-seed canary byte-match is preserved. ──
-            remaining = (
-                [u for i, u in enumerate(work_units) if i != probe_idx]
-                if probe_idx is not None else list(work_units)
-            )
+            _probe_set = set(probe_idxs)
+            remaining = [u for i, u in enumerate(work_units)
+                         if i not in _probe_set]
             main_results: list[WorkerResult] = []
             if remaining:
                 with ctx.Pool(processes=cap) as pool:
                     main_results = list(pool.map(run_one_unit, remaining))
-            worker_results = (
-                ([probe_result] if probe_result is not None else []) + main_results
-            )
+            worker_results = probe_results + main_results
 
         # ── Fail-loud on any worker error. A failed worker returns a
         #    WorkerResult with `error` populated rather than raising — raising
@@ -2950,15 +3025,17 @@ class SweepEngine:
             byo_results.append({
                 "seed": r.seed,
                 "script": representative.circuit_script,
-                # D7 increment 2: which circuit family this result belongs to.
-                # The group is per-observable (folded into the group key), so the
-                # representative's observable_name is correct for every unit in it.
+                # D7 increment 2 / RED-RULING-…(B): which circuit family this
+                # result belongs to. Under flat dispatch the BYO group is NO
+                # LONGER per-observable (observable/circuit_function were un-folded
+                # from the group key), so route per-UNIT from the worker's echoed
+                # identity, not the representative.
                 # "default" -> legacy HDF5/.dat layout (byte-identical pre-D7).
-                "observable": representative.observable_name,
-                # BYO-FAMILY-COLLISION fix (b1): the family's factory function,
-                # carried so the .dat aggregator and HDF5 writer can disambiguate
-                # colliding default-family leaves in lockstep via the shared seam.
-                "circuit_function": representative.circuit_function,
+                "observable": r.observable_name,
+                # The family's factory function, carried per-unit so the .dat
+                # aggregator and HDF5 writer disambiguate co-resident families in
+                # one group via the shared seam.
+                "circuit_function": r.factory_function,
                 "placement_id": r.placement_id,
                 "physical_qubit_set": r.physical_qubit_set,
                 "env": r.env_name,

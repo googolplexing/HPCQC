@@ -116,6 +116,11 @@ class WorkerArgs:
     # Factory invocation (rebuilt in-worker — no QuantumCircuit pickling)
     factory_script: str
     factory_function: str
+    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): which observable
+    # family this unit computes. Keys the flat-dispatch strata (env, observable)
+    # and is echoed to the result so the merge routes per-unit — the BYO group is
+    # no longer per-observable under flat dispatch.
+    observable_name: str = "default"
     fixed_params: dict[str, Any] = field(default_factory=dict)
     disorder_instance: dict[str, Any] = field(default_factory=dict)
     disorder_gates: tuple[str, ...] = ("rz", "rzz")
@@ -156,6 +161,12 @@ class WorkerResult:
 
     # Guardrail / provenance pass-through
     noise_placement_independent: bool
+
+    # RED-RULING-…(B): per-unit family identity, echoed from WorkerArgs so the
+    # parent merge routes each result to its own observable / circuit_function
+    # (the BYO group is no longer per-observable under flat dispatch).
+    observable_name: str = "default"
+    factory_function: str = ""
 
     # Observability
     runtime_s: float = 0.0
@@ -228,6 +239,8 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             master_seed=args.master_seed,
             optimization_level=args.optimization_level,
             noise_placement_independent=args.noise_placement_independent,
+            observable_name=args.observable_name,
+            factory_function=args.factory_function,
             runtime_s=time.perf_counter() - t0,
             error=msg,
         )
@@ -315,6 +328,8 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             master_seed=args.master_seed,
             optimization_level=args.optimization_level,
             noise_placement_independent=args.noise_placement_independent,
+            observable_name=args.observable_name,
+            factory_function=args.factory_function,
             runtime_s=time.perf_counter() - t0,
             peak_rss_kib=peak_rss_kib,
             error=None,
