@@ -3125,6 +3125,18 @@ class SweepEngine:
         # Q3 ACCEPT, the resolved level is physics-affecting under noise and
         # must be surfaced so two runs at different levels are never silently
         # compared as if the difference were physics. Gate-2 pins 3.
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B) regression fix:
+        # the resolved opt-level is defined per-family inside
+        # _byo_family_work_units; Patch B's extraction moved that definition out
+        # of this scope, leaving this group-level note referencing an undefined
+        # name (NameError at runtime, not caught by py_compile or the unit
+        # tests). Recompute from the representative -- the SAME expression, and
+        # group-uniform since every family shares it -- restoring the exact
+        # pre-B behaviour without touching physics.
+        exp_opt_level = (
+            representative.optimization_level
+            if representative.optimization_level is not None else 3
+        )
         if exp_opt_level != 3:
             print(
                 f"    BYO: NOTE: optimization_level = {exp_opt_level} "
