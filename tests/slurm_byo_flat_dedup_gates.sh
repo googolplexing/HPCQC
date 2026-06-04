@@ -23,7 +23,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=128
-#SBATCH --time=00:35:00
+#SBATCH --mem=224G
+#SBATCH --time=00:30:00
 #SBATCH --output=slurm_logs/byo_gates.o%j
 #SBATCH --error=slurm_logs/byo_gates.e%j
 
