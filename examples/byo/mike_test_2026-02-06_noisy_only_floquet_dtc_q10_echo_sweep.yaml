@@ -1,0 +1,32 @@
+sweep:
+  experiments:
+    # ------ autocorrelator arm ------
+    - type: byo_circuit
+      label: floquet_echo_ak10_autocorr
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid:  {num_kicks: {range: [0, 40]}}   # 0..39 (stop-exclusive)
+      disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+      disorder_gates: [rz, rzz]
+      seed_list: [0,1,2,3,4,5,6,7,8,9]              # one per disorder instance
+      shots: 1000
+      physical_qubits:                          #   set this OR max_placements
+        - [QB11, QB5, QB6, QB7, QB13, QB21, QB29, QB28, QB27, QB26]
+      noise_configs: [device_calibrated]
+    # ------ echo arm: identical, except function + label ------
+    - type: byo_circuit
+      label: floquet_echo_ak10_echo
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      circuit_function: build_circuit_echo
+      fixed: {num_qubits: 10, epsilon: 0.03}
+      grid:  {num_kicks: {range: [0, 40]}}
+      disorder: {source: file, file: examples/byo/floquet_disorder_q10_echo_ak10.json, initial_state: 3}
+      disorder_gates: [rz, rzz]
+      seed_list: [0,1,2,3,4,5,6,7,8,9]
+      shots: 1000
+      physical_qubits:
+        - [QB11, QB5, QB6, QB7, QB13, QB21, QB29, QB28, QB27, QB26]
+      noise_configs: [device_calibrated]
+  calibrations:
+    - examples/q50_calibration_20260602_4a396222.json   #  daily cal here
