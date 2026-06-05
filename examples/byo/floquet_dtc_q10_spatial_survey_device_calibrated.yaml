@@ -221,4 +221,4 @@ sweep:
       shots: 1000
       noise_configs: [device_calibrated]
   calibrations:
-    - examples/q50_calibration_20260524_08c3c70f.json
+    - examples/q50_calibration_20260605_e3217da7.json
