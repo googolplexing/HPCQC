@@ -75,6 +75,7 @@ import numpy as np  # noqa: F401  (transitive: prepare_simulation, byo_observabl
 from lumi_hpc_qc.backends.prepare import prepare_simulation
 from lumi_hpc_qc.sweep.byo_observable import (
     get_autocorrelation,
+    get_autocorrelation_perqubit,
     resolve_instance_seed,
 )
 from lumi_hpc_qc.sweep.byo_sweep import assemble_build_kwargs
@@ -154,6 +155,10 @@ class WorkerResult:
     # Result
     num_kicks: list[int]                           # the seed's grid axis values, ascending
     autocorrelator: list[float]                    # one float per grid point
+    # Per-qubit (un-collapsed) autocorrelator: one row per grid point, one
+    # column per wire (local qubit). Mean over columns reproduces
+    # ``autocorrelator`` (the legacy scalar). RED-RULING-PER-QUBIT §1.
+    autocorrelator_perqubit: list[list[float]]     # (N_kicks, num_qubits)
     shots: int
     seed_simulator: int                            # = resolve_instance_seed(master_seed, seed)
     master_seed: int | None
@@ -234,6 +239,7 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             physical_qubit_set=args.placement_phys_qubits,
             num_kicks=[],
             autocorrelator=[],
+            autocorrelator_perqubit=[],
             shots=args.shots,
             seed_simulator=0,
             master_seed=args.master_seed,
@@ -307,6 +313,15 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             )
             for i in range(len(built))
         ]
+        # Per-qubit (un-collapsed) vectors — same counts, same convention, not
+        # summed over wires. Free in compute; mean over wires reproduces
+        # ``autocorr`` (RED-RULING-PER-QUBIT §1). .tolist() -> picklable / WAL-safe.
+        autocorr_pq = [
+            get_autocorrelation_perqubit(
+                result.get_counts(i), args.init_bit_array, args.qsize,
+            ).tolist()
+            for i in range(len(built))
+        ]
         num_kicks = [g[args.primary_axis] for g in args.grid_points_sorted]
 
         # D1: read this worker's OWN kernel high-water mark at the very end —
@@ -323,6 +338,7 @@ def run_one_unit(args: WorkerArgs) -> WorkerResult:
             physical_qubit_set=args.placement_phys_qubits,
             num_kicks=num_kicks,
             autocorrelator=autocorr,
+            autocorrelator_perqubit=autocorr_pq,
             shots=args.shots,
             seed_simulator=int(inst_seed) if inst_seed is not None else 0,
             master_seed=args.master_seed,

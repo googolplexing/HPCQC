@@ -3149,6 +3149,12 @@ class SweepEngine:
                 "placement_diversity_no_crosstalk": representative.placement_diversity.no_crosstalk,
                 "num_kicks": r.num_kicks,
                 "autocorrelator": r.autocorrelator,
+                # Per-qubit (un-collapsed) matrix (N_kicks, num_qubits). Rides the
+                # dedup broadcast via dict(rec) below: the matrix is local-indexed
+                # and placement-independent for noiseless, and the per-placement
+                # re-stamp of physical_qubit_set makes the per-qubit output correct
+                # per placement (RED-RULING-PER-QUBIT §2.2).
+                "autocorrelator_perqubit": r.autocorrelator_perqubit,
                 "shots": r.shots,
                 "seed_simulator": r.seed_simulator,
                 # RED-RESP-D3.4C §3: master_seed REQUIRED on the record.
@@ -3222,7 +3228,10 @@ class SweepEngine:
         #    The 71-col physics-Parquet extension is a separate Red-reviewed
         #    step (autocorrelator-as-vector is a new result type; RED §4 Q3 was
         #    aimed at the timing schema, not the physics one). ──
-        from lumi_hpc_qc.sweep.byo_observable import aggregate_byo_autocorr
+        from lumi_hpc_qc.sweep.byo_observable import (
+            aggregate_byo_autocorr,
+            aggregate_byo_autocorr_perqubit,
+        )
 
         if writer is not None:
             for r in byo_results:
@@ -3247,10 +3256,14 @@ class SweepEngine:
             )
         if out_root is not None:
             by_pe: dict[tuple, list] = {}
+            by_pe_pq: dict[tuple, list] = {}
             for r in byo_results:
                 key = (tuple(r["physical_qubit_set"]), r["env"],
                        r["observable"], r["circuit_function"])
                 by_pe.setdefault(key, []).append((r["seed"], r["autocorrelator"]))
+                by_pe_pq.setdefault(key, []).append(
+                    (r["seed"], r["autocorrelator_perqubit"])
+                )
             stem = Path(representative.circuit_script).stem
             disambiguate = stem in getattr(self, "_byo_collision_stems", set())
             for (phys, env, observable, circuit_function), series in by_pe.items():
@@ -3266,6 +3279,17 @@ class SweepEngine:
                     "-".join(str(q) for q in phys), env,
                 ) + byo_observable_subpath(observable, circuit_function, disambiguate)
                 aggregate_byo_autocorr(sorted(series), sub)
+                # Per-qubit (un-collapsed) site-resolved .dat alongside the
+                # scalar (non-shard path; the merge owns the shard path, P3). The
+                # physical_q column is THIS placement's physical_qubit_set
+                # (re-stamped for deduped noiseless); values are the local-indexed
+                # per-qubit matrix (RED-RULING-PER-QUBIT §2.1/§2.2). Guarded so an
+                # empty matrix (error/legacy record) never writes a bad .dat.
+                pq_series = by_pe_pq[(phys, env, observable, circuit_function)]
+                if pq_series and all(len(m) for _, m in pq_series):
+                    aggregate_byo_autocorr_perqubit(
+                        sorted(pq_series), list(phys), sub
+                    )
 
         # Progress accounting: this group's tasks are done. The BYO path
         # batches all tasks for a (seed, env) into a single simulator run, so

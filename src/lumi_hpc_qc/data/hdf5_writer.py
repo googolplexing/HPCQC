@@ -471,6 +471,17 @@ class SweepHDF5Writer:
             "autocorrelator",
             data=np.array(result["autocorrelator"], dtype=np.float64),
         )
+        # Per-qubit (un-collapsed) matrix (N_kicks, num_qubits). Additive — the
+        # scalar "autocorrelator" dataset above stays byte-identical (RED-RULING-
+        # PER-QUBIT condition 3). physical_qubit_set is stored below, so the group
+        # is self-describing for per-qubit too. Conditional so error records
+        # (empty list) and WAL replay of any pre-field line stay valid.
+        pq = result.get("autocorrelator_perqubit")
+        if pq is not None and len(pq) > 0:
+            grp.create_dataset(
+                "autocorrelator_perqubit",
+                data=np.array(pq, dtype=np.float64),
+            )
         grp.create_dataset(
             "num_kicks",
             data=np.array(result["num_kicks"], dtype=np.int64),
