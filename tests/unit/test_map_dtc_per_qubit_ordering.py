@@ -19,7 +19,7 @@ import os
 import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_SCRIPT = os.path.join(_HERE, "..", "scripts", "map_dtc_to_qpu_3d.py")
+_SCRIPT = os.path.join(_HERE, "..", "..", "scripts", "map_dtc_to_qpu_3d.py")
 _spec = importlib.util.spec_from_file_location("map_dtc_to_qpu_3d", _SCRIPT)
 mdq = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mdq)
