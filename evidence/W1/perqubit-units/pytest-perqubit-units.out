@@ -1,0 +1,27 @@
+srun: job 19083097 queued and waiting for resources
+srun: job 19083097 has been allocated resources
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+
+Lmod is automatically replacing "craype-x86-rome" with "craype-x86-milan".
+
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3
+cachedir: .pytest_cache
+rootdir: /flash/project_462001289/mucciard/HPCQC/HPCQC
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.0.0, zarr-3.1.5
+collecting ... collected 11 items
+
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_persite_output.py::test_self_describing_and_ordered PASSED [  9%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_persite_output.py::test_single_instance_sem_is_zero PASSED [ 18%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_persite_output.py::test_header_labels_are_configurable PASSED [ 27%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_persite_output.py::test_fails_loud_on_width_mismatch PASSED [ 36%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_byo_autocorr_perqubit.py::test_perqubit_mean_equals_legacy_scalar PASSED [ 45%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_byo_autocorr_perqubit.py::test_perqubit_values_are_match_vs_init PASSED [ 54%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_byo_autocorr_perqubit.py::test_perqubit_dat_is_self_describing_and_ordered PASSED [ 63%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_byo_autocorr_perqubit.py::test_perqubit_aggregator_fails_loud_on_width_mismatch PASSED [ 72%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_map_dtc_per_qubit_ordering.py::test_reader_attributes_signal_to_correct_physical_qubit PASSED [ 81%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_map_dtc_per_qubit_ordering.py::test_reader_fails_loud_when_perqubit_requested_but_absent PASSED [ 90%]
+../../../../../../../flash/project_462001289/mucciard/HPCQC/HPCQC/tests/unit/test_map_dtc_per_qubit_ordering.py::test_legacy_smear_path_unchanged PASSED [100%]
+
+============================== 11 passed in 3.16s ==============================

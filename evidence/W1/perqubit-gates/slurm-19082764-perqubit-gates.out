@@ -1,0 +1,30 @@
+================================================================
+ BYO flat-dispatch gates (multi-observable)
+ Job 19082764 on nid001351 — Sat Jun  6 02:36:10 PM EEST 2026
+ Config: examples/byo/floquet_dtc_q10_multiobs_gate.yaml
+================================================================
+
+═══ GATE 2: flat byte-identity (single vs 2-rank vs 3-rank) ═══
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+gate: path=byo fixture=examples/byo/floquet_dtc_q10_multiobs_gate.yaml root=/byo seeds=[0, 1] workdir=/pfs/lustref1/flash/project_462001289/mucciard/HPCQC/HPCQC/results/byo_gates_19082764/fanout
+gate: single-node baseline run ...
+gate: 2-rank shard runs ...
+gate: merge 2-rank shards ...
+gate: 3-rank shard runs ...
+gate: merge 3-rank shards ...
+
+GATE PASSED [byo]: single vs 2-rank vs 3-rank byte-identical (.dat raw bytes + /byo dataset/path-set/attr equality; env co-residency held at 2-rank); seeds=[0, 1].
+GATE2_RC=0
+
+═══ GATE 4: §5.4 noiseless-dedup byte-identity (dedup off vs on) ═══
+/pfs,/appl,/project,/flash,/users,/projappl,/scratch,/etc/slurm/,/usr/lib64/pkgconfig/cray-xpmem.pc,/usr/lib64/libcxi.so,/usr/lib64/libcxi.so.1,/usr/lib64/libcxi.so.1.5.0,/usr/lib64/liblustreapi.so,/usr/lib64/liblustreapi.so.1.0.0,/usr/lib64/liblustreapi.so.1,/usr/lib64/liblnetconfig.so.4,/usr/lib64/liblnetconfig.so.4.0.0,/opt/cray/modulefiles/xpmem/2.11.5-1.3_g73ade43320bc,/usr/lib64/libxpmem.a,/usr/lib64/libxpmem.so,/usr/lib64/libxpmem.so.0,/usr/lib64/libxpmem.so.0.0.0,/opt/cray/libfabric/1.22.0,/opt/cray/modulefiles/libfabric,/etc/cray-pe.d/cray-pe-configuration.sh,/etc/passwd,/usr/lib64/libmunge.so.2,/run/munge,/var/lib/misc,/var/spool,/etc/host.conf,/etc/hosts,/etc/nsswitch.conf,/etc/resolv.conf,/etc/ssl/openssl.cnf
+═══ dedup OFF (reference) ═══
+═══ dedup ON ═══
+[dedup] units dispatched: off=16 on=12 (on<off proves dedup engaged; equal output proves it is safe)
+
+═══ §5.4 DEDUP GATE PASSED ═══
+GATE4_RC=0
+
+═══ SUMMARY: gate2(flat)=0  gate4(dedup)=0 ═══
+ALL GATES PASSED
+Finished Sat Jun  6 02:38:20 PM EEST 2026
