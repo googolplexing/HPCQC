@@ -1,0 +1,28 @@
+sweep:
+  experiments:
+    - type: byo_circuit
+      label: floquet_dtc_echo_q10_smoke4
+      circuit_script: examples/byo/floquet_dtc_echo.py
+      observables:
+        - {name: autocorr, function: build_circuit}
+        - {name: echo,     function: build_circuit_echo}
+      physical_qubits:
+        - [QB16, QB17, QB18, QB26, QB34, QB35, QB36, QB37, QB29, QB21]
+        - [QB11, QB12, QB6, QB7, QB13, QB21, QB22, QB30, QB29, QB37]
+        - [QB8, QB16, QB24, QB25, QB33, QB34, QB35, QB36, QB28, QB29]
+        - [QB28, QB20, QB12, QB11, QB19, QB18, QB26, QB25, QB17, QB16]
+      fixed:
+        num_qubits: 10
+        epsilon: 0.03
+      grid:
+        num_kicks: {range: [0, 40]}        # stop-exclusive -> 0..39 (full kick depth)
+      disorder:
+        source: file
+        file: examples/byo/floquet_disorder_q10_echo_ak10.json
+        initial_state: 3
+      disorder_gates: [rz, rzz]
+      seed_list: [0, 1]   # 2 realizations: exercises seed-mean/sem + the multi-seed short-count guard
+      shots: 100
+      noise_configs: [device_calibrated]
+  calibrations:
+    - examples/q50_calibration_20260606_51b18c0c.json
