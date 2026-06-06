@@ -44,6 +44,38 @@ def _write_cfg(base, output_dir, dedup, dest):
         yaml.safe_dump(cfg, f, sort_keys=False)
 
 
+def _assert_perqubit_present(out_dir, label, fails):
+    """Per-qubit byte-identity dedup-on-vs-off is covered by the generic .dat /
+    /byo comparators; this only asserts the per-qubit artifacts EXIST, so the
+    coverage cannot be vacuous (RED-RULING-PER-QUBIT condition 2)."""
+    import h5py
+
+    dats = [
+        fn
+        for _dp, _dn, fns in os.walk(os.path.join(out_dir, "byo_dat"))
+        for fn in fns
+        if fn == "aggregated_autocorr_perqubit.dat"
+    ]
+    if not dats:
+        fails.append(
+            f"[{label}] no aggregated_autocorr_perqubit.dat under byo_dat — "
+            f"per-qubit coverage vacuous (RED-RULING-PER-QUBIT condition 2)"
+        )
+    found = []
+    with h5py.File(os.path.join(out_dir, "sweep.h5"), "r") as f:
+        if "byo" in f:
+            f["byo"].visititems(
+                lambda n, o: found.append(n)
+                if isinstance(o, h5py.Dataset)
+                and n.endswith("autocorrelator_perqubit") else None
+            )
+    if not found:
+        fails.append(
+            f"[{label}] no autocorrelator_perqubit dataset under /byo — "
+            f"per-qubit coverage vacuous (RED-RULING-PER-QUBIT condition 2)"
+        )
+
+
 def _dispatched(stdout):
     return sum(int(m) for m in re.findall(r"dispatching (\d+) unit", stdout))
 
@@ -78,6 +110,12 @@ def main(argv=None):
         os.path.join(on_dir, "sweep.h5"),
         "byo", "dedup", fails,
     )
+    # RED-RULING-PER-QUBIT condition 2: dedup-on-vs-off byte-identity of the
+    # per-qubit output is ALREADY covered by the two generic comparators above
+    # (_assert_dats_identical compares every .dat; _assert_h5_subtree_equal every
+    # /byo dataset). Assert the per-qubit artifacts are PRESENT so that coverage
+    # is non-vacuous — a regression that stopped emitting them must fail here.
+    _assert_perqubit_present(on_dir, "dedup", fails)
 
     d_off, d_on = _dispatched(p_off.stdout), _dispatched(p_on.stdout)
     print(f"[dedup] units dispatched: off={d_off} on={d_on} "

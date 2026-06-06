@@ -355,11 +355,21 @@ class ByoAutocorrReducer:
                 phys = parts[pi + 1]
                 env = parts[pi + 2]
                 obs_tail = "/".join(parts[pi + 3 : -1])  # observable/family levels
+                # Sibling per-qubit (un-collapsed) dataset, read from the SAME
+                # group so it rides the scalar's grouping/instance keying and the
+                # noiseless-dedup broadcast (RED-RULING-PER-QUBIT §1/§2.2). None
+                # when a unit predates the per-qubit observable. Note the scalar
+                # name match above (.endswith("autocorrelator")) does NOT match
+                # "autocorrelator_perqubit", so it never double-counts as a unit.
+                pq_obj = grp.get("autocorrelator_perqubit")
                 out.append(
                     {
                         "group": (stem, phys, env, obs_tail),
                         "seed": seed,
                         "vector": list(obj[()]),
+                        "vector_perqubit": (
+                            pq_obj[()].tolist() if pq_obj is not None else None
+                        ),
                     }
                 )
             f.visititems(_visit)
@@ -372,7 +382,10 @@ class ByoAutocorrReducer:
         return record["seed"]
 
     def payload(self, record: dict) -> Any:
-        return record["vector"]
+        # (scalar_vector, perqubit_matrix-or-None). Opaque to the generic driver;
+        # ``reduce`` unpacks it. The scalar series is recovered unchanged, so the
+        # scalar .dat stays byte-identical (RED-RULING-PER-QUBIT condition 3).
+        return (record["vector"], record["vector_perqubit"])
 
     def expected_instances(self, group_key: Hashable) -> Iterable[Hashable]:
         return self._expected
@@ -380,10 +393,29 @@ class ByoAutocorrReducer:
     def reduce(
         self, group_key: Hashable, series: list[tuple[Hashable, Any]], out_root: str
     ) -> None:
-        from lumi_hpc_qc.sweep.byo_observable import aggregate_byo_autocorr
+        from lumi_hpc_qc.sweep.byo_observable import (
+            aggregate_byo_autocorr,
+            aggregate_byo_autocorr_perqubit,
+        )
 
         sub = os.path.join(out_root, self._out_subpath_fn(group_key))
-        aggregate_byo_autocorr(series, sub)
+        # Scalar path UNCHANGED -> aggregated_autocorr.dat byte-identical (RED
+        # condition 3); payload is now a (scalar, perqubit) pair, so recover the
+        # scalar series in the same order the driver supplied.
+        scalar_series = [(ik, p[0]) for ik, p in series]
+        aggregate_byo_autocorr(scalar_series, sub)
+        # Per-qubit (un-collapsed) .dat alongside the scalar, iff EVERY instance
+        # carried a per-qubit matrix (a partial set would mis-aggregate). The
+        # physical_q column is the group's path-order physical set (the phys
+        # segment of the group key); for deduped noiseless this is the per-
+        # placement re-stamped set, carrying the broadcast local-indexed values
+        # (RED-RULING-PER-QUBIT §2.1/§2.2). The merged per-qubit .dat is thus
+        # byte-identical dedup-on vs dedup-off, which the dedup gate's generic
+        # .dat comparator now also covers.
+        pq_series = [(ik, p[1]) for ik, p in series if p[1] is not None]
+        if pq_series and len(pq_series) == len(series):
+            _stem, phys, _env, _obs = group_key
+            aggregate_byo_autocorr_perqubit(pq_series, phys.split("-"), sub)
 
 # ── the synthetic-channel battery reducer (the pluggable per-path piece) ─────
 

@@ -530,3 +530,35 @@ many tasks remain). Then a resumed campaign is group-set-mergeable.
 **Guard until then:** if a multi-rank battery campaign crashes mid-run, re-run it
 FRESH (clear campaign_manifest_rank*.json / the output dir) rather than resuming,
 when the group-set merge is required.
+
+## D12 — Per-qubit (site-resolved) autocorrelator: gap closed; reader is fail-loud by design
+
+**What changed:** the BYO autocorrelator is now emitted BOTH as the legacy
+chain-averaged scalar (`aggregated_autocorr.dat`, byte-identical) AND as a
+self-describing per-qubit matrix (`aggregated_autocorr_perqubit.dat`, columns
+`kick local_q physical_q mean sem`; HDF5 sibling dataset
+`autocorrelator_perqubit`). This closes the known surface caveat where
+`map_dtc_to_qpu_3d.py` smeared one chain scalar across all placement qubits, so
+the "per-qubit" surface was in fact chain-resolution. With `--per-qubit` the
+reader attributes each site its OWN subharmonic, keyed by the file's
+`physical_q` column (self-describing, not a path re-parse), validated end-to-end
+by `tests/test_map_dtc_per_qubit_ordering.py`
+(RED-RULING-PER-QUBIT-AUTOCORRELATOR-AND-SITE-RESOLVED-RUN-v1.0).
+
+**Residual (by design, not a bug):** `--per-qubit` FAILS LOUD when a chain has
+only the scalar `.dat` (condition 4) — it will not silently smear. A true
+site-resolved Q50 surface therefore requires a run with the per-qubit observable
+emitted; the existing scalar-only survey (job 19064225) can only produce the
+smeared surface. The reader docstring previously over-claimed a per-qubit branch
+that did not exist; that path now exists and the over-claim is removed.
+
+**Trigger to resolve (the residual):** when the full per-site Q50 surface is
+wanted, re-run the chain survey with the per-qubit observable ON (free in
+compute — same counts; the un-collapse is a reduction choice) and run
+`map_dtc_to_qpu_3d.py --per-qubit`.
+
+**Future seam (tracked, not opened here):** a worker dispatch computes a single
+observable family and the per-qubit autocorrelator rides the autocorr path. The
+reusable per-site writer (`data/persite_output.write_persite_series`) is the seam
+the parked per-site observables (two-point correlation length; randomized-
+measurement shadows) reuse; multi-observable-per-dispatch remains D7's contract.

@@ -67,34 +67,74 @@ def subharmonic_amp(values):
     return float(2.0 * np.abs(X[-1]) / n)
 
 
-def per_qubit_dtc(results_dir):
-    """Map chain DTC onto qubits. Returns {QB: (mean_dtc, coverage)}.
+def per_qubit_dtc(results_dir, per_qubit=False):
+    """Map DTC subharmonic onto qubits. Returns {QB: (mean_dtc, coverage)}.
 
-    If a chain dir has per-qubit instance_*_qubit*.dat (future per-qubit observable),
-    attribute each qubit its own value; otherwise smear the chain scalar over its
-    physical qubits (current qubit-averaged observable).
+    Default (``per_qubit=False``, legacy): each chain contributes ONE scalar
+    smeared across its physical qubits — a chain-resolution surface.
+
+    ``per_qubit=True``: read the self-describing per-qubit .dat
+    (``aggregated_autocorr_perqubit.dat``), compute each qubit's OWN subharmonic
+    from its own column, and attribute it by the file's ``physical_q`` column —
+    a true site-resolved surface (RED-RULING-PER-QUBIT §2.1). FAILS LOUD if
+    per-qubit is requested but a chain has only the chain-averaged scalar:
+    silently smearing chain data as per-site is the exact failure this mode
+    exists to remove (RED-RULING-PER-QUBIT D6 / condition 4).
     """
     sums = {}
     counts = {}
     for root, _dirs, files in os.walk(results_dir):
-        if "aggregated_autocorr.dat" not in files:
-            continue
         parts = os.path.normpath(root).split(os.sep)
         if len(parts) < 3:
             continue
         obs, _env, phys = parts[-1], parts[-2], parts[-3]
         if obs != "autocorr":
             continue
-        qbs = re.findall(r"QB\d+", phys)
-        if not qbs:
-            continue
-        arr = np.loadtxt(os.path.join(root, "aggregated_autocorr.dat"), comments="#")
-        if arr.ndim == 1:
-            arr = arr[None, :]
-        chain_dtc = subharmonic_amp(arr[:, 1])
-        for q in qbs:  # smear chain scalar; per-qubit data would set value per q
-            sums[q] = sums.get(q, 0.0) + chain_dtc
-            counts[q] = counts.get(q, 0) + 1
+        has_scalar = "aggregated_autocorr.dat" in files
+        has_pq = "aggregated_autocorr_perqubit.dat" in files
+        if per_qubit:
+            if not has_pq:
+                if not has_scalar:
+                    continue
+                raise SystemExit(
+                    f"per-qubit surface requested but {root} has only the "
+                    f"chain-averaged aggregated_autocorr.dat (no "
+                    f"aggregated_autocorr_perqubit.dat). Refusing to smear chain "
+                    f"data as per-site (RED-RULING-PER-QUBIT D6). Re-run with the "
+                    f"per-qubit observable, or drop --per-qubit for the smeared "
+                    f"chain-resolution surface."
+                )
+            # Self-describing: attribute each qubit by the file's physical_q
+            # column, NOT by re-parsing the path, so a re-sorted placement cannot
+            # transpose sites (RED §2.1). Columns: kick local_q physical_q mean sem.
+            series = {}  # physical_q -> list of (kick, mean)
+            with open(os.path.join(root, "aggregated_autocorr_perqubit.dat")) as fh:
+                for ln in fh:
+                    if ln.startswith("#") or not ln.strip():
+                        continue
+                    c = ln.split()
+                    kick, physical_q, mean = int(c[0]), c[2], float(c[3])
+                    series.setdefault(physical_q, []).append((kick, mean))
+            for q, kv in series.items():
+                vals = [m for _, m in sorted(kv)]
+                s = subharmonic_amp(vals)
+                sums[q] = sums.get(q, 0.0) + s
+                counts[q] = counts.get(q, 0) + 1
+        else:
+            if not has_scalar:
+                continue
+            qbs = re.findall(r"QB\d+", phys)
+            if not qbs:
+                continue
+            arr = np.loadtxt(
+                os.path.join(root, "aggregated_autocorr.dat"), comments="#"
+            )
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            chain_dtc = subharmonic_amp(arr[:, 1])
+            for q in qbs:  # smear chain scalar over its physical qubits
+                sums[q] = sums.get(q, 0.0) + chain_dtc
+                counts[q] = counts.get(q, 0) + 1
     return {q: (sums[q] / counts[q], counts[q]) for q in sums}
 
 
@@ -166,10 +206,15 @@ def main(argv=None):
     ap.add_argument("results")
     ap.add_argument("--metric", default="t2_echo_us")
     ap.add_argument("--out", default="qpu_dtc_map")
+    ap.add_argument(
+        "--per-qubit", action="store_true",
+        help="true site-resolved surface from aggregated_autocorr_perqubit.dat "
+             "(fails loud if absent); default smears the chain scalar",
+    )
     args = ap.parse_args(argv)
 
     qubits, edges = load_cal(args.calibration)
-    dtc = per_qubit_dtc(args.results)
+    dtc = per_qubit_dtc(args.results, per_qubit=args.per_qubit)
     os.makedirs(args.out, exist_ok=True)
     w = [write_surface_html(qubits, edges, dtc,
                             os.path.join(args.out, "qpu_dtc_surface_3d.html")),
