@@ -145,3 +145,71 @@ def aggregate_byo_autocorr(per_seed_series, out_dir, *, write_per_instance=True)
             f.write(f"{n:4d} {mean_corr[n]:10.4f} {sem_corr[n]:10.4f}\n")
 
     return mean_corr, sem_corr
+
+
+def get_autocorrelation_perqubit(counts, init_bit_array, num_qubits):
+    """Per-qubit (un-collapsed) autocorrelator vector from a counts dict.
+
+    The site-resolved form of ``get_autocorrelation`` (RED-RULING-PER-QUBIT §1).
+    Same little-endian reversal and match-vs-init convention; per wire i it
+    returns ``A_i = <s_i>`` where ``s_i = +1`` when the measured bit at wire i
+    equals ``init_bit_array[i]`` else ``-1``, weighted by count and normalized by
+    ``total_shots``. Wire i is the logical qubit; its physical qubit is
+    ``physical_qubit_set[i]`` (path order — load-bearing, see the .dat writer).
+
+    Parity (the value-shape-only invariant): the legacy scalar is the mean over
+    wires — ``get_autocorrelation(...) == perqubit.sum() / num_qub`` exactly, and
+    equals ``perqubit.mean()`` when the measured bitstring width ``num_qub``
+    equals ``num_qubits`` (the chain is measured exactly, which is the validated
+    path). The integer per-wire sums here are the same terms ``get_autocorrelation``
+    accumulates into ``total_corr`` before its single division, so nothing is
+    discarded — the un-collapse is free in compute.
+
+    Returns: numpy array of shape (num_qubits,).
+    """
+    total_shots = sum(counts.values())
+    init = np.asarray(init_bit_array)[:num_qubits]
+    corr = np.zeros(num_qubits, dtype=float)
+    for bitstring, count in counts.items():
+        bit_array = np.array(list(bitstring), dtype=int)[::-1][:num_qubits]
+        s = np.where(bit_array == init, 1.0, -1.0)
+        corr += s * count
+    return corr / total_shots
+
+
+def aggregate_byo_autocorr_perqubit(per_seed_matrices, physical_qubit_set, out_dir):
+    """Write the SELF-DESCRIBING per-qubit autocorrelator .dat (RED-RULING-PER-QUBIT
+    D1, §2.1) — a thin, autocorr-named wrapper over the generic per-site
+    serializer ``data.persite_output.write_persite_series``.
+
+    The generic helper is the reusable seam: it does the instance-axis mean/sem
+    (preserving the site axis automatically, RED §1) and the self-describing
+    write (physical qubit id carried in the file). This wrapper just pins the
+    autocorr filename and the RED-D1 column names (``kick local_q physical_q``),
+    so new per-site observables (per-site polarization, classical-shadow per-site
+    estimates, correlation-length's sibling) reuse ``write_persite_series``
+    directly instead of re-implementing the format. Local import keeps this
+    module qiskit-free and avoids any cross-package import-time coupling.
+
+    Args:
+      per_seed_matrices: list of ``(seed, matrix)``; each matrix has shape
+                         ``(N_kicks, num_qubits)`` (per-qubit vectors per kick,
+                         e.g. stacked ``get_autocorrelation_perqubit``).
+      physical_qubit_set: ordered logical->physical qubit ids, length num_qubits.
+      out_dir: directory to write into (created if absent).
+
+    Writes ``aggregated_autocorr_perqubit.dat``; returns (mean, sem) arrays of
+    shape (N_kicks, num_qubits).
+    """
+    from lumi_hpc_qc.data.persite_output import write_persite_series
+
+    return write_persite_series(
+        per_seed_matrices,
+        physical_qubit_set,
+        out_dir,
+        filename="aggregated_autocorr_perqubit.dat",
+        grid_label="kick",
+        local_label="local_q",
+        physical_label="physical_q",
+        value_label="autocorr",
+    )
