@@ -218,7 +218,7 @@ sweep:
         initial_state: 3
       disorder_gates: [rz, rzz]
       seed_list: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]   # 10 disorder realizations
-      shots: 100
+      shots: 1000
       noise_configs: [device_calibrated]
   calibrations:
     - examples/q50_calibration_20260605_e3217da7.json
