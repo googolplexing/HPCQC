@@ -26,7 +26,6 @@ Phase E — RED-DIRECTIVE-PHASE-E-ROADMAP-v1.0, System 5
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import time
@@ -37,6 +36,20 @@ from typing import Any, Generator
 
 import h5py
 import numpy as np
+
+
+def _byo_wal_safe(result: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a BYO result dict to JSON-serializable for the WAL line
+    (numpy ints/floats → python; arrays → lists). Pure; no I/O."""
+    def _coerce(v):
+        if isinstance(v, np.generic):
+            return v.item()
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if isinstance(v, (list, tuple)):
+            return [_coerce(x) for x in v]
+        return v
+    return {k: _coerce(v) for k, v in result.items()}
 
 
 @dataclass
@@ -88,33 +101,21 @@ class SweepResultEntry:
 
     @property
     def group_path(self) -> str:
-        """HDF5 group path for this result.
+        """HDF5 group path for this result — delegates to the single source of
+        truth (``battery_paths.battery_group_path``) so the on-disk path, the
+        merge extractor's parse, and the option-(i) expected-group inventory
+        cannot drift (RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN Q2).
 
-        Format: /devices/{device_prefix}/seeds/seed_{seed:04d}/
+        Format: devices/{device_prefix}/seeds/seed_{seed:04d}/
                 placements/{device_prefix}-{qubit_names}/
-                calibrations/{calibration_id}/{noise_config}/
-                [params_{hash}]   ← only when model_params non-empty (LHS mode)
-
-        The params hash suffix prevents path collisions when multiple
-        LHS samples share the same (device, seed, placement, calibration,
-        noise_config) combination but have different Hamiltonian parameters.
-        Grid-mode tasks have empty model_params → path unchanged.
+                calibrations/{calibration_id}/{noise_config}/[params_{hash}]
+        (the params suffix appears only in LHS mode; grid mode → unchanged).
         """
-        qubit_str = "_".join(self.placement_qubits)
-        base = (
-            f"devices/{self.device_prefix}/"
-            f"seeds/seed_{self.seed:04d}/"
-            f"placements/{self.device_prefix}-{qubit_str}/"
-            f"calibrations/{self.calibration_id}/"
-            f"{self.noise_config}"
+        from lumi_hpc_qc.sweep.battery_paths import battery_group_path
+        return battery_group_path(
+            self.device_prefix, self.seed, self.placement_qubits,
+            self.calibration_id, self.noise_config, self.model_params,
         )
-        if self.model_params:
-            params_str = ",".join(
-                f"{k}={v:.8f}" for k, v in sorted(self.model_params.items())
-            )
-            params_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
-            return f"{base}/params_{params_hash}"
-        return base
 
     def to_wal_dict(self) -> dict[str, Any]:
         """Serialize to a WAL-safe dict (JSON-serializable)."""
@@ -179,6 +180,7 @@ class SweepHDF5Writer:
         wal_path: str | None = None,
         debug_json: bool = False,
         debug_json_dir: str | None = None,
+        byo_collision_stems: set[str] | None = None,
     ) -> None:
         self._hdf5_path = Path(hdf5_path)
         self._wal_path = Path(wal_path or str(hdf5_path) + ".wal")
@@ -186,6 +188,12 @@ class SweepHDF5Writer:
         self._enable_swmr = enable_swmr
         self._debug_json = debug_json
         self._debug_json_dir = Path(debug_json_dir) if debug_json_dir else None
+        # BYO-FAMILY-COLLISION fix (b1): script stems hosting >1 circuit family
+        # in this run (computed once at run level). For these, the default
+        # family's leaf is disambiguated by circuit_function via the shared
+        # byo_observable_subpath seam — in lockstep with the .dat aggregator.
+        # Empty/None => no collision => legacy "" layout (byte-identical).
+        self._byo_collision_stems = byo_collision_stems or set()
         self._h5file: h5py.File | None = None
         self._wal_file = None
         self._write_count = 0
@@ -378,6 +386,141 @@ class SweepHDF5Writer:
         grp.attrs["packing_qubit_utilization"] = entry.packing_qubit_utilization
         grp.attrs["packing_algorithm"] = entry.packing_algorithm
 
+    # ── BYO counts results (SPEC-002 §7.5 / D3.4c, Option A) ──
+    # The BYO counts→autocorrelator observable is a per-kick VECTOR, not an
+    # energy trajectory, so it gets its own group tree under /byo rather than
+    # being forced through the energy-shaped SweepResultEntry. The 71-col
+    # physics-Parquet extension is a separate, Red-reviewed step.
+    def write_byo_result(self, result: dict[str, Any]) -> None:
+        """Write one BYO (seed × placement × env) autocorrelator series.
+
+        Group path:
+          /byo/{script_stem}/seeds/seed_{seed:04d}/
+              placements/{phys_qubits_joined}/{env}
+
+        Datasets:  autocorrelator (float64[N_kicks]), num_kicks (int[N_kicks]),
+                   physical_qubit_set (utf-8[n_qubits]).
+        Attrs:     noise_source, noise_placement_independent, seed,
+                   seed_simulator, master_seed, shots, placement_id,
+                   optimization_level, calibration_set_id (NF4).
+
+        ``result`` is one dict from SweepEngine._byo_results_last.
+        """
+        if not self._opened:
+            raise RuntimeError("Writer not opened. Use 'with' or call open().")
+
+        script_stem = Path(result["script"]).stem if result.get("script") else "byo"
+        phys = "-".join(str(q) for q in result["physical_qubit_set"])
+        # D7 increment 2: observable level appended via the shared helper —
+        # "" for the synthesized "default" (LEGACY path, byte-identical pre-D7,
+        # so the W1.6 gate / banked references are untouched) or "/<name>" for a
+        # declared family. Local import: sweep/__init__ pulls sweep_engine, which
+        # imports this module, so a module-level sweep import here would cycle.
+        from lumi_hpc_qc.sweep.byo_observable import (
+            DEFAULT_OBSERVABLE_NAME,
+            byo_observable_subpath,
+        )
+        observable = result.get("observable", DEFAULT_OBSERVABLE_NAME)
+        # BYO-FAMILY-COLLISION fix (b1): disambiguate a default-family leaf by
+        # circuit_function iff this script stem hosts >1 family in the run
+        # (the run-level set passed at construction). Same seam + same flag the
+        # .dat aggregator uses, so the HDF5 and .dat layouts cannot drift.
+        circuit_function = result.get("circuit_function")
+        disambiguate = script_stem in self._byo_collision_stems
+        # No leading slash — matches SweepResultEntry.group_path ("devices/...")
+        # and the names h5py.visititems reports (root-relative). h5py.create_group
+        # places it at /byo/... regardless, and f["/byo/..."] still resolves it.
+        group_path = (
+            f"byo/{script_stem}/seeds/seed_{int(result['seed']):04d}/"
+            f"placements/{phys}/{result['env']}"
+            f"{byo_observable_subpath(observable, circuit_function, disambiguate)}"
+        )
+
+        # WAL append (crash-safe), tagged so recovery can distinguish BYO rows.
+        # The computed group_path is stored in the WAL line so it is symmetric
+        # with the energy path (SweepResultEntry.to_wal_dict carries group_path):
+        # both verify_consistency and recover_from_wal key off group_path, so a
+        # BYO line WITHOUT it would be silently dropped by recovery and would
+        # inject "" into verify_consistency's wal_paths (spurious inconsistency).
+        wal_line = json.dumps(
+            {"_kind": "byo", "group_path": group_path, **_byo_wal_safe(result)}
+        ) + "\n"
+        self._wal_file.write(wal_line)
+        self._wal_file.flush()
+        os.fsync(self._wal_file.fileno())
+
+        self._write_byo_hdf5_group(result, group_path)
+        self._h5file.flush()
+        self._write_count += 1
+
+    def _write_byo_hdf5_group(
+        self, result: dict[str, Any], group_path: str
+    ) -> None:
+        """Create the BYO HDF5 group (datasets + attrs) at ``group_path``.
+
+        Pure HDF5 write — no WAL append, no flush — so it can be reused by both
+        ``write_byo_result`` (live path) and ``recover_from_wal`` (replay path,
+        which must NOT re-append to the WAL). ``result`` may be either a live
+        ``_byo_results_last`` dict or a WAL-replayed dict (same keys).
+        """
+        if group_path in self._h5file:
+            del self._h5file[group_path]
+        grp = self._h5file.create_group(group_path)
+
+        grp.create_dataset(
+            "autocorrelator",
+            data=np.array(result["autocorrelator"], dtype=np.float64),
+        )
+        # Per-qubit (un-collapsed) matrix (N_kicks, num_qubits). Additive — the
+        # scalar "autocorrelator" dataset above stays byte-identical (RED-RULING-
+        # PER-QUBIT condition 3). physical_qubit_set is stored below, so the group
+        # is self-describing for per-qubit too. Conditional so error records
+        # (empty list) and WAL replay of any pre-field line stay valid.
+        pq = result.get("autocorrelator_perqubit")
+        if pq is not None and len(pq) > 0:
+            grp.create_dataset(
+                "autocorrelator_perqubit",
+                data=np.array(pq, dtype=np.float64),
+            )
+        grp.create_dataset(
+            "num_kicks",
+            data=np.array(result["num_kicks"], dtype=np.int64),
+        )
+        dt_str = h5py.string_dtype(encoding="utf-8")
+        grp.create_dataset(
+            "physical_qubit_set",
+            data=np.array([str(q) for q in result["physical_qubit_set"]], dtype=object),
+            dtype=dt_str,
+        )
+
+        grp.attrs["noise_source"] = result["noise_source"]
+        grp.attrs["noise_placement_independent"] = bool(
+            result["noise_placement_independent"]
+        )
+        grp.attrs["seed"] = int(result["seed"])
+        if result.get("seed_simulator") is not None:
+            grp.attrs["seed_simulator"] = int(result["seed_simulator"])
+        # RED-RESP-D3.4C §3: master_seed is the parent knob seed_simulator is
+        # derived from (seed_simulator = resolve_instance_seed(master_seed,
+        # seed)). Store it whenever known (0 is a valid value -> `is not None`)
+        # so a stored result is traceable to the run that produced it. Absent
+        # only when the disorder carried no master_seed (entropy / unrepeatable).
+        if result.get("master_seed") is not None:
+            grp.attrs["master_seed"] = int(result["master_seed"])
+        grp.attrs["shots"] = int(result["shots"])
+        if result.get("placement_id") is not None:
+            grp.attrs["placement_id"] = int(result["placement_id"])
+        # NF4 (W1.4): persist the W1 provenance attrs that the result dict +
+        # WAL already carry but the writer previously dropped. optimization_level
+        # is physics-affecting under noise (CFG-2); calibration_set_id ties the
+        # record to its calibration. .get() so WAL-replay (which feeds the same
+        # _write_byo_hdf5_group via _byo_wal_safe, a whole-dict coercion) and the
+        # live path behave identically. Criterion 6 (RED-RESP-W1.3-VERIFY NF4).
+        if result.get("optimization_level") is not None:
+            grp.attrs["optimization_level"] = int(result["optimization_level"])
+        if result.get("calibration_set_id") is not None:
+            grp.attrs["calibration_set_id"] = str(result["calibration_set_id"])
+
     def create_soft_link(
         self, source_path: str, target_path: str
     ) -> None:
@@ -427,9 +570,14 @@ class SweepHDF5Writer:
                 if group_path in self._h5file:
                     continue  # Already written
 
-                # Reconstruct entry and write
-                entry = self._wal_dict_to_entry(wal_dict)
-                self._write_hdf5_group(entry)
+                # Reconstruct entry and write. BYO rows (D3.4c) are not
+                # energy-shaped, so they cannot go through _wal_dict_to_entry /
+                # _write_hdf5_group — replay them via the BYO group writer.
+                if wal_dict.get("_kind") == "byo":
+                    self._write_byo_hdf5_group(wal_dict, group_path)
+                else:
+                    entry = self._wal_dict_to_entry(wal_dict)
+                    self._write_hdf5_group(entry)
                 recovered += 1
 
         self._h5file.flush()
@@ -499,7 +647,12 @@ class SweepHDF5Writer:
         hdf5_paths = set()
 
         def collect_groups(name, obj):
-            if isinstance(obj, h5py.Group) and "energy_trajectory" in obj:
+            # Energy leaf groups carry "energy_trajectory"; BYO leaf groups
+            # (D3.4c, /byo tree) carry "autocorrelator". Count both so a BYO or
+            # mixed run does not spuriously report WAL inconsistency.
+            if isinstance(obj, h5py.Group) and (
+                "energy_trajectory" in obj or "autocorrelator" in obj
+            ):
                 hdf5_paths.add(name)
 
         h5.visititems(collect_groups)

@@ -103,6 +103,66 @@ def _select_qubits(cal: dict, num_qubits: int) -> list[tuple[str, dict]]:
     return sorted_by_fid[:num_qubits]
 
 
+def _resolve_selected(
+    cal: dict,
+    num_qubits: int,
+    physical_qubits: list[str] | None = None,
+    physical_edges: list | None = None,
+) -> list[tuple[str, dict]]:
+    """Resolve the ordered (name, qdata) list a noise model is built from.
+
+    Two modes:
+      - physical_qubits is None: delegate to _select_qubits (auto-select the
+        best-connected subgraph by readout fidelity) -- the historical
+        behavior, byte-identical.
+      - physical_qubits given: use EXACTLY those qubits in the given logical
+        order, so logical index i maps to physical_qubits[i]. This is the F5a
+        per-placement path -- the placement solver's assignment, not a
+        fidelity-driven self-selection. (Mirrors twin_simulator's
+        build_placement_noise_model, the density_matrix analogue.)
+
+    Fail-loud (RED-REVIEW-SPEC-002-7.5 §3.1) when a placement is supplied: the
+    count must equal num_qubits, every name must exist in the calibration, and
+    any supplied physical_edges must be real calibrated two-qubit gates among
+    those qubits -- otherwise placement/calibration drift would silently
+    mis-key the noise model.
+    """
+    if physical_qubits is None:
+        return _select_qubits(cal, num_qubits)
+
+    qubits_data = cal.get("qubits", {})
+    if len(physical_qubits) != num_qubits:
+        raise ValueError(
+            f"physical_qubits has {len(physical_qubits)} names but "
+            f"num_qubits={num_qubits}; they must match"
+        )
+    missing = [q for q in physical_qubits if q not in qubits_data]
+    if missing:
+        raise ValueError(f"physical_qubits not in calibration: {missing}")
+
+    if physical_edges is not None:
+        name_set = set(physical_qubits)
+        cal_pairs = set()
+        for gate_pair in cal.get("two_qubit_gates", {}):
+            parts = gate_pair.split("-")
+            if len(parts) == 2:
+                cal_pairs.add(frozenset(parts))
+        for edge in physical_edges:
+            a, b = edge[0], edge[1]
+            if a not in name_set or b not in name_set:
+                raise ValueError(
+                    f"placement edge ({a}, {b}) uses a qubit outside "
+                    f"physical_qubits"
+                )
+            if frozenset((a, b)) not in cal_pairs:
+                raise ValueError(
+                    f"placement edge ({a}, {b}) is not a calibrated "
+                    f"two-qubit gate in this device"
+                )
+
+    return [(q, qubits_data[q]) for q in physical_qubits]
+
+
 def _resolve_channels(noise_channels: dict | None) -> dict:
     """If None: all active. If dict: only True channels active, missing default False."""
     if noise_channels is None:

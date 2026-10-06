@@ -58,6 +58,7 @@ def load_circuit(
     qasm_string: str | None = None,
     script_file: str | None = None,
     script_function: str = "build_circuit",
+    script_params: dict[str, Any] | None = None,
 ) -> LoadedCircuit:
     """Load a quantum circuit from various sources.
 
@@ -70,6 +71,9 @@ def load_circuit(
         qasm_string: Inline QASM string.
         script_file: Path to a Python script containing a circuit builder.
         script_function: Name of the function in the script (default: "build_circuit").
+        script_params: keyword arguments spread into the script factory
+            (SPEC-002 §7.5; only meaningful with ``script_file``). Empty/None
+            preserves the no-argument call.
 
     Returns:
         LoadedCircuit with extracted metadata.
@@ -105,7 +109,7 @@ def load_circuit(
     elif source_name == "qasm_string":
         qc, desc = _load_qasm_string(source_val)
     elif source_name == "script_file":
-        qc, desc = _load_script(source_val, script_function)
+        qc, desc = _load_script(source_val, script_function, script_params)
     else:
         raise ValueError(f"Unknown source: {source_name}")
 
@@ -127,6 +131,7 @@ def load_from_config(config: dict[str, Any]) -> LoadedCircuit:
     circuit_script = config.get("circuit_script")
     circuit_qasm = config.get("circuit_qasm")
     circuit_function = config.get("circuit_function", "build_circuit")
+    circuit_params = config.get("circuit_params")  # SPEC-002 §7.5: spread into the factory
 
     if circuit_file is not None:
         ext = os.path.splitext(circuit_file)[1].lower()
@@ -138,6 +143,7 @@ def load_from_config(config: dict[str, Any]) -> LoadedCircuit:
         return load_circuit(
             script_file=circuit_script,
             script_function=circuit_function,
+            script_params=circuit_params,
         )
     elif circuit_qasm is not None:
         return load_circuit(qasm_string=circuit_qasm)
@@ -188,11 +194,12 @@ def _load_qasm_string(qasm_str: str) -> tuple[QuantumCircuit, str]:
         return qc, "qasm2:inline"
 
 
-def _load_script(path: str, function_name: str) -> tuple[QuantumCircuit, str]:
-    """Load a circuit by calling a function in a Python script.
+def load_factory(path: str, function_name: str):
+    """Load (without calling) a circuit-factory callable from a Python script.
 
-    The script must define a function that returns a QuantumCircuit.
-    The function is called with no arguments.
+    Returned for signature inspection (SPEC-002 §7.5.1 pre-submit check) and for
+    building. The module is executed on import, so the script must be
+    import-safe (no side effects at module scope).
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Script file not found: {path}")
@@ -208,9 +215,26 @@ def _load_script(path: str, function_name: str) -> tuple[QuantumCircuit, str]:
             f"Script {path} has no function '{function_name}'. "
             f"Available: {[n for n in dir(module) if not n.startswith('_')]}"
         )
+    return getattr(module, function_name)
 
-    fn = getattr(module, function_name)
-    qc = fn()
+
+def _load_script(
+    path: str,
+    function_name: str,
+    params: dict[str, Any] | None = None,
+) -> tuple[QuantumCircuit, str]:
+    """Load a circuit by calling a function in a Python script.
+
+    The script must define a function that returns a QuantumCircuit.
+
+    Args:
+        params: keyword arguments spread into the factory (SPEC-002 §7.5 —
+            the per-task ``fixed`` ∪ ``disorder`` ∪ ``grid`` bundle assembled by
+            the engine). When ``None`` or empty the factory is called with no
+            arguments, preserving the original eval-only behavior.
+    """
+    fn = load_factory(path, function_name)
+    qc = fn(**params) if params else fn()
     if not isinstance(qc, QuantumCircuit):
         raise TypeError(
             f"{function_name}() returned {type(qc).__name__}, "
@@ -256,3 +280,43 @@ def extract_connectivity(qc: QuantumCircuit) -> list[tuple[int, int]]:
                 q0, q1 = q1, q0
             pairs.add((q0, q1))
     return sorted(pairs)
+
+
+def extract_disorder_signature(
+    qc: QuantumCircuit,
+    gate_names: tuple[str, ...] = ("rz", "rzz"),
+) -> dict[str, dict[tuple[int, ...], tuple[float, ...]]]:
+    """Repetition-invariant signature of a circuit's disorder-bearing gates.
+
+    Used as the concrete ``extract_disorder_params`` for the SPEC-002 §7.5.4
+    cross-grid identity check: two circuits built from the SAME (fixed,
+    disorder) at DIFFERENT grid points must carry identical disorder. Disorder
+    lives in the angle parameters of ``gate_names`` — for the Floquet example,
+    ``rz`` carries ``hz_angles`` and ``rzz`` carries ``Jzz_angles``; the ``rx``
+    drive (``(1-epsilon)·π``) is structural and deliberately *not* listed, so
+    sweeping ``epsilon`` does not trip the check.
+
+    Repetition-invariance: a Floquet circuit repeats the same per-period
+    disorder ``num_kicks`` times, so we key by ``(gate_name, qubit-tuple)`` and
+    keep only the FIRST occurrence's parameters. The first period's angles equal
+    the supplied disorder regardless of how many periods follow — so the
+    signature is invariant to the swept depth axis but sensitive to the disorder
+    values themselves. Two grid points that differ only in ``num_kicks`` produce
+    equal signatures; a factory that (wrongly) drew different disorder per grid
+    point produces unequal ones and the check fires.
+
+    ``gate_names`` is a parameter (default suits the Floquet example) so other
+    factories declare their own disorder-bearing gates rather than inheriting a
+    hardcoded set; the engine threads the experiment's configured value here.
+    """
+    names = set(gate_names)
+    sig: dict[str, dict[tuple[int, ...], tuple[float, ...]]] = {g: {} for g in gate_names}
+    for instruction in qc.data:
+        gname = instruction.operation.name
+        if gname not in names:
+            continue
+        qubits = tuple(qc.find_bit(q).index for q in instruction.qubits)
+        if qubits in sig[gname]:
+            continue  # first occurrence only → invariant to repetition count
+        sig[gname][qubits] = tuple(float(p) for p in instruction.operation.params)
+    return sig

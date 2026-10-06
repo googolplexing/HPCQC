@@ -33,6 +33,185 @@ from lumi_hpc_qc.plugins.calibration_adapters.base import (
 )
 
 
+def placement_internal_edges(
+    physical_indices: list[int], cal: "DeviceCalibration"
+) -> set[tuple[int, int]]:
+    """Canonical CZ coupling edges internal to a placement.
+
+    Returns the *set* of ``(min, max)`` qubit-index pairs for every coupling
+    edge whose both endpoints lie within ``physical_indices``. This is the
+    overlap-test primitive used by every packer/selector that must reject two
+    placements sharing a CZ edge (edge overlap → crosstalk, even with no shared
+    qubit).
+
+    Distinct from ``GeneralPlacementSolver._count_internal_edges``, which
+    returns the *count* (an ``int``) of the same edges: the count is used for
+    scoring (connectivity), the set is used for overlap testing. The three
+    packing sites (``_pack_dsatur``, ``_pack_greedy``, ``MixedPacker.pack``)
+    previously inlined this set construction identically; this is the single
+    shared primitive they now call, so a future change to edge canonicalisation
+    or calibration-format access happens in one place rather than four.
+
+    Pure: depends only on ``physical_indices`` and ``cal.adjacency``; no RNG, no
+    rustworkx, no I/O.
+    """
+    qset = set(physical_indices)
+    edges: set[tuple[int, int]] = set()
+    for qi in physical_indices:
+        for qj in cal.adjacency.get(qi, set()):
+            if qj in qset:
+                edges.add((min(qi, qj), max(qi, qj)))
+    return edges
+
+
+@dataclass
+class PlacementDiversityConfig:
+    """Per-experiment placement-diversity policy (Workstream A).
+
+    A *selection* policy layered on the solver path: instead of taking the
+    fidelity top-N (which cluster — the top chains are drawn from one
+    well-calibrated patch, so "N placements" can be one patch measured N
+    times), select N *spatially independent* placements.
+
+    Fields:
+      strategy: ``"none"`` (default; the path is byte-identical to today, this
+        config never enters the resolution branches) or ``"disjoint"``.
+      max_overlap: per-pair shared-CZ-edge budget. ``0`` (default) = strictly
+        disjoint (no shared qubit, no shared coupling edge — the
+        no-cross-talk-preserving case; the campaign default). ``d > 0`` admits a
+        placement sharing up to ``d`` CZ edges with the accepted union — which
+        REINTRODUCES a coupling between "independent" regions and is therefore
+        OFF the no-cross-talk guarantee; such a run MUST stamp
+        ``no_crosstalk=False`` in provenance (RED-RULING-WORKSTREAM-A §9.2).
+      count: ``"auto"`` (default) = the device-max disjoint placements this
+        strategy can pack on the calibration (computed by the greedy walk, never
+        a literal); a positive ``int`` = exactly that many, fail-loud if the
+        device cannot supply that many disjoint chains.
+    """
+    strategy: str = "none"        # "none" -> today's path, byte-identical
+    max_overlap: int = 0          # per-pair shared-edge budget; 0 = strict disjoint
+    count: int | str = "auto"     # "auto" -> device-max; int -> exactly that many
+
+    def is_active(self) -> bool:
+        return self.strategy not in ("none", None, "")
+
+    @property
+    def no_crosstalk(self) -> bool:
+        """True iff this policy preserves the no-cross-talk guarantee.
+
+        Strict disjoint (``max_overlap == 0``) shares no coupling edge between
+        regions, so per-placement noise composition stays independent (the F5a
+        property). ``max_overlap > 0`` does not — the provenance flag must say
+        so.
+        """
+        return self.max_overlap == 0
+
+
+def select_disjoint_placements(
+    candidates: list["Placement"],
+    cal: "DeviceCalibration",
+    *,
+    count: int | str = "auto",
+    max_overlap: int = 0,
+) -> list["Placement"]:
+    """Fidelity-ranked greedy selection of spatially-independent placements.
+
+    Walks ``candidates`` IN THE ORDER GIVEN (the caller passes the
+    ``_placement_sort_key``-sorted list — score desc, F5 physical-index
+    tie-break — so this inherits F5 determinism with no RNG) and accepts a
+    placement iff it shares no qubit with the accepted union AND shares at most
+    ``max_overlap`` CZ edges with it.
+
+    The ordering is the contract: "device-max" is ordering-dependent (a
+    connectivity-first pack yields a different, larger number than this
+    fidelity-ranked walk, because the top-scoring chains cluster and consuming
+    the best chain removes qubits the next-best ones needed). This function
+    pins the *fidelity-ranked* device-max. Any independent oracle MUST walk the
+    same ordering (RED-RULING-WORKSTREAM-A §3).
+
+    Args:
+        candidates: placements pre-sorted by ``_placement_sort_key``.
+        cal: device calibration (for the edge primitive).
+        count: ``"auto"`` -> accept until candidates exhausted (the accepted
+            count IS the fidelity-ranked device-max); ``int`` -> stop at that
+            many, and raise if the candidates are exhausted first.
+        max_overlap: shared-CZ-edge budget per acceptance (0 = strict).
+
+    Returns:
+        The selected placements, in acceptance (fidelity-ranked) order — so
+        scores are non-increasing.
+
+    Raises:
+        ValueError: ``count`` is a positive int and fewer than ``count``
+            disjoint placements exist on this calibration (fail-loud; a short
+            count that returns quietly is the family-collapse failure class).
+    """
+    want_auto = (count == "auto")
+    if not want_auto:
+        if not isinstance(count, int) or count <= 0:
+            raise ValueError(
+                f"placement_diversity.count must be 'auto' or a positive int; "
+                f"got {count!r}"
+            )
+
+    selected: list["Placement"] = []
+    used_qubits: set[int] = set()
+    used_edges: set[tuple[int, int]] = set()
+
+    for p in candidates:
+        p_qubits = set(p.physical_indices)
+        if p_qubits & used_qubits:
+            continue
+        p_edges = placement_internal_edges(p.physical_indices, cal)
+        if len(p_edges & used_edges) > max_overlap:
+            continue
+        selected.append(p)
+        used_qubits |= p_qubits
+        used_edges |= p_edges
+        if not want_auto and len(selected) == count:
+            break
+
+    if not want_auto and len(selected) < count:
+        raise ValueError(
+            f"placement_diversity: requested {count} disjoint placement(s) "
+            f"(max_overlap={max_overlap}), but only {len(selected)} fit on this "
+            f"calibration. Reduce count, raise max_overlap, or use a smaller "
+            f"circuit. (Not returning fewer silently — a short count is the "
+            f"family-collapse failure class.)"
+        )
+
+    return selected
+
+
+def _placement_sort_key(p: "Placement") -> tuple[float, list[int]]:
+    """Deterministic total-order key for placement selection (F5 invariant).
+
+    Returns a tuple sortable in ascending order, equivalent to ranking by:
+
+      1. ``score`` descending (best score first; negated so default ascending
+         sort gives the correct direction);
+      2. ``physical_indices`` ascending — tie-break on physical-qubit identity.
+
+    The same key MUST be used by both the eager (``find_all_placements``) and
+    any lazy (``top_1`` / ``top_N`` score-as-iterate, planned for W1.3)
+    selection paths, so they cannot disagree on ties. Required by Red's F5
+    ruling in ``RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4``: the lazy and
+    full-enumerate paths must select the byte-identical placement (same
+    physical-qubit mapping, same order) — otherwise a different lazy traversal
+    would pick a different physical qubit set → different calibration entries
+    → different noise → a silently different result.
+
+    The previous sort-by-score-alone resolved ties via Python's stable sort
+    over the ``rx.vf2_mapping`` iteration order, an implicit undocumented
+    ordering that a different traversal cannot reproduce.
+
+    ``physical_indices`` is already sorted ascending by ``find_all_placements``
+    (sorted at the point of dedup so the ``seen`` set keys on a canonical form),
+    so the tie-break is well-defined.
+    """
+    return (-p.score, p.physical_indices)
+
+
 @dataclass
 class Placement:
     """A single valid physical qubit placement for a circuit.
@@ -64,6 +243,11 @@ class Placement:
     per_qubit_calibration: dict[str, dict[str, float]] = field(
         default_factory=dict
     )
+    # Provenance of how this placement entered the resolved set (PLACEMENT union):
+    # "manual" = researcher-supplied (physical_qubits); "solver" = chosen by the
+    # placement solver (find_all_placements, ranked by score). Lets the VIP's
+    # ranking be audited (which chains they pinned vs which the solver picked).
+    source: str = "solver"
 
 
 @dataclass
@@ -147,7 +331,12 @@ class GeneralPlacementSolver:
             call_limit: VF2 backtracking limit (safety valve).
 
         Returns:
-            List of Placement objects, sorted by score descending.
+            List of Placement objects, sorted by ``_placement_sort_key``:
+            score descending, with ties broken by ``physical_indices``
+            ascending. The tie-break is the F5 invariant from
+            ``RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4``: it ensures any
+            lazy/bounded variant using the same key picks the byte-identical
+            placement(s) as full enumerate-then-sort.
         """
         targets = device_ids or list(self._devices.keys())
         all_placements: list[Placement] = []
@@ -236,6 +425,7 @@ class GeneralPlacementSolver:
                     avg_gate_fidelity=avg_cz,
                     topology_hash=topo_hash,
                     per_qubit_calibration=per_q,
+                    source="solver",
                 ))
                 self._placement_counter += 1
 
@@ -244,7 +434,7 @@ class GeneralPlacementSolver:
                 f"for {circuit_qubits}q circuit"
             )
 
-        all_placements.sort(key=lambda p: p.score, reverse=True)
+        all_placements.sort(key=_placement_sort_key)
         if max_placements is not None:
             all_placements = all_placements[:max_placements]
         return all_placements
@@ -314,15 +504,9 @@ class GeneralPlacementSolver:
 
         # Pre-compute qubit sets and edge sets per placement
         p_qubits = [set(p.physical_indices) for p in placements]
-        p_edges = []
-        for p in placements:
-            edges: set[tuple[int, int]] = set()
-            pq = set(p.physical_indices)
-            for qi in p.physical_indices:
-                for qj in cal.adjacency.get(qi, set()):
-                    if qj in pq:
-                        edges.add((min(qi, qj), max(qi, qj)))
-            p_edges.append(edges)
+        p_edges = [
+            placement_internal_edges(p.physical_indices, cal) for p in placements
+        ]
 
         # Build conflict graph
         conflict = rx.PyGraph()
@@ -377,11 +561,7 @@ class GeneralPlacementSolver:
                     still_remaining.append(p)
                     continue
 
-                p_edges = set()
-                for qi in p.physical_indices:
-                    for qj in cal.adjacency.get(qi, set()):
-                        if qj in p_qubits:
-                            p_edges.add((min(qi, qj), max(qi, qj)))
+                p_edges = placement_internal_edges(p.physical_indices, cal)
 
                 if p_edges & used_edges:
                     still_remaining.append(p)
@@ -397,6 +577,252 @@ class GeneralPlacementSolver:
             remaining = still_remaining
 
         return rounds
+
+    # --- Researcher-specified placements (PLACEMENT-1) ---
+
+    def placements_from_names(
+        self,
+        qubit_name_lists: list[list[str]],
+        circuit_edges: list[tuple[int, int]],
+        circuit_qubits: int,
+        device_id: str,
+        strategy: str = "max_fidelity",
+    ) -> list["Placement"]:
+        """Build faithful Placements from explicit qubit-name lists, bypassing
+        the subgraph search (PLACEMENT-1 / researcher placement control).
+
+        Logical qubit ``i`` maps to ``qubit_name_lists[k][i]`` -- the F5a
+        placement-keyed order (mirrors backends.noise_model._resolve_selected,
+        which uses supplied names "in the given logical order"). The returned
+        placements are structurally identical to ``find_all_placements`` output
+        (same fields, computed via the same scoring/metric helpers), so every
+        downstream consumer -- device-cal noise keying, output-path naming,
+        HDF5 provenance -- is unchanged.
+
+        Fail-loud, mirroring ``_resolve_selected``'s single-placement checks
+        applied per placement:
+          - each list length == ``circuit_qubits``;
+          - no repeated qubit within a placement;
+          - every name exists in the device calibration;
+          - every circuit edge maps to a real calibrated 2q device edge.
+        """
+        if device_id not in self._devices:
+            raise ValueError(
+                f"device_id {device_id!r} not registered with the solver"
+            )
+        cal = self._devices[device_id]
+        name_to_idx = {
+            name: idx for idx, name in cal.index_to_qubit_name.items()
+        }
+
+        placements: list[Placement] = []
+        for k, names in enumerate(qubit_name_lists):
+            if len(names) != circuit_qubits:
+                raise ValueError(
+                    f"physical_qubits[{k}] has {len(names)} qubit(s) but the "
+                    f"circuit needs {circuit_qubits}; they must match"
+                )
+            if len(set(names)) != len(names):
+                dupes = sorted({n for n in names if names.count(n) > 1})
+                raise ValueError(
+                    f"physical_qubits[{k}] repeats qubit(s): {dupes}"
+                )
+            missing = [n for n in names if n not in name_to_idx]
+            if missing:
+                raise ValueError(
+                    f"physical_qubits[{k}] not in calibration {device_id!r}: "
+                    f"{missing}"
+                )
+            logical_idx = [name_to_idx[names[i]] for i in range(circuit_qubits)]
+            for (a, b) in circuit_edges:
+                ia, ib = logical_idx[a], logical_idx[b]
+                if ib not in cal.adjacency.get(ia, set()):
+                    raise ValueError(
+                        f"physical_qubits[{k}]: circuit edge ({a},{b}) maps to "
+                        f"physical pair ({names[a]},{names[b]}), which is not a "
+                        f"calibrated 2q gate on {device_id!r}"
+                    )
+            qubit_mapping = {i: names[i] for i in range(circuit_qubits)}
+            phys_indices = sorted(logical_idx)
+            placements.append(Placement(
+                placement_id=k,
+                device_id=cal.device_id,
+                device_prefix=cal.device_prefix,
+                qubit_mapping=qubit_mapping,
+                physical_indices=phys_indices,
+                score=self._score_placement(phys_indices, cal, strategy),
+                internal_edges=self._count_internal_edges(phys_indices, cal),
+                avg_readout_fidelity=self._avg_readout(phys_indices, cal),
+                avg_gate_fidelity=self._avg_gate_fidelity(phys_indices, cal),
+                topology_hash=self._topology_hash(phys_indices, cal),
+                per_qubit_calibration=self._per_qubit_calibration(
+                    phys_indices, cal
+                ),
+                source="manual",
+            ))
+        return placements
+
+    def _compose_manual_solver(
+        self,
+        manual: list["Placement"],
+        solver: list["Placement"],
+        solver_top_n: int,
+    ) -> tuple[list["Placement"], dict]:
+        """Compose manual ∪ solver-top-N placements, deduped, manual-first.
+
+        PLACEMENT union (Piece 1). ``manual`` are researcher-supplied placements
+        (source="manual"); ``solver`` are the score-ranked solver placements
+        already fetched to depth N + len(manual) (source="solver"). Returns the
+        merged list and a stats dict.
+
+        Semantics (net-N-NEW solver chains):
+          - Dedup ``solver`` against ``manual`` on ``frozenset(physical_indices)``
+            (set-level; the same physical-qubit identity _placement_sort_key
+            tie-breaks on, so dedup and ranking agree). A solver placement covering the
+            same qubit SET as a manual one is dropped -- the manual entry wins
+            (precedence), preserving the researcher's logical ordering.
+          - Keep the top ``solver_top_n`` of the survivors (ranked). Because each
+            manual chain collides with at most one distinct solver placement,
+            D <= len(manual), so fetching N + len(manual) guarantees >= N
+            survivors UNLESS the device is exhausted of distinct chains -- in
+            which case fewer than N survive (S < N) and that shortfall is
+            reported, never padded or silently dropped.
+          - Concatenate manual-first, then solver-ranked. Re-assign placement_id
+            0..M-1 over the final order (placement_id is provenance only on the
+            BYO path -- identity is the qubit-name string -- so re-id is safe).
+        """
+        manual_sets = {frozenset(p.physical_indices) for p in manual}
+        survivors, deduped = [], 0
+        for p in solver:
+            if frozenset(p.physical_indices) in manual_sets:
+                deduped += 1
+            else:
+                survivors.append(p)
+        kept = survivors[:solver_top_n]
+        merged = list(manual) + kept
+        for new_id, p in enumerate(merged):
+            p.placement_id = new_id
+        stats = {
+            "k_manual": len(manual),
+            "n_requested": solver_top_n,
+            "s_solver": len(kept),
+            "d_deduped": deduped,
+            "fetch_depth": solver_top_n + len(manual),
+            "short_of_n": max(0, solver_top_n - len(kept)),
+        }
+        return merged, stats
+
+    def resolve_placements(
+        self,
+        circuit_edges: list[tuple[int, int]],
+        circuit_qubits: int,
+        device_id: str,
+        strategy: str = "max_fidelity",
+        max_placements: int | None = None,
+        call_limit: int = 100_000,
+        manual_qubit_name_lists: list[list[str]] | None = None,
+        solver_top_n: int | None = None,
+        diversity: "PlacementDiversityConfig | None" = None,
+    ) -> list["Placement"]:
+        """Single placement-resolution seam (PLACEMENT-1).
+
+        Four modes:
+          - ``diversity`` active (``strategy != "none"``): solver self-selects
+            the full candidate list, then ``select_disjoint_placements`` picks a
+            spatially-independent subset (Workstream A). Mutually exclusive with
+            ``manual_qubit_name_lists`` (enforced at parse, asserted here).
+          - ``manual_qubit_name_lists`` given, ``solver_top_n`` None: solver
+            bypassed, exactly the researcher's placements (today's behaviour,
+            byte-identical).
+          - ``manual_qubit_name_lists`` None: solver self-selects via
+            ``find_all_placements`` (today's behaviour, byte-identical -- forwards
+            its arguments unchanged).
+          - BOTH given (PLACEMENT union): the researcher's manual placements PLUS
+            the solver's top ``solver_top_n`` NEW chains (deduped against the
+            manual set, net-N-new). See ``_compose_manual_solver``. The solver is
+            fetched to depth ``solver_top_n + len(manual)`` so N survive dedup.
+
+        ``max_placements``/``call_limit`` apply only to the solver path
+        (``placements_from_names`` returns exactly the supplied placements).
+        Noise/guardrail policy (e.g. the F5a device-calibrated single-placement
+        restriction) is deliberately left to the caller, since it differs per
+        executor -- this seam composes placements; it does not decide whether a
+        noise environment permits more than one.
+        """
+        if diversity is not None and diversity.is_active():
+            if manual_qubit_name_lists:
+                # Defence-in-depth: parse rejects this combination (manual +
+                # diversity are contradictory intents). If it ever reaches the
+                # seam, fail loud rather than silently pick one.
+                raise ValueError(
+                    "placement_diversity and manual physical_qubits are "
+                    "mutually exclusive (cannot diversify a hand-pinned set). "
+                    "This should have been caught at parse."
+                )
+            candidates = self.find_all_placements(
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_ids=[device_id],
+                strategy=strategy,
+                max_placements=None,   # need the full ranked list to select over
+                call_limit=call_limit,
+            )
+            selected = select_disjoint_placements(
+                candidates,
+                self._devices[device_id],
+                count=diversity.count,
+                max_overlap=diversity.max_overlap,
+            )
+            print(
+                f"  PLACEMENT diversity: strategy=disjoint "
+                f"max_overlap={diversity.max_overlap} "
+                f"count={diversity.count} -> {len(selected)} disjoint "
+                f"placement(s) selected from {len(candidates)} candidate(s) "
+                f"[no_crosstalk={diversity.no_crosstalk}]"
+            )
+            return selected
+        if manual_qubit_name_lists and solver_top_n is not None:
+            manual = self.placements_from_names(
+                qubit_name_lists=manual_qubit_name_lists,
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_id=device_id,
+                strategy=strategy,
+            )
+            solver = self.find_all_placements(
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_ids=[device_id],
+                strategy=strategy,
+                max_placements=solver_top_n + len(manual),
+                call_limit=call_limit,
+            )
+            merged, stats = self._compose_manual_solver(manual, solver, solver_top_n)
+            short = (f", {stats['short_of_n']} short of N"
+                     if stats["short_of_n"] else "")
+            print(
+                f"  PLACEMENT union: {stats['k_manual']} manual + "
+                f"{stats['s_solver']} solver (requested {stats['n_requested']}, "
+                f"fetched {stats['fetch_depth']} deep, "
+                f"{stats['d_deduped']} deduped against manual{short})"
+            )
+            return merged
+        if manual_qubit_name_lists:
+            return self.placements_from_names(
+                qubit_name_lists=manual_qubit_name_lists,
+                circuit_edges=circuit_edges,
+                circuit_qubits=circuit_qubits,
+                device_id=device_id,
+                strategy=strategy,
+            )
+        return self.find_all_placements(
+            circuit_edges=circuit_edges,
+            circuit_qubits=circuit_qubits,
+            device_ids=[device_id],
+            strategy=strategy,
+            max_placements=max_placements,
+            call_limit=call_limit,
+        )
 
     # --- Scoring ---
 

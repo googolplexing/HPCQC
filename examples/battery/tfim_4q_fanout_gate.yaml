@@ -1,0 +1,41 @@
+# Battery (hamiltonian twin) fan-out byte-identity gate fixture
+# (RED-RULING-ITEM3 §4/§5; the non-BYO genericity proof).
+#
+# The synthetic-channel twin battery is the second sweep path the generic
+# fan-out layer must carry. This fixture is the battery analog of the BYO
+# floquet gate fixture (examples/byo/floquet_dtc_q10_fanout_gate_8unit.yaml).
+#
+# 2 placements x seed_list [0,1] = 4 work-units, each running BOTH noise envs
+# inside one _battery_worker. 4 is the smallest count that exercises the shard
+# at an allocation that DIVIDES the unit count (2-rank -> 2/2) and one that does
+# NOT (3-rank -> 2/1/1, the non-dividing shard-index path where an off-by-one
+# would hide). Byte-identity is unit-count-independent (a unit's output is a
+# pure function of its inputs, independent of sibling count or which rank ran
+# it), so 4 units proves the shard+union as well as more would.
+#
+# placement: 2 caps the solver to its top-2 placements, so the count is
+# DETERMINISTIC (the battery path gates manual placement off — placements are
+# solver-resolved, deterministic given (topology, device)). Grid-mode (no LHS
+# sampling) so there is no params_ suffix in the HDF5 path -> the BatteryReducer
+# group key is exactly the approved 4-tuple.
+#
+# noise_configs are CHANNEL envs (source="channels"): noiseless + readout-only.
+# device_calibrated is intentionally NOT used — the synthetic-channel battery
+# refuses it (it belongs to the BYO counts path), so it would (correctly) raise.
+
+sweep:
+  output_dir: sweep_output/battery_fanout_gate   # overridden per-run by the gate
+
+  experiments:
+    - type: characterization
+      label: battery_fanout_gate
+      hamiltonians: [tfim]
+      qubit_sizes: [4]
+      topologies: [4q_chain]
+      placement: 2                 # top-2 solver placements -> deterministic, 4 units
+      seed_list: [0, 1]
+      noise_configs: [noiseless, noise_readout_only]   # channel envs (source=channels)
+      shots: 1000
+
+  calibrations:
+    - examples/q50_calibration_20260524_08c3c70f.json

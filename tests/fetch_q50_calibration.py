@@ -56,7 +56,8 @@ def convert_to_hpcqc_format(metrics_data, architecture=None,
     Returns:
         HPCQC calibration dict with keys: calibration_set_id, timestamp,
         device, adapter, qubits, two_qubit_gates, qubit_connectivity,
-        active_qubits, native_operations, single_gate_time_ns, cz_gate_time_ns.
+        active_qubits, native_operations, single_gate_time_ns,
+        cz_gate_time_ns, measure_time_ns, duration_source.
     """
     cal_id = metrics_data.get("calibration_set_id", "unknown")
     timestamp = metrics_data.get(
@@ -173,8 +174,18 @@ def convert_to_hpcqc_format(metrics_data, architecture=None,
         "qubits": qubits,
         "two_qubit_gates": two_qubit_gates,
         "qubit_connectivity": qubit_connectivity,
+        # Gate/readout durations (ns). The VTT QX calibration metrics API
+        # does NOT report gate timings, so these are sourced from the VTT
+        # Q50 demonstrator data sheet (OSQ Demonstrator details, column
+        # "VTT Q50"): PRX 20 ns, CZ 60 ns, readout 1576 ns. They are
+        # device-representative constants, not per-calibration values; for
+        # live per-calibration durations the only route is pulse-level
+        # access via iqm-pulla (not used here). The duration_source field
+        # records this provenance for downstream consumers and methods.
         "single_gate_time_ns": 20,
-        "cz_gate_time_ns": 100,
+        "cz_gate_time_ns": 60,
+        "measure_time_ns": 1576,
+        "duration_source": "vtt_q50_demonstrator_sheet",
     }
 
     if active_qubits is not None:

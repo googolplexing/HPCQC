@@ -33,7 +33,7 @@ from typing import Any
 import numpy as np
 from qiskit import QuantumCircuit
 
-from lumi_hpc_qc.sweep.placement_solver import Placement
+from lumi_hpc_qc.sweep.placement_solver import Placement, placement_internal_edges
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -193,12 +193,9 @@ class MixedPacker:
                         continue
 
                     # Check edge overlap
-                    p_edges = set()
-                    if self._device_cal is not None:
-                        for qi in p.physical_indices:
-                            for qj in self._device_cal.adjacency.get(qi, set()):
-                                if qj in p_qubits:
-                                    p_edges.add((min(qi, qj), max(qi, qj)))
+                    p_edges = placement_internal_edges(
+                        p.physical_indices, self._device_cal
+                    )
 
                     if p_edges & used_edges:
                         continue

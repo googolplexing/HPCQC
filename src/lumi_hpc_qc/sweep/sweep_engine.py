@@ -53,6 +53,7 @@ from lumi_hpc_qc.sweep.placement_solver import (
     GeneralPlacementSolver,
     Placement,
     PackingRound,
+    PlacementDiversityConfig,
 )
 from lumi_hpc_qc.sweep.topology_library import (
     TOPOLOGY_LIBRARY,
@@ -66,6 +67,10 @@ from lumi_hpc_qc.sweep.twin_simulator import (
     PlacementBatteryResult,
 )
 from lumi_hpc_qc.data.hdf5_writer import SweepHDF5Writer, SweepResultEntry
+from lumi_hpc_qc.sweep.byo_observable import (
+    DEFAULT_OBSERVABLE_NAME,
+    byo_observable_subpath,
+)
 from lumi_hpc_qc import __version__ as _pkg_version
 
 
@@ -116,6 +121,14 @@ class QPUConfig:
     queue_prefetch: bool = False
 
 
+# CFG-1 / W3: smoke-run shot default for the BYO sampling path. Used only when an
+# env carries shots == 0 (e.g. noiseless) AND no experiment-level shots is set.
+# Named (not a bare literal mid-function) so the smoke default is visible and
+# overridable. Execution-site precedence: experiment shots > env.shots >
+# DEFAULT_SMOKE_SHOTS.
+DEFAULT_SMOKE_SHOTS = 1000
+
+
 @dataclass
 class SweepExperimentConfig:
     """One experiment block from the sweep YAML.
@@ -137,6 +150,42 @@ class SweepExperimentConfig:
     # Noise scope
     noise_configs: str | list[str] = "all"  # "all" or explicit list
     measurement_stats_interval_override: int | None = None  # Override per-env default
+    # CFG-1 / W3: experiment-level shot count. When set, PINS the shot count for
+    # every sampling arm of this experiment, overriding each env's intrinsic
+    # NoiseConfig.shots (e.g. pins device_calibrated's 4096 down to a banked
+    # reference's 1000 — the gate-2 precondition). None -> per-env shots, with
+    # DEFAULT_SMOKE_SHOTS as the shots==0-env fallback (prior behavior).
+    shots: int | None = None
+
+    # CFG-2 / W1.2: experiment-level transpile optimization_level. Default 3
+    # when unset, mirroring the historical hardcode. **Physics-affecting under
+    # noise** — changing the level changes the transpiled gate set + scheduling,
+    # which changes the noise channels applied, which changes the result; it is
+    # NOT a free performance knob. A one-line health note is emitted at the
+    # end of any BYO group running at a non-default level. Resolved value is
+    # recorded per-result for provenance. Per RED-RESP-W1-PARALLELISM-AND-
+    # OOM-ROOTCAUSE-v1.4 Q3 ACCEPT: gate-2 pins 3 (the banked-reference lineage);
+    # `num_processes` stays tied to the single-thread worker model and is not
+    # exposed. None -> 3 (default).
+    optimization_level: int | None = None
+
+    # PLACEMENT-1: explicit researcher-chosen placement(s), bypassing the
+    # solver. None -> solver self-selects (current behavior). A list of
+    # qubit-name lists; logical qubit i maps to physical_qubits[k][i] (the F5a
+    # placement-keyed order, mirroring noise_model._resolve_selected).
+    physical_qubits: list[list[str]] | None = None
+
+    # Workstream A: placement-diversity selection policy. Default-inactive
+    # (strategy="none") -> the resolution path is byte-identical to today; this
+    # config never enters resolve_placements's branches unless active. When
+    # active ("disjoint"), the solver self-selects the full ranked candidate
+    # list and select_disjoint_placements picks a spatially-independent subset.
+    # Mutually exclusive with physical_qubits (parse-time error). Carried onto
+    # SweepTask and read at the executor seam (the W1.6 silent-solver lesson:
+    # a field the executor can't see off the task defaults to inactive).
+    placement_diversity: PlacementDiversityConfig = field(
+        default_factory=PlacementDiversityConfig
+    )
 
     # Placement strategy
     placement: str | int = "all_valid"  # "all_valid", "top_N", or int
@@ -146,6 +195,39 @@ class SweepExperimentConfig:
 
     # LHS / parameter sampling (v1.2.0 Item C)
     sampling: SamplingConfig | None = None
+
+    # BYO circuit (SPEC-002 §7.5) — used when experiment_type == "byo_circuit".
+    # The factory's parameters are partitioned across grid (swept), fixed
+    # (constant), and disorder (per-seed supplied data); see §7.5.1-§7.5.5.
+    circuit_script: str = ""
+    circuit_function: str = "build_circuit"
+    # D7 increment 2: multi-observable BYO. Tuple of (name, factory_function),
+    # one per circuit family. None (absent in YAML) -> synthesized at parse to
+    # (("default", circuit_function),), preserving single-observable behavior
+    # byte-identically. The `derived`/ratio surface is increment 4 and is NOT
+    # read here. See DESIGN-MULTI-OBSERVABLE-BYO-ECHO (Option A).
+    observables: tuple[tuple[str, str], ...] | None = None
+    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (A): opt-out for the
+    # shared-solve connectivity guard. The guard engages ONLY when a solve is
+    # shared across >=2 observable families (single-observable runs never hit it);
+    # families whose connectivity differs fail loud by default, because a shared
+    # solve would mis-pair a ratio (autocorr(p) vs echo(p) on different p). Set
+    # true ONLY for genuinely-independent (non-ratio) multi-observable runs.
+    # NOTE: once `derived: ratio` (increment 4) lands, a declared ratio MUST force
+    # fail-loud regardless of this flag (ratio + opt-out is incoherent -> raise).
+    observables_independent: bool = False
+    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C): noiseless placement-
+    # dedup. When true, the noiseless arm of a BYO group is computed ONCE per
+    # (family, seed) on the canonical placement and broadcast to every placement
+    # at merge, re-stamping only placement_id + physical_qubit_set (the noiseless
+    # payload is placement-independent; the record is not). Default false =
+    # per-placement compute, byte-identical to pre-C. Gated by the §5.4 full-
+    # group byte-identity proof (grid + LHS).
+    byo_noiseless_dedup: bool = False
+    fixed: dict[str, Any] = field(default_factory=dict)
+    disorder: dict[str, Any] = field(default_factory=dict)
+    signature_check: bool = True
+    disorder_gates: list[str] = field(default_factory=lambda: ["rz", "rzz"])
 
     # Metadata
     label: str = ""
@@ -219,6 +301,56 @@ class SweepTask:
     label: str = ""
     model_params: dict[str, float] = field(default_factory=dict)
 
+    # BYO circuit (SPEC-002 §7.5). circuit_params is the per-task grid point —
+    # kept SEPARATE from the Hamiltonian-routed model_params (§B-4). The build
+    # seam assembles fixed_params ∪ disorder_instance ∪ circuit_params and
+    # spreads them into the factory.
+    circuit_params: dict[str, Any] = field(default_factory=dict)
+    circuit_script: str = ""
+    circuit_function: str = "build_circuit"
+    # D7 increment 2: which observable (circuit family) this task computes. The
+    # task's circuit_function is that family's factory; observable_name labels
+    # the result for the HDF5 group / .dat subdir and groups families separately
+    # (folded into the group key in expand_grid). "default" -> legacy layout.
+    observable_name: str = "default"
+    # RED-RULING-…-(A): rides from ExperimentSpec to the shared-solve guard in
+    # _execute_byo_group. See ExperimentSpec.observables_independent.
+    observables_independent: bool = False
+    # RED-RULING-…-(C): rides from ExperimentSpec; consulted in _execute_byo_group
+    # (build skips non-canonical noiseless; merge broadcasts + re-stamps).
+    byo_noiseless_dedup: bool = False
+    fixed_params: dict[str, Any] = field(default_factory=dict)
+    disorder_instance: dict[str, Any] = field(default_factory=dict)
+    disorder_gates: tuple[str, ...] = ("rz", "rzz")
+    # D3.4b: master_seed from the resolved disorder _meta, so the BYO counts run
+    # can derive seed_simulator = resolve_instance_seed(master_seed, seed) —
+    # identical to the banked floquet_runner_v2 (one seed per instance, driving
+    # both disorder and shots). None -> entropy (not reproducible).
+    master_seed: int | None = None
+    # CFG-1 / W3: experiment-level shots carried onto each task so the BYO
+    # execution site can pin the shot count without re-reading the experiment
+    # config. None -> per-env shots (prior behavior).
+    experiment_shots: int | None = None
+    # CFG-2 / W1.2: experiment-level transpile optimization_level carried onto
+    # each task so the BYO execution site uses the resolved value. None -> 3
+    # (default; the historical hardcode and the gate-2 reference pin).
+    optimization_level: int | None = None
+    # PLACEMENT-1: experiment-level researcher placement carried onto each task
+    # so the executor's shared placement seam (solver.resolve_placements) can
+    # bypass the solver. None -> solver self-selects; list[list[str]] -> manual
+    # placement(s), logical qubit i -> physical_qubits[k][i]. Parsed and
+    # scope-gated in parse_sweep_config (BYO-only pending review); propagated in
+    # _expand_byo_experiment. Without this carry the executor reads it off the
+    # task and always sees None -> the W1.6 Step-1 silent-solver bug.
+    physical_qubits: list[list[str]] | None = None
+    # Workstream A: placement-diversity policy carried onto each task so the
+    # executor seam reads it off the task (the W1.6 Step-1 lesson — a field the
+    # executor can't see defaults to inactive -> silent solver). Default-inactive
+    # PlacementDiversityConfig() -> today's path, byte-identical.
+    placement_diversity: PlacementDiversityConfig = field(
+        default_factory=PlacementDiversityConfig
+    )
+
 
 def expand_grid(config: SweepConfig) -> list[SweepTask]:
     """Expand sweep config into individual tasks.
@@ -238,10 +370,26 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
     for exp in config.experiments:
         # Resolve noise configs
         if exp.noise_configs == "all" or exp.noise_configs == ["all"]:
-            noise_envs = list(NOISE_ENVIRONMENTS)
+            # D3: "all" means the synthetic channel tiers (the historical 11),
+            # NOT device_calibrated. device_calibrated is a different execution
+            # path (statevector counts, D3.4) and must be requested by name, so
+            # adding it to NOISE_ENVIRONMENTS does not silently inject it into
+            # every existing "all" sweep.
+            noise_envs = [e for e in NOISE_ENVIRONMENTS if e.source == "channels"]
         else:
             nc_names = exp.noise_configs if isinstance(exp.noise_configs, list) else [exp.noise_configs]
-            noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names if n in NOISE_ENV_BY_NAME]
+            # RED-RESP §7.5 F-6: never silently drop unknown noise-config names.
+            # The previous `if n in NOISE_ENV_BY_NAME` filter dropped typos with
+            # no error, so a sweep would quietly run a *different* set of
+            # environments than the config requested -- a latent data-integrity
+            # bug affecting all experiment types. Fail loud instead.
+            unknown = [n for n in nc_names if n not in NOISE_ENV_BY_NAME]
+            if unknown:
+                raise ValueError(
+                    f"Unknown noise config name(s) {unknown}. "
+                    f"Available: {', '.join(NOISE_ENV_BY_NAME.keys())}"
+                )
+            noise_envs = [NOISE_ENV_BY_NAME[n] for n in nc_names]
 
         # Resolve seed values (v1.4.0 — seed_list overrides seeds/seed_offset)
         if exp.seed_list is not None:
@@ -268,6 +416,14 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
             max_placements = int(exp.placement.split("_")[1])
         else:
             placement_strategy = str(exp.placement)
+
+        # ── BYO circuit expansion (SPEC-002 §7.5): seed OUTER, grid INNER ──
+        if exp.experiment_type == "byo_circuit":
+            task_counter = _expand_byo_experiment(
+                exp, config, seed_values, noise_envs,
+                placement_strategy, max_placements, tasks, task_counter,
+            )
+            continue
 
         # Resolve topologies for each qubit size
         for qsize in exp.qubit_sizes:
@@ -337,6 +493,191 @@ def expand_grid(config: SweepConfig) -> list[SweepTask]:
                                 ))
 
     return tasks
+
+
+def _expand_byo_experiment(
+    exp: SweepExperimentConfig,
+    config: SweepConfig,
+    seed_values: list[int],
+    noise_envs: list,
+    placement_strategy: str,
+    max_placements: int | None,
+    tasks: list[SweepTask],
+    task_counter: int,
+) -> int:
+    """Expand one ``byo_circuit`` experiment into tasks (SPEC-002 §7.5).
+
+    Seed is the OUTER axis, the parameter grid the INNER axis. Per-seed disorder
+    is resolved ONCE and the identical realization is attached to every grid
+    point in that seed, so the cross-grid invariant is structural (§7.5.4). The
+    factory signature is validated against grid ∪ fixed ∪ disorder keys, and a
+    default-ON cross-grid identity check confirms the factory does not draw
+    build-time randomness. Raises ValueError on any of these (submit-time,
+    before execution), consistent with the F-6 fail-loud precedent.
+    """
+    # Local imports: these pull qiskit (circuit_loader); keep them off the
+    # module import path so non-BYO sweeps don't pay for them.
+    from lumi_hpc_qc.sweep.byo_sweep import (
+        expand_circuit_grid, resolve_disorder, validate_factory_signature,
+        cross_grid_identity_check,
+    )
+    from lumi_hpc_qc.sweep.circuit_loader import (
+        load_factory, load_circuit, extract_disorder_signature,
+    )
+
+    if "num_qubits" not in exp.fixed:
+        raise ValueError("byo_circuit requires fixed.num_qubits")
+    num_qubits = int(exp.fixed["num_qubits"])
+
+    grid_points = expand_circuit_grid(exp.grid)
+
+    # Resolve per-seed disorder once (file load is RNG-free; generate is a
+    # serial pre-pass). initial_state, if present, lives in the disorder block.
+    resolved_disorder, _disorder_meta = resolve_disorder(
+        exp.disorder, seed_values,
+        num_qubits=num_qubits,
+        configured_initial_state=exp.disorder.get("initial_state"),
+    )
+    # D3.4b: carry the disorder's master_seed onto each task so the counts run
+    # derives seed_simulator = resolve_instance_seed(master_seed, seed). For
+    # source=file the meta echoes the file's _meta.master_seed; for generate it
+    # is the spec's master_seed. None (absent) -> entropy / not reproducible.
+    disorder_master_seed = _disorder_meta.get("master_seed")
+
+    # Signature check against the actual disorder field names (§7.5.1, F3).
+    disorder_keys: set[str] = set()
+    if resolved_disorder:
+        disorder_keys = set(next(iter(resolved_disorder.values())).keys())
+    # D7 increment 2: validate + expand once PER observable (circuit family).
+    # ``observables`` is always populated — synthesized to the single default
+    # ((DEFAULT_OBSERVABLE_NAME, circuit_function),) at parse, so the
+    # single-observable expansion stays byte-identical (one family, "default").
+    # Each family becomes its own task set, grouped separately in expand_grid
+    # (observable folded into the group key), so it gets its own placement solve
+    # and its own D1/D2 memory probe. Both families of a seed share the disorder
+    # seed -> the same resolve_instance_seed(master_seed, seed), as the ratio
+    # contract's shared-seed finding requires. (The derived/ratio surface is
+    # increment 4, not here. The cross-family connectivity-equality guard now
+    # lives at the _execute_byo_group shared-solve seam, per RED-RULING-BYO-FLAT-
+    # DISPATCH-AND-NOISELESS-DEDUP (A) — superseding the earlier deferral.)
+    observables = exp.observables or (
+        (DEFAULT_OBSERVABLE_NAME, exp.circuit_function),
+    )
+    gate_names = tuple(exp.disorder_gates)
+    for obs_name, obs_func in observables:
+        factory = load_factory(exp.circuit_script, obs_func)
+        validate_factory_signature(
+            factory,
+            grid_keys=set(exp.grid),
+            fixed_keys=set(exp.fixed),
+            disorder_keys=disorder_keys,
+            allow_kwargs=not exp.signature_check,
+        )
+
+        # Default-ON cross-grid disorder-identity backstop (§7.5.4), per family.
+        if len(grid_points) >= 2 and resolved_disorder:
+            primary_axis = next(iter(exp.grid), None)
+            rep_instance = resolved_disorder[seed_values[0]]
+
+            def _build(**kw):
+                return load_circuit(
+                    script_file=exp.circuit_script,
+                    script_function=obs_func,
+                    script_params=kw,
+                ).circuit
+
+            cross_grid_identity_check(
+                _build,
+                fixed=exp.fixed,
+                instance=rep_instance,
+                grid_points=grid_points,
+                extract_disorder_params=lambda qc: extract_disorder_signature(qc, gate_names),
+                primary_axis=primary_axis,
+            )
+
+        # Expand: cal × seed (OUTER) × grid point (INNER), for this family.
+        for cal_path in config.calibrations:
+            for seed in seed_values:
+                instance = resolved_disorder[seed]
+                for grid_point in grid_points:
+                    task_counter += 1
+                    tasks.append(SweepTask(
+                        task_id=f"T{task_counter:06d}",
+                        qubit_size=num_qubits,
+                        seed=seed,
+                        calibration_path=cal_path,
+                        calibration_id=_calibration_id(cal_path),
+                        experiment_type="byo_circuit",
+                        noise_configs=noise_envs,
+                        placement_strategy=placement_strategy,
+                        max_placements=max_placements,
+                        label=exp.label,
+                        circuit_params=dict(grid_point),
+                        circuit_script=exp.circuit_script,
+                        circuit_function=obs_func,
+                        observable_name=obs_name,
+                        observables_independent=exp.observables_independent,
+                        byo_noiseless_dedup=exp.byo_noiseless_dedup,
+                        fixed_params=dict(exp.fixed),
+                        disorder_instance=instance,
+                        disorder_gates=gate_names,
+                        master_seed=disorder_master_seed,
+                        experiment_shots=exp.shots,
+                        optimization_level=exp.optimization_level,
+                        physical_qubits=exp.physical_qubits,
+                        placement_diversity=exp.placement_diversity,
+                    ))
+    return task_counter
+
+
+def _noise_placement_independent(env_source: str, num_placements: int) -> bool:
+    """Whether a record's noise is independent of which placement it ran on.
+
+    True ONLY for a device_calibrated environment resolved to a SINGLE
+    placement: with one placement there is no cross-placement dependence, and
+    this is byte-identical to the pre-lift single-placement behaviour (flag
+    true). With >1 placement (F5a single-placement guardrail lifted —
+    F5A-LIFT-APPROVED) each placement is composed from its own qubits
+    (per-placement, validated by F5A-VALIDATION-PROVENANCE), so the records ARE
+    placement-dependent and the flag is false. Noiseless carries no per-placement noise, so it is always
+    false regardless of placement count (the field describes the noise model's
+    placement dependence; noiseless has none).
+
+    ``num_placements`` is the RESOLVED, post-dedup placement count for the group
+    (manual ∪ solver survivors) — the actual number that ran, not the requested
+    top-N.
+    """
+    return env_source == "device_calibrated" and num_placements == 1
+
+
+# Pre-lift device-cal default: an UNSPECIFIED device_calibrated solver run
+# resolves to the single best-scoring placement (top-1), never the full device.
+# The F5a lift (F5A-LIFT-EFFECTIVE-PIECE3) permits >1 placement WHEN ASKED FOR
+# (manual sets / solver-top-N / the diversity schema); it does NOT make "no
+# placement specified" mean "all placements" (find_all_placements(None) = every
+# valid chain, ~3e4 on Q50). This default restores the clamp's INTENT on the
+# pure-solver no-placement sub-path without restoring the clamp itself.
+_DEVICE_CAL_DEFAULT_SOLVER_PLACEMENTS = 1
+
+
+def _solver_placement_cap(
+    manual_placements: list | None,
+    explicit_max_placements: int | None,
+    wants_device_cal: bool,
+) -> int | None:
+    """Effective solver cap for the pure-solver (no-manual) placement path.
+
+    F5a-fanout-fix (F5A-LIFT-EFFECTIVE-PIECE3 §4 scope): a device_calibrated
+    solver run with NO manual placement and NO explicit max_placements defaults
+    to top-1 (the pre-lift meaning) instead of fanning out to every valid
+    placement. Noiseless is untouched (it was never clamped); an explicit
+    max_placements is honored verbatim. Irrelevant on the manual/union paths
+    (the seam ignores max_placements there) -- passed through unchanged so it
+    never injects a top-1 into a manual or union run.
+    """
+    if explicit_max_placements is None and not manual_placements and wants_device_cal:
+        return _DEVICE_CAL_DEFAULT_SOLVER_PLACEMENTS
+    return explicit_max_placements
 
 
 def _calibration_id(path: str) -> str:
@@ -426,6 +767,121 @@ def _generate_lhs_samples(
 # Config parsing
 # ═══════════════════════════════════════════════════════════════════════
 
+def _parse_physical_qubits(raw: Any) -> list[list[str]] | None:
+    """Normalize the optional ``physical_qubits`` field to list[list[str]] | None.
+
+    PLACEMENT-1. Accepts either a single placement (a list of qubit-name
+    strings) or several (a list of such lists), and normalizes a single
+    placement to a one-element list. Returns None when the field is absent
+    (solver self-selects). Fail-loud on a malformed value; per-placement
+    semantic validation (count, names-in-calibration, real edges) happens at
+    placement-resolution time in PlacementSolver.placements_from_names.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "physical_qubits must be a non-empty list (of qubit-name strings "
+            "for one placement, or of lists of qubit-name strings for several)"
+        )
+    if all(isinstance(x, str) for x in raw):
+        placements = [list(raw)]
+    elif all(isinstance(x, list) for x in raw):
+        placements = [list(x) for x in raw]
+    else:
+        raise ValueError(
+            "physical_qubits must be either a list of qubit-name strings (one "
+            "placement) or a list of such lists (several placements), not a mix"
+        )
+    for k, p in enumerate(placements):
+        if not p or not all(isinstance(q, str) for q in p):
+            raise ValueError(
+                f"physical_qubits[{k}] must be a non-empty list of qubit-name "
+                f"strings"
+            )
+    return placements
+
+
+def _parse_observables(
+    raw: Any, circuit_function: str
+) -> tuple[tuple[str, str], ...]:
+    """Normalize the optional ``observables`` field to a tuple of (name, function).
+
+    D7 increment 2. Each entry is a circuit family: a display name + the factory
+    function that builds it. Absent (None) -> the single synthesized default
+    ``(("default", circuit_function),)``, which preserves single-observable
+    behavior byte-identically (the name "default" maps to the legacy path, see
+    byo_observable.byo_observable_subpath). Fail-loud on a malformed value;
+    names must be unique and non-empty; "default" is reserved and may not be a
+    declared name. The ``derived``/ratio surface is increment 4 and is parsed
+    elsewhere, not here.
+    """
+    if raw is None:
+        return ((DEFAULT_OBSERVABLE_NAME, circuit_function or "build_circuit"),)
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "observables must be a non-empty list of {name, function} entries")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for k, entry in enumerate(raw):
+        if not isinstance(entry, dict) or "name" not in entry or "function" not in entry:
+            raise ValueError(
+                f"observables[{k}] must be a mapping with 'name' and 'function'")
+        name, func = entry["name"], entry["function"]
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"observables[{k}].name must be a non-empty string")
+        if not isinstance(func, str) or not func:
+            raise ValueError(f"observables[{k}].function must be a non-empty string")
+        if name == DEFAULT_OBSERVABLE_NAME:
+            raise ValueError(
+                f"observables[{k}].name '{DEFAULT_OBSERVABLE_NAME}' is reserved "
+                f"for the synthesized single-observable case; use a distinct name")
+        if name in seen:
+            raise ValueError(f"observables[{k}].name '{name}' is duplicated")
+        seen.add(name)
+        out.append((name, func))
+    return tuple(out)
+
+
+def _parse_optimization_level(raw: Any) -> int | None:
+    """Parse and validate the experiment-level optimization_level (CFG-2).
+
+    Returns None when the YAML omits the field (resolved to default 3 at the
+    execution site); returns the int 0..3 when supplied. Raises ValueError on
+    any value outside that range, a non-integer literal, or a float — fail-fast
+    at parse time rather than letting Qiskit's transpile() surface the error
+    mid-run, and never silently truncate (a YAML `optimization_level: 2.5`
+    must NOT become 2).
+
+    Per RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Q3: the resolved value
+    is physics-affecting under noise and must be honored exactly as specified.
+    """
+    if raw is None:
+        return None
+    # Reject floats explicitly — int(2.5) silently truncates to 2, which would
+    # let a typo'd YAML value pass parsing as a different optimization level.
+    # bool is a subclass of int in Python; accepting True/False as 1/0 would
+    # likewise be a soft-accept hazard, so reject it too.
+    if isinstance(raw, float) or isinstance(raw, bool):
+        raise ValueError(
+            f"optimization_level must be an integer 0..3, got {type(raw).__name__} "
+            f"{raw!r}"
+        )
+    try:
+        level = int(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"optimization_level must be an integer 0..3, got {raw!r}"
+        ) from e
+    if level not in (0, 1, 2, 3):
+        raise ValueError(
+            f"optimization_level must be one of 0, 1, 2, 3; got {level}. "
+            f"This is the Qiskit transpile() optimization level and is "
+            f"physics-affecting under noise (see CFG-2 / W1.2)."
+        )
+    return level
+
+
 def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
     """Parse a YAML dict into a SweepConfig.
 
@@ -459,10 +915,105 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
             measurement_stats_interval_override=exp_dict.get(
                 "measurement_stats_interval", None
             ),
+            shots=(
+                int(exp_dict["shots"]) if exp_dict.get("shots") is not None else None
+            ),
+            optimization_level=_parse_optimization_level(
+                exp_dict.get("optimization_level")
+            ),
             placement=exp_dict.get("placement", "all_valid"),
+            physical_qubits=_parse_physical_qubits(
+                exp_dict.get("physical_qubits")
+            ),
             grid=exp_dict.get("grid", {}),
             label=exp_dict.get("label", ""),
+            circuit_script=exp_dict.get("circuit_script", ""),
+            circuit_function=exp_dict.get("circuit_function", "build_circuit"),
+            observables=_parse_observables(
+                exp_dict.get("observables"),
+                exp_dict.get("circuit_function", "build_circuit"),
+            ),
+            observables_independent=exp_dict.get(
+                "observables_independent", False
+            ),
+            byo_noiseless_dedup=exp_dict.get(
+                "byo_noiseless_dedup", False
+            ),
+            fixed=exp_dict.get("fixed", {}),
+            disorder=exp_dict.get("disorder", {}),
+            signature_check=exp_dict.get("signature_check", True),
+            disorder_gates=exp_dict.get("disorder_gates", ["rz", "rzz"]),
         )
+
+        # PLACEMENT-1 scope gate: researcher physical_qubits is wired only into
+        # the BYO placement seam (Phase 1; other types pending review). Set on
+        # any other experiment_type it would parse but never be honoured by that
+        # executor -- reject it fail-loud rather than silently ignore it.
+        if (
+            exp.physical_qubits is not None
+            and exp.experiment_type != "byo_circuit"
+        ):
+            raise ValueError(
+                f"physical_qubits is only supported for "
+                f"experiment_type='byo_circuit' (PLACEMENT-1 is BYO-only "
+                f"pending review); got experiment_type={exp.experiment_type!r}. "
+                f"Remove physical_qubits, or set type: byo_circuit."
+            )
+
+        # Workstream A: parse placement_diversity block (default-inactive).
+        pd_dict = exp_dict.get("placement_diversity")
+        if pd_dict is not None:
+            if not isinstance(pd_dict, dict):
+                raise ValueError(
+                    f"placement_diversity must be a mapping; got "
+                    f"{type(pd_dict).__name__}"
+                )
+            strat = pd_dict.get("strategy", "none")
+            if strat not in ("none", "disjoint"):
+                raise ValueError(
+                    f"placement_diversity.strategy must be 'none' or "
+                    f"'disjoint'; got {strat!r}"
+                )
+            raw_count = pd_dict.get("count", "auto")
+            if raw_count != "auto":
+                if not isinstance(raw_count, int) or isinstance(raw_count, bool) \
+                        or raw_count <= 0:
+                    raise ValueError(
+                        f"placement_diversity.count must be 'auto' or a "
+                        f"positive int; got {raw_count!r}"
+                    )
+            raw_overlap = pd_dict.get("max_overlap", 0)
+            if not isinstance(raw_overlap, int) or isinstance(raw_overlap, bool) \
+                    or raw_overlap < 0:
+                raise ValueError(
+                    f"placement_diversity.max_overlap must be a non-negative "
+                    f"int; got {raw_overlap!r}"
+                )
+            exp.placement_diversity = PlacementDiversityConfig(
+                strategy=strat, max_overlap=raw_overlap, count=raw_count,
+            )
+
+        # Workstream A scope-gate: placement_diversity is a BYO-only solver-path
+        # policy, and it is mutually exclusive with manual physical_qubits — you
+        # cannot ask the solver to diversify a set you pinned by hand. Fail loud
+        # at parse rather than silently honour one (a warning that's ignored
+        # produces a run that did something other than the config asked — the
+        # "config lied" failure class). RED-RULING-WORKSTREAM-A §9.1.
+        if exp.placement_diversity.is_active():
+            if exp.experiment_type != "byo_circuit":
+                raise ValueError(
+                    f"placement_diversity is only supported for "
+                    f"experiment_type='byo_circuit' (Workstream A is BYO-only); "
+                    f"got experiment_type={exp.experiment_type!r}."
+                )
+            if exp.physical_qubits is not None:
+                raise ValueError(
+                    "placement_diversity and physical_qubits are mutually "
+                    "exclusive: physical_qubits pins an explicit placement set, "
+                    "while placement_diversity asks the solver to select a "
+                    "spatially-independent set — contradictory intents. Set one "
+                    "or the other, not both."
+                )
 
         # Parse seed_list (v1.4.0 — explicit seed list)
         raw_seeds = exp_dict.get("seed_list")
@@ -538,6 +1089,32 @@ def parse_sweep_config(yaml_dict: dict[str, Any]) -> SweepConfig:
     return config
 
 
+def _validate_byo_experiment(prefix: str, exp: SweepExperimentConfig) -> list[str]:
+    """Cheap, pre-submit structural checks for a byo_circuit experiment.
+
+    The heavy checks (factory signature against the resolved disorder keys, and
+    the cross-grid identity backstop) run in ``_expand_byo_experiment`` and
+    raise; here we surface the fast structural problems as collected errors so
+    the config-error path reports them cleanly with everything else.
+    """
+    errors: list[str] = []
+    if not exp.circuit_script:
+        errors.append(f"{prefix}: byo_circuit requires 'circuit_script'")
+    elif not Path(exp.circuit_script).exists():
+        errors.append(f"{prefix}: circuit_script not found: {exp.circuit_script}")
+    if "num_qubits" not in exp.fixed:
+        errors.append(f"{prefix}: byo_circuit requires fixed.num_qubits")
+    if not exp.disorder:
+        errors.append(
+            f"{prefix}: byo_circuit requires a 'disorder' block (source: file|generate)"
+        )
+    elif exp.disorder.get("source", "file") == "file" and not exp.disorder.get("file"):
+        errors.append(
+            f"{prefix}: byo_circuit disorder source 'file' requires 'disorder.file'"
+        )
+    return errors
+
+
 def validate_sweep_config(config: SweepConfig) -> list[str]:
     """Validate a SweepConfig for completeness and consistency.
 
@@ -554,10 +1131,15 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
 
     for i, exp in enumerate(config.experiments):
         prefix = f"experiment[{i}]"
-        if not exp.hamiltonians:
-            errors.append(f"{prefix}: no hamiltonians specified")
-        if not exp.qubit_sizes:
-            errors.append(f"{prefix}: no qubit_sizes specified")
+        if exp.experiment_type == "byo_circuit":
+            # RED-RESP §3.1: byo_circuit is exempt from hamiltonians/qubit_sizes;
+            # num_qubits comes from `fixed`. Validate the BYO fields instead.
+            errors.extend(_validate_byo_experiment(prefix, exp))
+        else:
+            if not exp.hamiltonians:
+                errors.append(f"{prefix}: no hamiltonians specified")
+            if not exp.qubit_sizes:
+                errors.append(f"{prefix}: no qubit_sizes specified")
         if exp.seeds < 1:
             errors.append(f"{prefix}: seeds must be >= 1, got {exp.seeds}")
 
@@ -570,9 +1152,15 @@ def validate_sweep_config(config: SweepConfig) -> list[str]:
             if len(exp.seed_list) != len(set(exp.seed_list)):
                 errors.append(f"{prefix}: seed_list contains duplicates")
 
-        # Validate noise config names
-        if isinstance(exp.noise_configs, list) and exp.noise_configs != ["all"]:
-            for nc_name in exp.noise_configs:
+        # Validate noise config names. RED-RESP §7.5 F-6: also the scalar form
+        # (e.g. `noise_configs: bogus`), which the list-only check missed and
+        # expand_grid would otherwise have silently dropped.
+        if exp.noise_configs not in ("all", ["all"]):
+            nc_names = (
+                exp.noise_configs if isinstance(exp.noise_configs, list)
+                else [exp.noise_configs]
+            )
+            for nc_name in nc_names:
                 if nc_name not in NOISE_ENV_BY_NAME:
                     errors.append(
                         f"{prefix}: unknown noise config '{nc_name}'. "
@@ -940,6 +1528,13 @@ class SweepEngine:
         # Placement cache: (topology_name, device_id) → list[Placement]
         self._placement_cache: dict[tuple[str, str], list[Placement]] = {}
 
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (A): shared placement
+        # solve across BYO observable families. Keyed by the experiment's
+        # solve-identity WITHOUT connectivity or observable, so families that
+        # should ratio-pair collide here and the connectivity guard runs.
+        # Value: (placements, normalized_connectivity).
+        self._byo_placement_cache: dict[tuple, tuple[list, frozenset]] = {}
+
         # Project root for subprocess worker scripts
         self._project_dir = os.environ.get(
             "PROJECT_DIR",
@@ -1035,11 +1630,43 @@ class SweepEngine:
         # ── Step 3b: Campaign manifest — resume or create (Item 6) ──
         output_dir = Path(self._config.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = output_dir / "campaign_manifest.json"
+        # D3.4c (Option A) — where _execute_byo_group writes the per-instance +
+        # aggregated_autocorr.dat files (byte-format-identical to
+        # aggregate_floquet.py). Without this set, the .dat sink is dead and the
+        # gate-2 comparison artifact / per-seed average is never emitted by a
+        # real run. Subtree layout (built in _execute_byo_group):
+        #   {byo_dat}/{script_stem}/{phys-qubits}/{env}/aggregated_autocorr.dat
+        # ── Workstream-B cross-node fan-out: resolve this process's shard. The
+        #    multi-node launcher (slurm_sweep_multinode.sh) sets
+        #    HPCQC_SWEEP_SHARD=1; (rank, nranks) come from SLURM_NODEID/NNODES.
+        #    Shard mode => this rank writes its OWN sweep_rank{r}.h5 + manifest
+        #    and DEFERS the .dat aggregation to the post-job merge (the merge
+        #    owns aggregation; byo_dat_dir=None below IS that deferral). The flag
+        #    is explicit (not keyed on nranks>1) so a stale ambient SLURM_NNODES
+        #    can never silently switch a single-node run into shard mode. With
+        #    the flag absent, every branch below is the single-node path,
+        #    byte-untouched. ──
+        from lumi_hpc_qc.sweep.fanout import resolve_rank_nranks
+        self._shard_mode = os.environ.get("HPCQC_SWEEP_SHARD") == "1"
+        self._shard_rank, self._shard_nranks = (
+            resolve_rank_nranks() if self._shard_mode else (0, 1)
+        )
+        # Option (i): accumulate the EXPECTED battery group inventory across the
+        # _execute_group calls (RED-RULING-PATCH43-VERIFY-AND-INVENTORY-DESIGN);
+        # written once, atomically, at finalization in shard mode on a fresh run.
+        self._expected_groups: set[tuple] = set()
+        self._byo_dat_dir = (
+            None if self._shard_mode else str(output_dir / "byo_dat")
+        )
+        manifest_path = output_dir / (
+            f"campaign_manifest_rank{self._shard_rank}.json"
+            if self._shard_mode else "campaign_manifest.json"
+        )
 
         from lumi_hpc_qc.sweep.campaign_manifest import CampaignManifest
         from lumi_hpc_qc import __version__ as _fw_version
 
+        self._manifest_fresh = not manifest_path.exists()
         if manifest_path.exists():
             self._manifest = CampaignManifest.load(manifest_path)
             completed = set(self._manifest.completed_tasks())
@@ -1068,8 +1695,23 @@ class SweepEngine:
         print(f"  Task groups: {len(groups)} "
               f"(hamiltonian × topology × calibration)")
 
+        # ── BYO-FAMILY-COLLISION fix (b1): determine, at run level, which BYO
+        #    script stems host MORE THAN ONE circuit family. After the group-key
+        #    fix each family is its own group, so the collision is only visible
+        #    here, across groups. Form A (per RED-RULING): key on script_stem —
+        #    a stem with >1 distinct circuit_function disambiguates ALL its
+        #    families (incl. the default), since all families of a script share
+        #    connectivity hence placements/envs (asserted in the regression
+        #    test, not assumed). A one-family stem keeps the legacy "" layout. ──
+        self._byo_collision_stems = self._compute_byo_collision_stems(tasks)
+
         # ── Step 5: Open HDF5 and execute ──
-        hdf5_path = str(output_dir / self._config.hdf5_filename)
+        # Shard mode: per-rank HDF5 (sweep_rank{r}.h5); the post-job merge unions
+        # these into the single-node-equivalent sweep.h5. Single-node: unchanged.
+        hdf5_path = str(output_dir / (
+            f"sweep_rank{self._shard_rank}.h5"
+            if self._shard_mode else self._config.hdf5_filename
+        ))
 
         sweep_attrs = {
             "sweep_id": self._config.sweep_id,
@@ -1088,6 +1730,7 @@ class SweepEngine:
             enable_swmr=self._config.enable_swmr,
             debug_json=self._config.debug_json,
             debug_json_dir=str(output_dir / "debug_json") if self._config.debug_json else None,
+            byo_collision_stems=self._byo_collision_stems,
         ) as writer:
             for group_idx, (group_key, group_tasks) in enumerate(groups.items()):
                 ham_name, topo_name, cal_path, _params_key = group_key
@@ -1221,6 +1864,37 @@ class SweepEngine:
                 print(f"  Benchmark Parquet: {n_rows} rows → {benchmark_path}")
         except Exception as e:
             print(f"  Benchmark Parquet: skipped ({e})")
+
+        # ── Option (i): write the expected-group inventory once, atomically, in
+        #    shard mode on a FRESH (non-resume) run. Every rank built the
+        #    identical full set above (the slice is applied after the build), so
+        #    this is shard-independent with no single-rank dependency — a dropped
+        #    rank cannot suppress its own expectations. The merge asserts the
+        #    unioned groups == this set, closing the wholly-absent-group blind
+        #    spot for battery. A manifest-RESUME run executes only the remaining
+        #    tasks (a partial set), so it does NOT regenerate the inventory; the
+        #    fresh run's file is authoritative, and a merge with no inventory
+        #    present fails loud at the CLI (Q1) rather than silently degrading. ──
+        if self._shard_mode and self._manifest_fresh and self._expected_groups:
+            import tempfile
+            from lumi_hpc_qc.sweep.battery_paths import inventory_to_json
+            inv_dst = output_dir / "campaign_expected.json"
+            fd, inv_tmp = tempfile.mkstemp(
+                dir=str(output_dir), prefix=".campaign_expected.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(inventory_to_json(self._expected_groups), f,
+                              indent=2, sort_keys=True)
+                os.replace(inv_tmp, str(inv_dst))  # atomic same-FS rename
+            except BaseException:
+                try:
+                    os.unlink(inv_tmp)
+                except OSError:
+                    pass
+                raise
+            print(f"  Option-(i) inventory: {len(self._expected_groups)} "
+                  f"expected group(s) → {inv_dst}")
 
         return sweep_result
 
@@ -1381,6 +2055,31 @@ class SweepEngine:
 
     # ── Internal: task grouping ──
 
+    @staticmethod
+    def _compute_byo_collision_stems(tasks: list[SweepTask]) -> set[str]:
+        """Script stems that host >1 distinct circuit family in this run.
+
+        BYO-FAMILY-COLLISION fix (b1), Form A. A BYO leaf path is
+        {script_stem}/{placement}/{env}[+subpath]; the synthesized-default
+        observable contributes "" for the subpath, so two single-observable
+        arms (different circuit_function, both observable_name="default") under
+        the same stem would collide on disk. We disambiguate by circuit_function
+        for exactly the stems where >1 family appears. Keyed on script_stem (not
+        the full (stem, placement, env) tuple) because every family of a script
+        shares the built circuit's connectivity, hence the same resolved
+        placements and envs — so stem-level collision is equivalent to
+        leaf-level collision here. That equivalence is asserted in
+        test_byo_family_grouping (placement-equivalence), not assumed.
+        """
+        from pathlib import Path as _P
+        funcs_by_stem: dict[str, set[str]] = {}
+        for t in tasks:
+            if t.experiment_type != "byo_circuit" or not t.circuit_script:
+                continue
+            stem = _P(t.circuit_script).stem
+            funcs_by_stem.setdefault(stem, set()).add(t.circuit_function)
+        return {stem for stem, funcs in funcs_by_stem.items() if len(funcs) > 1}
+
     def _group_tasks(
         self, tasks: list[SweepTask],
     ) -> dict[tuple[str, str, str, tuple], list[SweepTask]]:
@@ -1394,7 +2093,45 @@ class SweepEngine:
         groups: dict[tuple[str, str, str, tuple], list[SweepTask]] = {}
         for task in tasks:
             params_key = tuple(sorted(task.model_params.items())) if task.model_params else ()
-            key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
+            if task.experiment_type == "byo_circuit":
+                # D3.4: BYO tasks have no hamiltonian/topology_name; each
+                # circuit_script is a distinct circuit family whose placements
+                # come from the BUILT circuit's connectivity (not topology_edges).
+                # Group by (script, calibration) so a script's placement solve is
+                # reused across seeds/grid-points. Keep the 4-tuple shape so the
+                # run() unpack (ham,topo,cal,params) stays valid — script goes in
+                # the hamiltonian slot, "byo" in the topology slot for logging.
+                # D7 increment 2: fold the observable into the params slot so
+                # each circuit family (autocorr, echo, …) is its own group — own
+                # placement solve, own circuit build (representative.circuit_
+                # function is the family's factory), own D1/D2 memory probe.
+                # Keeps the 4-tuple shape. Single-observable runs carry
+                # observable_name="default", so the key is stable vs pre-D7
+                # except for the extra ("__observable__","default") entry, which
+                # does not change grouping (one family) — the placement solve and
+                # execution are byte-identical.
+                # BYO-FAMILY-COLLISION fix (extends D7-increment-2): the
+                # observable name alone is "default" for EVERY single-observable
+                # arm, so two arms differing only in circuit_function keyed
+                # identically and collapsed into one group (only tasks[0]'s
+                # function ran). Fold circuit_function in too, so each circuit
+                # family is its own group in the single-observable form as well.
+                # circuit_function is already on the task; the 4th key slot is
+                # opaque downstream (run() unpacks ham,topo,cal,_params_key and
+                # never inspects _params_key), so a one-arm sweep is byte-
+                # identical (one group either way).
+                # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): un-fold
+                # the observable / circuit_function from the BYO group key so one
+                # group carries ALL observable families of an experiment, and
+                # _execute_byo_group flat-dispatches them into a single pool. The
+                # family loop there builds each family's circuit and routes
+                # results per-unit, superseding the pre-B fold (which kept
+                # families in separate groups). A single-observable sweep is
+                # unchanged: one family -> one group, byte-identical.
+                byo_params_key = params_key
+                key = (task.circuit_script, "byo", task.calibration_path, byo_params_key)
+            else:
+                key = (task.hamiltonian, task.topology_name, task.calibration_path, params_key)
             if key not in groups:
                 groups[key] = []
             groups[key].append(task)
@@ -1416,6 +2153,29 @@ class SweepEngine:
         if not tasks:
             return
 
+        # D3.4: BYO circuits use a separate counts-based execution path
+        # (placements from the built circuit's connectivity, device_calibrated
+        # statevector, counts -> autocorrelator), not the hamiltonian/⟨H⟩ twin
+        # battery. Dispatch before any hamiltonian/topology work.
+        if tasks[0].experiment_type == "byo_circuit":
+            self._execute_byo_group(tasks, writer, errors)
+            return
+
+        # A device_calibrated (source != "channels") env must not reach the
+        # synthetic-channel twin battery — that would run device-calibrated noise
+        # through the density_matrix channel path (wrong physics). It belongs on
+        # the BYO counts path above. Refuse loudly if it lands here.
+        bad_source = sorted({
+            e.source for t in tasks for e in t.noise_configs
+            if e.source != "channels"
+        })
+        if bad_source:
+            raise NotImplementedError(
+                f"noise source(s) {bad_source} (e.g. 'device_calibrated') are "
+                f"only valid on the BYO counts path (experiment_type=byo_circuit). "
+                f"The synthetic-channel battery cannot run them."
+            )
+
         representative = tasks[0]
         ham_name = representative.hamiltonian
         topo_name = representative.topology_name
@@ -1429,12 +2189,23 @@ class SweepEngine:
         t_place_start = time.perf_counter()
         cache_key = (topo_name, device_cal.device_id)
         if cache_key not in self._placement_cache:
-            placements = self._solver.find_all_placements(
+            # Shared placement seam (PLACEMENT-1), same entry point the BYO
+            # executor uses. Non-BYO manual placement is gated off at parse
+            # (physical_qubits rejected on non-byo types), so this resolves
+            # solver-only today and is byte-identical to the prior direct
+            # find_all_placements call. To enable manual placement here later:
+            # carry physical_qubits onto the non-byo task, fold it into
+            # cache_key (which currently keys only (topo, device)), and decide
+            # this executor's device-cal guardrail.
+            placements = self._solver.resolve_placements(
                 circuit_edges=representative.topology_edges,
                 circuit_qubits=qsize,
-                device_ids=[device_cal.device_id],
+                device_id=device_cal.device_id,
                 strategy="max_fidelity",
                 max_placements=representative.max_placements,
+                manual_qubit_name_lists=getattr(
+                    representative, "physical_qubits", None
+                ),
             )
             self._placement_cache[cache_key] = placements
             print(f"    E1: {len(placements)} placements for {topo_name} "
@@ -1525,6 +2296,46 @@ class SweepEngine:
                     self._device, {},  # cache injected at subprocess level
                 ))
                 work_meta.append((task, placement, qubit_names, seed))
+
+        # ── Option (i): accumulate this group's EXPECTED battery inventory from
+        #    the FULL pre-shard unit set, BEFORE the shard slice below (so every
+        #    rank builds the identical full set, shard-independent). Built via the
+        #    writer's path source-of-truth (battery_group_path) and keyed by the
+        #    SAME parser the merge extractor uses (group_key_from_path), so the
+        #    merge's present-set and this expected-set cannot drift (Q2).
+        #    model_params is representative.model_params (the group-level value
+        #    the result entry writes); noise_config is env.name
+        #    (= twin_result.environment); the seed is the INSTANCE axis, dropped
+        #    by the key. Shard mode only (the single-node path never merges). ──
+        if self._shard_mode:
+            from lumi_hpc_qc.sweep.battery_paths import (
+                battery_group_path, group_key_from_path,
+            )
+            for meta_task, _meta_placement, meta_qubits, _meta_seed in work_meta:
+                for env in meta_task.noise_configs:
+                    gk = group_key_from_path(battery_group_path(
+                        device_cal.device_prefix, meta_task.seed, meta_qubits,
+                        cal_id, env.name, representative.model_params,
+                    ))
+                    if gk is not None:
+                        self._expected_groups.add(gk)
+
+        # ── Workstream-B cross-node fan-out: take this rank's slice of the flat
+        #    (seed, placement) work-unit list. Plain round-robin (NO strata):
+        #    each unit runs ALL noise envs inside one _battery_worker, so env
+        #    co-residency is structural — there is nothing a shard could
+        #    segregate (contrast the BYO path, where each env is a SEPARATE unit
+        #    and needs env-stratified round-robin). work_items and work_meta are
+        #    index-aligned (built in the same loop body), so the SAME idxs slice
+        #    both in lockstep. The default (single-node / flag unset) is the
+        #    no-op shard (_shard_nranks == 1 -> no slice). RED-RULING-ITEM3 §3.
+        if getattr(self, "_shard_nranks", 1) > 1:
+            from lumi_hpc_qc.sweep.fanout import shard_indices
+            idxs = shard_indices(
+                len(work_items), self._shard_rank, self._shard_nranks
+            )
+            work_items = [work_items[i] for i in idxs]
+            work_meta = [work_meta[i] for i in idxs]
 
         # ── Execute batteries ──
         t_exec_start = time.perf_counter()
@@ -1665,6 +2476,835 @@ class SweepEngine:
               f"({self._progress.total_deduplicated} deduplicated)")
         self._timing["hdf5_writes_s"] += time.perf_counter() - t_hdf5_start
 
+    # ── Internal: BYO counts execution (SPEC-002 §7.5 / D3.4) ──
+
+    def _byo_family_work_units(self, fam_tasks, representative,
+                               primary_axis, errors):
+        """RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): build ONE
+        observable family's BYO work units. Extracted from _execute_byo_group
+        so the families of an un-folded group flat-dispatch into one pool.
+        Shares the placement solve across families via self._byo_placement_cache
+        (Patch A) -- the connectivity guard runs across families. Returns
+        (work_units, placements), or (None, None) on error (appended to errors)."""
+        cal_path = representative.calibration_path
+        cal_id, cal_json, device_cal = self._cal_cache[cal_path]
+        place_task = max(fam_tasks, key=lambda t: t.circuit_params[primary_axis])
+        t_build_start = time.perf_counter()
+        loaded = self._build_byo_circuit(place_task)
+        qsize = loaded.num_qubits
+        connectivity = loaded.connectivity
+        self._timing["circuit_build_s"] += time.perf_counter() - t_build_start
+        print(f"    BYO: built {place_task.circuit_script} "
+              f"({qsize}q, {len(connectivity)} 2q-edges, "
+              f"{primary_axis}={place_task.circuit_params[primary_axis]})")
+
+        # ── F5a single-placement guardrail LIFTED (decision: F5A-LIFT-APPROVED;
+        #    evidence: F5A-VALIDATION-PROVENANCE): device_calibrated with
+        #    >1 placement is now allowed, because each placement's noise model is
+        #    composed independently from that placement's own qubits
+        #    (build_control_readout_noise_model(physical_qubits=chain) per
+        #    placement — the BYO path's only composition mechanism, unchanged and
+        #    still required). The clamp this replaces was max_placements=1 plus a
+        #    hard error on >1 manual placement; both are gone, the per-placement
+        #    composition they guarded is preserved. noise_placement_independent
+        #    now tracks the RESOLVED placement count (set per-env at WorkerArgs:
+        #    true iff exactly one placement ran), so single-placement
+        #    device_calibrated stays byte-identical (flag true, as before) and
+        #    multi-placement records are honestly flagged placement-DEPENDENT
+        #    (false). Scope: this per-placement-composed device_calibrated path
+        #    only; NOT shared-model or QPU multi-placement (PLACEMENT-1 Phase 2,
+        #    separate review). ──
+
+        # ── Placements: researcher-specified (PLACEMENT-1) ∪ solver top-N.
+        #    physical_qubits alone -> manual only (solver bypassed); a solver
+        #    top-N (max_placements) alone -> solver self-selects; BOTH -> the
+        #    PLACEMENT union (manual + the solver's top-N NEW chains, deduped).
+        #    All three modes go through the shared seam (solver.resolve_placements),
+        #    so new circuit types inherit the dispatch. ──
+        manual_placements = getattr(representative, "physical_qubits", None)
+        diversity = getattr(representative, "placement_diversity", None)
+        solver_top_n = (
+            representative.max_placements
+            if (manual_placements and representative.max_placements is not None)
+            else None
+        )
+        # ── F5a-fanout-fix (F5A-LIFT-EFFECTIVE-PIECE3 §4 scope): on the pure-
+        #    solver path with NO placement and NO max_placements, default device-
+        #    cal to top-1 (the pre-lift meaning) rather than fanning out to every
+        #    valid chain (find_all_placements(None) = ~3e4 on Q50). Noiseless
+        #    unchanged; explicit max_placements honored. resolve_placements ignores
+        #    this on the manual/union paths (it composes; noise policy is the
+        #    caller's, per its docstring). ──
+        wants_device_cal = any(
+            e.source == "device_calibrated"
+            for t in fam_tasks for e in t.noise_configs
+        )
+        solver_max_placements = _solver_placement_cap(
+            manual_placements, representative.max_placements, wants_device_cal
+        )
+        t_place_start = time.perf_counter()
+        # ── A (RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP): shared placement
+        #    solve across observable families. The observable is folded into the
+        #    group key, so each family is a SEPARATE _execute_byo_group call; share
+        #    the (expensive) solve across families of one experiment via an
+        #    observable-INDEPENDENT cache. The key deliberately OMITS connectivity
+        #    and the observable, so two families that should ratio-pair collide
+        #    here and the connectivity guard runs — rather than silently solving
+        #    apart and mis-pairing autocorr(p)/echo(p) across different p. ──
+        conn_norm = frozenset(frozenset(e) for e in connectivity)
+        byo_solve_key = (
+            representative.circuit_script,
+            representative.calibration_path,
+            representative.topology_name,
+            qsize,
+            device_cal.device_id,
+            solver_max_placements,
+            solver_top_n,
+            tuple(tuple(m) for m in manual_placements)
+            if manual_placements else None,
+            repr(diversity) if diversity is not None else None,
+        )
+        cached = self._byo_placement_cache.get(byo_solve_key)
+        placements = None
+        store_to_cache = cached is None
+        if cached is not None:
+            cached_placements, cached_conn = cached
+            if conn_norm == cached_conn:
+                placements = cached_placements
+            elif representative.observables_independent:
+                # Explicit opt-out: genuinely-independent (non-ratio) observables
+                # may legitimately solve apart. Fall back to a fresh per-family
+                # solve; do NOT poison or reuse the shared entry.
+                pass
+            else:
+                # FAIL-LOUD default: a shared solve across families with DIFFERENT
+                # connectivity would mis-pair a ratio (autocorr(p) vs echo(p) on
+                # different physical p) — silently meaningless, and the researcher
+                # can't be reached. Raise instead of falling back.
+                # TODO(derived:ratio, increment 4): once `derived` lands, a
+                # declared `derived: ratio` MUST force this fail-loud REGARDLESS of
+                # observables_independent (ratio + opt-out is incoherent and must
+                # itself raise). The opt-out is the only signal until then.
+                raise ValueError(
+                    "BYO shared placement solve: observable families under "
+                    f"{representative.circuit_script} have different connectivity "
+                    f"({len(connectivity)} vs {len(cached_conn)} 2q-edges) on "
+                    f"{device_cal.device_id} — a shared solve would mis-pair a "
+                    "ratio across different placements. If these observables are "
+                    "NOT ratio-combined, set 'observables_independent: true' on "
+                    "the experiment."
+                )
+        if placements is None:
+            placements = self._solver.resolve_placements(
+                circuit_edges=connectivity,
+                circuit_qubits=qsize,
+                device_id=device_cal.device_id,
+                strategy="max_fidelity",
+                max_placements=solver_max_placements,
+                manual_qubit_name_lists=manual_placements,
+                solver_top_n=solver_top_n,
+                diversity=diversity,
+            )
+            if not placements:
+                errors.append(
+                    f"BYO: no valid placements for {representative.circuit_script} "
+                    f"({qsize}q, edges={connectivity}) on {device_cal.device_id}"
+                )
+                return None, None
+            if store_to_cache:
+                self._byo_placement_cache[byo_solve_key] = (placements, conn_norm)
+        self._timing["placement_solving_s"] += time.perf_counter() - t_place_start
+        if diversity is not None and diversity.is_active():
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"(diversity: disjoint, no_crosstalk={diversity.no_crosstalk})")
+        elif manual_placements and solver_top_n is not None:
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"(union: manual ∪ solver top-{solver_top_n})")
+        elif manual_placements:
+            print(f"    BYO: {len(placements)} manual placement(s) "
+                  f"(researcher-specified, solver bypassed)")
+        else:
+            print(f"    BYO: {len(placements)} placement(s) "
+                  f"(solver top-{solver_max_placements or 'all'})")
+
+        # Progress accounting: matches the non-BYO _execute_group convention
+        # (line ~1701) -- count (placement, task) pairs explored.
+        self._progress.total_placements += len(placements) * len(fam_tasks)
+
+        # ── D3.4b: batched-per-seed counts run -> autocorrelator. Mirrors the
+        #    banked floquet_runner_v2 exactly (confirmed by the researcher: one
+        #    seed per instance, one run over the whole kick-list), which is what
+        #    makes the gate-2 reproduction bit-exact. Within each
+        #    (seed, placement, env): build the seed's grid circuits in grid
+        #    order, prepare ONE simulation over the list, run with one
+        #    seed_simulator = resolve_instance_seed(master_seed, seed), then take
+        #    get_autocorrelation per grid point. Average across seeds.
+        #    D3.4c persists the per-(seed,placement,env) autocorrelator vector +
+        #    noise_placement_independent (+ physical_qubit_set) via
+        #    writer.write_byo_result, and aggregates the per-seed series into the
+        #    .dat files. Raw counts are NOT stored (the autocorrelator is the
+        #    result; counts persistence is a later audit/Parquet step). ──
+        # ── W1.3: dispatch (seed, placement, env) work units to a forkserver
+        #    Pool. The worker module imports qiskit-aer / qiskit / numpy at
+        #    module level, but there is NO set_forkserver_preload: the
+        #    forkserver server is a lean exec'd interpreter and each worker
+        #    imports the heavy stack AFTER the fork. Sharing is automatic
+        #    OS-level .so page sharing, NOT a preloaded-heap copy-on-write —
+        #    the same pattern as the runner (floquet_runner.py:549-552),
+        #    endorsed by RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4 Asks
+        #    1+2 + Q1 ACCEPT. The OOM at 98s (LUMI job 18899724) was caused by
+        #    the pre-W1 shell fork-per-seed model paying the per-process
+        #    startup peak N times concurrently, NOT by the runtime cost of the
+        #    simulation. Because each worker carries its own full footprint
+        #    post-fork, the W1.4 cap sizes every worker at its full VmHWM
+        #    (RED-RESP-W1.3-VERIFY-AND-W1.4-CAP-RULINGS NF5 / D6-i).
+        #
+        #    F6 invariant: workers receive the seed's master_seed +
+        #    disorder_instance and recompute seed_simulator =
+        #    resolve_instance_seed(master_seed, seed) deterministically; env
+        #    name / source is NOT part of the derivation. The disorder
+        #    realization is therefore identical across the two arms of any
+        #    seed (the parent identity-shares disorder_instance at expansion;
+        #    see §7.5.4). The W1 canary at the 2-seed scale asserts byte-match
+        #    against the in-tree oracle evidence/W1/gate2_canary/sha256_oracle.txt.
+        # ──
+        from lumi_hpc_qc.sweep.byo_worker import (
+            WorkerArgs, WorkerResult, run_one_unit,
+        )
+
+        # Tasks in this group are (seed x grid-point) for one script+cal. Group
+        # by seed; within a seed the grid-point tasks share one disorder
+        # instance (identity-shared at expansion, §7.5.4).
+        by_seed: dict[int, list[SweepTask]] = {}
+        for t in fam_tasks:
+            by_seed.setdefault(t.seed, []).append(t)
+
+        # The set of distinct noise envs (same across tasks in a group).
+        envs = representative.noise_configs
+        # CFG-1 / W3 shot resolution. Precedence: an experiment-level `shots`
+        # (SweepExperimentConfig.shots), when set, PINS every sampling arm here,
+        # overriding each env's intrinsic NoiseConfig.shots (so device_calibrated's
+        # 4096 is pinned down to the reference's 1000 for gate-2). When unset
+        # (None), fall back to per-env shots, with DEFAULT_SMOKE_SHOTS for envs
+        # whose intrinsic shots is 0 (e.g. the noiseless counts arm). All tasks in
+        # this group share one experiment, so the representative carries the value.
+        exp_shots = representative.experiment_shots
+        # CFG-2 / W1.2: resolve transpile optimization_level. None -> 3 (the
+        # historical hardcode and the banked-reference / gate-2 pin); explicit
+        # values 0..3 honored (validated at parse time, see
+        # _parse_optimization_level). Physics-affecting under noise — a
+        # one-line health note fires below if the resolved value is non-default.
+        exp_opt_level = (
+            representative.optimization_level
+            if representative.optimization_level is not None else 3
+        )
+        # init_bit_array / num_qubits for the observable (from disorder + fixed).
+        init_bit_array = representative.disorder_instance.get("init_bit_array")
+        if init_bit_array is None:
+            errors.append(
+                f"BYO: disorder instance has no init_bit_array "
+                f"(needed for the autocorrelator) — {representative.circuit_script}"
+            )
+            return None, None
+
+        # ── Build the WorkerArgs list (one per (seed, placement, env)). The
+        #    parent does the bookkeeping (placement -> phys_qubits/edges, grid
+        #    sort, shot resolution); the worker does the heavy lifting (build
+        #    circuits, transpile, run, compute observable). ──
+        t_exec_start = time.perf_counter()
+        work_units: list[WorkerArgs] = []
+        for placement in placements:
+            phys_qubits = [placement.qubit_mapping[i] for i in range(qsize)]
+            phys_edges = [
+                (phys_qubits[a], phys_qubits[b]) for (a, b) in connectivity
+            ]
+            for seed, seed_tasks in sorted(by_seed.items()):
+                # Build the seed's grid points in primary-axis ascending order.
+                seed_tasks_sorted = sorted(
+                    seed_tasks, key=lambda tk: tk.circuit_params[primary_axis],
+                )
+                grid_points_sorted = [
+                    dict(tk.circuit_params) for tk in seed_tasks_sorted
+                ]
+                # F6: disorder is identity-shared across grid points within a
+                # seed (preserved at expansion). Both arms see the SAME dict.
+                disorder_instance = dict(seed_tasks_sorted[0].disorder_instance)
+                for env in envs:
+                    # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C):
+                    # noiseless dedup -- compute the placement-INDEPENDENT
+                    # noiseless arm ONCE on the canonical placement
+                    # (placements[0]); the merge broadcasts it to every placement
+                    # with placement_id + physical_qubit_set re-stamped. Off by
+                    # default -> per-placement compute, byte-identical to pre-C.
+                    if (representative.byo_noiseless_dedup
+                            and env.name == "noiseless"
+                            and placement.placement_id
+                            != placements[0].placement_id):
+                        continue
+                    # CFG-1 precedence: experiment shots > env.shots >
+                    # DEFAULT_SMOKE_SHOTS. noiseless's intrinsic shots=0 is
+                    # patched up to DEFAULT_SMOKE_SHOTS so it samples counts
+                    # like any other arm (a shots=0 run returns a statevector,
+                    # not counts).
+                    shots = (
+                        exp_shots if exp_shots is not None
+                        else (env.shots if env.shots and env.shots > 0
+                              else DEFAULT_SMOKE_SHOTS)
+                    )
+                    work_units.append(WorkerArgs(
+                        seed=seed,
+                        env_name=env.name,
+                        env_source=env.source,
+                        master_seed=representative.master_seed,
+                        placement_id=placement.placement_id,
+                        placement_phys_qubits=phys_qubits,
+                        placement_phys_edges=phys_edges,
+                        calibration_path=cal_path,
+                        shots=shots,
+                        optimization_level=exp_opt_level,
+                        qsize=qsize,
+                        factory_script=representative.circuit_script,
+                        factory_function=place_task.circuit_function,
+                        observable_name=place_task.observable_name,
+                        fixed_params=dict(representative.fixed_params),
+                        disorder_instance=disorder_instance,
+                        disorder_gates=tuple(representative.disorder_gates),
+                        init_bit_array=list(init_bit_array),
+                        primary_axis=primary_axis,
+                        grid_points_sorted=grid_points_sorted,
+                        noise_placement_independent=_noise_placement_independent(
+                            env.source, len(placements)
+                        ),
+                    ))
+
+        return work_units, placements
+
+    def _execute_byo_group(
+        self,
+        tasks: list[SweepTask],
+        writer: SweepHDF5Writer,
+        errors: list[str],
+    ) -> None:
+        """Execute a group of byo_circuit tasks (counts -> autocorrelator).
+
+        Unlike the hamiltonian twin battery (_execute_group), the BYO path:
+          - builds each task's circuit via _build_byo_circuit (the Gap A seam),
+          - solves placements from the BUILT circuit's connectivity
+            (extract_connectivity), NOT a topology_library entry,
+          - runs each placement x noise env for COUNTS via prepare_simulation
+            (device_calibrated -> statevector + per-placement F5a noise;
+            noiseless -> statevector), and
+          - computes the counts->autocorrelator observable, stored with the
+            placement + the noise_placement_independent guardrail flag.
+
+        D3.4a (this step): grouping + dispatch + build + placement solve +
+        guardrail resolution. The per-(placement,env) counts run and the
+        autocorrelator are stubbed (D3.4b); storage is D3.4c.
+        """
+        if not tasks:
+            return
+
+        representative = tasks[0]
+        cal_path = representative.calibration_path
+        cal_id, cal_json, device_cal = self._cal_cache[cal_path]
+
+        # Primary grid axis = the (single) key in circuit_params (e.g.
+        # num_kicks). Resolved up front: it's needed both to pick the
+        # placement-defining circuit (below) and to order the autocorrelator
+        # series. Multi-axis BYO counts is a later increment (DEBT).
+        primary_axes = {k for t in tasks for k in t.circuit_params}
+        if len(primary_axes) != 1:
+            errors.append(
+                f"BYO counts path expects a single grid axis (e.g. num_kicks); "
+                f"got {sorted(primary_axes)}. Multi-axis BYO counts is a later "
+                f"increment (DEBT)."
+            )
+            return
+        primary_axis = next(iter(primary_axes))
+
+        # ── Build the placement-defining circuit from the MAXIMAL grid point,
+        #    not tasks[0]. A degenerate low point (e.g. num_kicks=0) builds a
+        #    circuit with NO 2q gates -> empty connectivity -> the solver would
+        #    place disconnected qubits, and the batched higher-kick circuits
+        #    (which DO have 2q gates) then fail to transpile onto that layout.
+        #    The full 2q pattern lives at the high point; connectivity is
+        #    grid-independent above the degenerate point (same lesson as the
+        #    two-highest cross-grid check). ──
+        # ── RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B): the
+        #    un-folded group carries every observable family; flat-dispatch
+        #    all families' units into ONE parallel pool. Split into families
+        #    (first-seen order), build each via the shared seam, accumulate.
+        #    Patch A's placement cache shares the solve across families, so
+        #    the connectivity guard runs across them here. ──
+        from lumi_hpc_qc.sweep.byo_worker import (
+            WorkerArgs, WorkerResult, run_one_unit,
+        )
+        families: dict[tuple[str, str], list[SweepTask]] = {}
+        for t in tasks:
+            families.setdefault(
+                (t.observable_name, t.circuit_function), []
+            ).append(t)
+
+        t_exec_start = time.perf_counter()
+        work_units: list[WorkerArgs] = []
+        placements = None
+        for fam_tasks in families.values():
+            fam_units, fam_placements = self._byo_family_work_units(
+                fam_tasks, representative, primary_axis, errors,
+            )
+            if fam_units is None:
+                return
+            # Patch A shares the solve across families: when connectivity
+            # matches, every family resolves to the SAME placements. Assert
+            # it so a divergence the guard should have caught is loud.
+            if placements is None:
+                placements = fam_placements
+            else:
+                assert (
+                    [p.placement_id for p in fam_placements]
+                    == [p.placement_id for p in placements]
+                ), (
+                    "BYO flat dispatch: observable families resolved to "
+                    "different placements despite the shared solve -- the "
+                    "connectivity guard should have prevented this"
+                )
+            work_units.extend(fam_units)
+        # TODO(observables_independent): once the opt-out lets families solve
+        # apart, `placements` (hence placement_diversity_count_resolved in
+        # the merge) becomes per-family; carry it per-record from the
+        # producing family rather than this single group value.
+
+        # ── W1.4 allocation-aware worker cap (RED-RESP-W1.3-VERIFY-AND-W1.4-
+        #    CAP-RULINGS-v1.0 D1-D6; Q6 formula). Replaces the W1.3 placeholder
+        #    (which used node-wide os.cpu_count() and would launch 80 units ->
+        #    ~240 GiB -> the OOM of job 18899724). The cap reads the JOB's
+        #    allocation, never node scontrol:
+        #      cap = min(cpu_workers, num_units, usable_cores_physical,
+        #                floor(safe_mem / per_unit_peak))
+        #    per_unit_peak comes from a live device_calibrated probe (D1/D2);
+        #    safe_mem/usable_cores from cgroup+affinity (D3). The arithmetic +
+        #    fail-loud taxonomy live in the stdlib-only worker_cap module so they
+        #    are unit-testable offline with mocked inputs. ──
+        from lumi_hpc_qc.sweep import worker_cap as wc
+
+        # ── Workstream-B shard mode: take this rank's STRATIFIED slice of the
+        #    flat work-unit list (round-robin within env strata, so both noise
+        #    envs stay co-resident per rank — RED-RULING-WORKSTREAM-B §3.3 as
+        #    amended in RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2). nranks==1
+        #    (single-node / flag unset) is the no-op shard: the whole list,
+        #    byte-identical to the single-node path. The probe, cap, and pool
+        #    below then operate on this rank's slice (waves automatic). ──
+        if getattr(self, "_shard_nranks", 1) > 1:
+            from lumi_hpc_qc.sweep.fanout import shard
+            work_units = shard(
+                work_units, self._shard_rank, self._shard_nranks,
+                strata=[u.env_name for u in work_units],
+            )
+
+        num_units = len(work_units)
+        cpu_workers = self._config.cpu_workers
+        usable_cores = wc.resolve_usable_cores_physical()
+        safe_mem, safe_mem_src, mem_warned = wc.resolve_safe_mem()
+
+        # ── Defense-in-depth: seed the env BEFORE the forkserver server is
+        #    started (the server is spawned on the first ctx.Pool below, and the
+        #    server — plus every worker forked from it — inherits the parent's
+        #    os.environ at that moment). The worker hard-sets these too
+        #    (byo_worker.run_one_unit), which is the definitive guard; this
+        #    setdefault covers the forkserver server's own process environment.
+        #    setdefault (not =) so an explicit cluster/SLURM value is respected
+        #    at the server level while each worker still forces its own. Lives
+        #    here, before the first forkserver Pool, so it also covers direct
+        #    callers of _execute_byo_group (e.g. the d34a unit test). Mirrors
+        #    floquet_runner main():501. See byo_worker.run_one_unit for the full
+        #    rationale (device_calibrated custom-noise-pass parallel_map → daemonic
+        #    forkserver child → "daemonic processes are not allowed to have children").
+        os.environ.setdefault("QISKIT_IN_PARALLEL", "TRUE")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        ctx = mp.get_context("forkserver")
+
+        # ── D1/D2 probe: run ONE device_calibrated unit alone (Pool(1)) and read
+        #    its returned VmHWM as per_unit_peak (the binding heavy arm — a
+        #    noiseless probe would underestimate -> OOM risk). The probe is REAL
+        #    work: its result is kept and joined to the main results. The worker
+        #    reports its own peak (D1 refinement) so the parent never races
+        #    /proc/<child>. Probe-unit selection is deterministic (first
+        #    device_calibrated unit in the deterministic work_units order). If no
+        #    device-cal unit exists, fall back to the C1 banked constant. ──
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B) cap: size
+        # per_unit_peak to the per-family MAX. Probe ONE device-cal unit per
+        # observable family (the echo arm is heavier than autocorr; a single
+        # probe of the lighter family under-sizes -> OOM). A family with no
+        # device-cal unit contributes no probe; if NO family has one (all-
+        # noiseless), fall back to the C1 static constant below. Probe units are
+        # real work, joined to the results (not recomputed).
+        # RED-DIRECTIVE-PROBE-SKIP-WHEN-NON-BINDING: skip the serial Pool(1)
+        # probe when memory provably cannot bind the cap. peak_hi is a
+        # conservative upper bound on one device-cal unit's VmHWM for this
+        # (method, n); if even that bound leaves memory non-binding
+        # (safe_mem // peak_hi >= core_units_ceiling) the probe's result cannot
+        # change the cap, so it is not run. OOM-safe by construction (see
+        # decide_probe_skip). safe_mem unknown -> not skipped (probe / D4 raise).
+        _methods = {e.method for e in representative.noise_configs}
+        _n = representative.qubit_size
+        _peak_hi = wc.conservative_peak_hi(_methods, _n)
+        # For a corpus-validated shape, size the skip test (and the skipped cap)
+        # on the MEASURED per-unit peak rather than the conservative C1 bound:
+        # the conservative bound exists only for UNMEASURED shapes, and using it
+        # for a measured shape under-packs a provably non-binding run (forcing a
+        # probe purely to re-discover a peak the §1.4 corpus already measured).
+        # _corpus_peak is None for any unmeasured shape -> fall back to _peak_hi
+        # (unchanged behavior). _bound is what the skip arithmetic and the
+        # skipped cap rest on; OOM-safety is identical (decide_probe_skip proves
+        # core_units_ceiling * _bound <= safe_mem, and _bound >= true_peak).
+        _corpus_peak = wc.corpus_measured_peak_hi(_methods, _n)
+        _bound = _corpus_peak if _corpus_peak is not None else _peak_hi
+        _bound_label = (
+            "corpus-measured" if _corpus_peak is not None else "conservative"
+        )
+        _skip = wc.decide_probe_skip(
+            cpu_workers=cpu_workers,
+            num_units=num_units,
+            usable_cores_physical=usable_cores,
+            safe_mem_bytes=safe_mem,
+            peak_hi_bytes=_bound,
+        )
+        # Test-only escape hatch for the RED-DIRECTIVE-PROBE-SKIP §6 A/B gate:
+        # HPCQC_FORCE_PROBE=1 forces the probe even when the skip condition
+        # holds, so the harness can compare skip vs probe on IDENTICAL config and
+        # prove the cap change is physics-invariant. Unset in production.
+        # RED-VERIFY-PROBE-SKIP-CLOSURE §2(b): only skip at a (method, n) whose
+        # peak_hi is corpus-validated; otherwise fall through to the probe (never
+        # skip on a never-measured bound).
+        _do_skip = (
+            _skip.skip
+            and wc.peak_hi_corpus_validated(_methods, _n)
+            and os.environ.get("HPCQC_FORCE_PROBE") != "1"
+        )
+        probe_idxs: list[int] = []
+        _seen_probe_fams: set[str] = set()
+        probe_results: list[WorkerResult] = []
+        if not _do_skip:
+            for _i, _u in enumerate(work_units):
+                if (_u.env_source == "device_calibrated"
+                        and _u.observable_name not in _seen_probe_fams):
+                    _seen_probe_fams.add(_u.observable_name)
+                    probe_idxs.append(_i)
+            if probe_idxs:
+                with ctx.Pool(processes=1) as ppool:
+                    probe_results = list(
+                        ppool.map(run_one_unit,
+                                  [work_units[i] for i in probe_idxs])
+                    )
+
+        if any(r.error for r in probe_results):
+            # A probe failed (e.g. a resurfaced device-cal crash): do NOT spend
+            # the main pool. Surface via the standard error-aggregation path.
+            worker_results: list[WorkerResult] = probe_results
+        else:
+            if _do_skip:
+                # Probe skipped: feed the bound the skip was decided on (the
+                # corpus-measured peak on a validated shape, else the
+                # conservative C1 bound). compute_worker_cap returns
+                # core_units_ceiling (memory cannot bind). D4(a) cannot fire here
+                # (mem_term >= core_units_ceiling >= 1 => _bound <= safe_mem).
+                per_unit_peak = _skip.peak_hi_bytes
+                if _corpus_peak is not None:
+                    peak_source = "skip:corpus_measured:" + ",".join(
+                        f"{m}@{_n}" for m in sorted(_methods)
+                    )
+                else:
+                    peak_source = _skip.peak_source
+            else:
+                _peaks = [r.peak_rss_kib * 1024 for r in probe_results
+                          if r.peak_rss_kib > 0]
+                if _peaks:
+                    per_unit_peak = max(_peaks)
+                    peak_source = (
+                        "probe:device_calibrated_VmHWM" if len(probe_idxs) == 1
+                        else "probe:device_calibrated_VmHWM_per_family_max"
+                    )
+                elif not probe_idxs:
+                    per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                    peak_source = "c1_fallback:no_device_cal_unit"
+                else:
+                    per_unit_peak = wc.C1_PER_UNIT_PEAK_BYTES
+                    peak_source = "c1_fallback:probe_returned_no_vmhwm"
+
+            # Resolve the cap. Raises ForcedSerialError on D4(a)/(b) (fail-loud).
+            decision = wc.compute_worker_cap(
+                cpu_workers=cpu_workers,
+                num_units=num_units,
+                usable_cores_physical=usable_cores,
+                safe_mem_bytes=safe_mem,
+                per_unit_peak_bytes=per_unit_peak,
+            )
+            cap = decision.cap
+
+            # D3: a LOUD WARN when safe_mem fell through to node RealMemory (the
+            # non-allocation-aware last resort Q6 exists to avoid) — never silent.
+            if mem_warned:
+                print(
+                    "    BYO: WARN: memory budget fell through to node "
+                    f"RealMemory ({safe_mem_src}) — NOT allocation-aware. "
+                    f"safe_mem={safe_mem / wc.GIB:.1f} GiB. Set --mem or run "
+                    "under a cgroup memory limit for an allocation-aware cap."
+                )
+            # D2 condition + criterion-5 observability: record that all units
+            # were treated as heavy (device-cal per_unit_peak), the resolved cap,
+            # the per_unit_peak + its source, safe_mem + its source, the cores,
+            # and which term bound the cap — so the under-pack is auditable.
+            n_waves = (num_units + cap - 1) // cap if cap else 0
+            print(
+                f"    BYO: dispatching {num_units} unit(s) to forkserver pool "
+                f"(cap={cap}; binding={decision.binding_term}; "
+                f"{n_waves} wave(s); all units treated as heavy "
+                f"[device_calibrated], D2 conservative). "
+                f"per_unit_peak={per_unit_peak / wc.GIB:.2f} GiB [{peak_source}]; "
+                f"safe_mem={safe_mem / wc.GIB:.1f} GiB [{safe_mem_src}]; "
+                f"usable_cores_physical={usable_cores}; cpu_workers={cpu_workers}; "
+                f"mem_term={decision.mem_term}."
+            )
+            if _do_skip:
+                print(
+                    f"    BYO: probe SKIPPED [{peak_source}] — memory "
+                    f"cannot bind the cap: safe_mem // peak_hi = "
+                    f"{safe_mem // _bound} >= core_units_ceiling="
+                    f"{_skip.core_units_ceiling} (peak_hi="
+                    f"{_bound / wc.GIB:.2f} GiB, {_bound_label} bound). "
+                    f"No serial probe wave run."
+                )
+
+            # ── Main dispatch over the REMAINING units (the probe result is
+            #    reused, not recomputed). The probe ran-then-exited before this
+            #    pool, so peak concurrency is `cap`, not cap+1. Each unit's
+            #    run_one_unit is byte-identical regardless of pool grouping, so
+            #    the 2-seed canary byte-match is preserved. ──
+            _probe_set = set(probe_idxs)
+            remaining = [u for i, u in enumerate(work_units)
+                         if i not in _probe_set]
+            main_results: list[WorkerResult] = []
+            if remaining:
+                with ctx.Pool(processes=cap) as pool:
+                    main_results = list(pool.map(run_one_unit, remaining))
+            worker_results = probe_results + main_results
+
+        # ── Fail-loud on any worker error. A failed worker returns a
+        #    WorkerResult with `error` populated rather than raising — raising
+        #    across Pool.map would poison the pool and abort sibling units
+        #    mid-flight (the runner pattern). Parent aggregates errors and
+        #    emits a single bounded report. ──
+        worker_errors = [r for r in worker_results if r.error]
+        if worker_errors:
+            msg_lines = [
+                f"BYO: {len(worker_errors)} of {len(worker_results)} worker(s) failed:"
+            ]
+            for r in worker_errors[:5]:
+                first_line = r.error.splitlines()[0] if r.error else "unknown"
+                msg_lines.append(
+                    f"  seed={r.seed} env={r.env_name} "
+                    f"placement={r.placement_id}: {first_line}"
+                )
+            if len(worker_errors) > 5:
+                msg_lines.append(f"  ... and {len(worker_errors) - 5} more")
+            errors.append("\n".join(msg_lines))
+            return
+
+        # ── Parent-serial assembly into the byo_results dict schema the
+        #    downstream HDF5 writer + .dat aggregator already consume
+        #    (D3.4c / RED-RESP-D3.4C). Field-for-field identical to the
+        #    pre-W1 serial path's output. ──
+        byo_results: list[dict] = []
+        for r in worker_results:
+            rec = {
+                "seed": r.seed,
+                "script": representative.circuit_script,
+                # D7 increment 2 / RED-RULING-…(B): which circuit family this
+                # result belongs to. Under flat dispatch the BYO group is NO
+                # LONGER per-observable (observable/circuit_function were un-folded
+                # from the group key), so route per-UNIT from the worker's echoed
+                # identity, not the representative.
+                # "default" -> legacy HDF5/.dat layout (byte-identical pre-D7).
+                "observable": r.observable_name,
+                # The family's factory function, carried per-unit so the .dat
+                # aggregator and HDF5 writer disambiguate co-resident families in
+                # one group via the shared seam.
+                "circuit_function": r.factory_function,
+                "placement_id": r.placement_id,
+                "physical_qubit_set": r.physical_qubit_set,
+                "env": r.env_name,
+                "noise_source": r.env_source,
+                "noise_placement_independent": r.noise_placement_independent,
+                # Workstream A: bank the diversity policy that selected this
+                # placement set, so the selection is auditable ("which chains,
+                # and why those?"). Per-group constant; recorded per-record so it
+                # rides the existing provenance path with no schema change.
+                # count_resolved = the number actually selected (the
+                # fidelity-ranked device-max for count=auto). no_crosstalk=False
+                # for max_overlap>0 (off the guarantee — RED-RULING §9.2).
+                "placement_diversity_strategy": representative.placement_diversity.strategy,
+                "placement_diversity_max_overlap": representative.placement_diversity.max_overlap,
+                "placement_diversity_count_requested": str(representative.placement_diversity.count),
+                "placement_diversity_count_resolved": len(placements),
+                "placement_diversity_no_crosstalk": representative.placement_diversity.no_crosstalk,
+                "num_kicks": r.num_kicks,
+                "autocorrelator": r.autocorrelator,
+                # Per-qubit (un-collapsed) matrix (N_kicks, num_qubits). Rides the
+                # dedup broadcast via dict(rec) below: the matrix is local-indexed
+                # and placement-independent for noiseless, and the per-placement
+                # re-stamp of physical_qubit_set makes the per-qubit output correct
+                # per placement (RED-RULING-PER-QUBIT §2.2).
+                "autocorrelator_perqubit": r.autocorrelator_perqubit,
+                "shots": r.shots,
+                "seed_simulator": r.seed_simulator,
+                # RED-RESP-D3.4C §3: master_seed REQUIRED on the record.
+                "master_seed": r.master_seed,
+                # CFG-2 / W1.2: resolved opt_level recorded per result.
+                "optimization_level": r.optimization_level,
+                # NF4 (W1.4): thread the resolved calibration_set_id onto the
+                # record so the HDF5 writer can persist it (criterion 6). cal_id
+                # is a per-GROUP constant resolved at _execute_byo_group from
+                # self._cal_cache[cal_path] (@~2026) — parent-side, so it is not
+                # round-tripped through WorkerArgs/WorkerResult per unit.
+                "calibration_set_id": cal_id,
+            }
+            if (representative.byo_noiseless_dedup
+                    and r.env_name == "noiseless"):
+                # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (C): broadcast
+                # the placement-INDEPENDENT noiseless payload to every placement,
+                # RE-STAMPING placement_id + physical_qubit_set per placement (the
+                # payload is placement-independent; the record is not). This
+                # reproduces the per-placement noiseless records a non-deduped run
+                # would have written -- the §5.4 full-group byte-identity target.
+                for placement in placements:
+                    bcopy = dict(rec)
+                    bcopy["placement_id"] = placement.placement_id
+                    bcopy["physical_qubit_set"] = [
+                        placement.qubit_mapping[i]
+                        for i in range(len(placement.qubit_mapping))
+                    ]
+                    byo_results.append(bcopy)
+            else:
+                byo_results.append(rec)
+        self._timing.setdefault("byo_exec_s", 0.0)
+        self._timing["byo_exec_s"] += time.perf_counter() - t_exec_start
+        # Progress accounting: each (seed, placement, env) entry is one
+        # simulator run. Matches the non-BYO _execute_group convention
+        # (line ~1842 increments by battery.simulated_count).
+        self._progress.total_simulations += len(byo_results)
+        print(f"    BYO: computed {len(byo_results)} (seed x placement x env) "
+              f"autocorrelator series")
+        # CFG-2 / W1.2: one-line health note when running at a non-default
+        # optimization_level. Per RED-RESP-W1-PARALLELISM-AND-OOM-ROOTCAUSE-v1.4
+        # Q3 ACCEPT, the resolved level is physics-affecting under noise and
+        # must be surfaced so two runs at different levels are never silently
+        # compared as if the difference were physics. Gate-2 pins 3.
+        # RED-RULING-BYO-FLAT-DISPATCH-AND-NOISELESS-DEDUP (B) regression fix:
+        # the resolved opt-level is defined per-family inside
+        # _byo_family_work_units; Patch B's extraction moved that definition out
+        # of this scope, leaving this group-level note referencing an undefined
+        # name (NameError at runtime, not caught by py_compile or the unit
+        # tests). Recompute from the representative -- the SAME expression, and
+        # group-uniform since every family shares it -- restoring the exact
+        # pre-B behaviour without touching physics.
+        exp_opt_level = (
+            representative.optimization_level
+            if representative.optimization_level is not None else 3
+        )
+        if exp_opt_level != 3:
+            print(
+                f"    BYO: NOTE: optimization_level = {exp_opt_level} "
+                f"(non-default; default 3). Under noise this changes the "
+                f"transpiled gate set + scheduling and therefore the applied "
+                f"noise model. Two runs at different levels are not directly "
+                f"comparable."
+            )
+
+        # ── D3.4c (Option A): persist each (seed × placement × env) result as a
+        #    BYO-native HDF5 group (write_byo_result), then aggregate the
+        #    per-seed series for each (placement, env) into the .dat files
+        #    (aggregated_autocorr.dat byte-format-identical to
+        #    aggregate_floquet.py) — the form the gate-2 reproduction compares.
+        #    The 71-col physics-Parquet extension is a separate Red-reviewed
+        #    step (autocorrelator-as-vector is a new result type; RED §4 Q3 was
+        #    aimed at the timing schema, not the physics one). ──
+        from lumi_hpc_qc.sweep.byo_observable import (
+            aggregate_byo_autocorr,
+            aggregate_byo_autocorr_perqubit,
+        )
+
+        if writer is not None:
+            for r in byo_results:
+                writer.write_byo_result(r)
+                # Progress accounting: matches non-BYO _execute_group convention
+                # (line ~1898 bumps hdf5_writes per writer.write call).
+                self._progress.hdf5_writes += 1
+
+        # Aggregate per (placement, env) across seeds -> mean + sem .dat. The
+        # output dir mirrors the bank: one subdir per (placement, env).
+        out_root = getattr(self, "_byo_dat_dir", None)
+        # ── Workstream-B coupling guard (RED-REVIEW-WORKSTREAM-B-INCREMENTS-1-2):
+        #    shard mode MUST have deferred aggregation to the post-job merge —
+        #    assert the deferral fired (byo_dat_dir is None) so a future refactor
+        #    cannot leave shard mode on while ALSO aggregating here (double-write
+        #    into the .dat tree). The flag and the deferral are thus provably the
+        #    same switch, not coincidentally aligned. ──
+        if getattr(self, "_shard_mode", False):
+            assert out_root is None, (
+                "shard mode active but byo_dat_dir is set — aggregation would "
+                "double-write; the merge owns aggregation in shard mode."
+            )
+        if out_root is not None:
+            by_pe: dict[tuple, list] = {}
+            by_pe_pq: dict[tuple, list] = {}
+            for r in byo_results:
+                key = (tuple(r["physical_qubit_set"]), r["env"],
+                       r["observable"], r["circuit_function"])
+                by_pe.setdefault(key, []).append((r["seed"], r["autocorrelator"]))
+                by_pe_pq.setdefault(key, []).append(
+                    (r["seed"], r["autocorrelator_perqubit"])
+                )
+            stem = Path(representative.circuit_script).stem
+            disambiguate = stem in getattr(self, "_byo_collision_stems", set())
+            for (phys, env, observable, circuit_function), series in by_pe.items():
+                # D7 increment 2 + BYO-FAMILY-COLLISION fix (b1): the legacy
+                # subdir, then the observable/family level appended via the
+                # shared helper ("" for a lone "default" family -> byte-identical
+                # pre-D7; "/<name>" for a declared family; "/<circuit_function>"
+                # for a default family when >1 family collides at this leaf in
+                # the resolved run). Same helper + same disambiguate flag the
+                # HDF5 writer uses, so the two layouts cannot drift.
+                sub = os.path.join(
+                    out_root, stem,
+                    "-".join(str(q) for q in phys), env,
+                ) + byo_observable_subpath(observable, circuit_function, disambiguate)
+                aggregate_byo_autocorr(sorted(series), sub)
+                # Per-qubit (un-collapsed) site-resolved .dat alongside the
+                # scalar (non-shard path; the merge owns the shard path, P3). The
+                # physical_q column is THIS placement's physical_qubit_set
+                # (re-stamped for deduped noiseless); values are the local-indexed
+                # per-qubit matrix (RED-RULING-PER-QUBIT §2.1/§2.2). Guarded so an
+                # empty matrix (error/legacy record) never writes a bad .dat.
+                pq_series = by_pe_pq[(phys, env, observable, circuit_function)]
+                if pq_series and all(len(m) for _, m in pq_series):
+                    aggregate_byo_autocorr_perqubit(
+                        sorted(pq_series), list(phys), sub
+                    )
+
+        # Progress accounting: this group's tasks are done. The BYO path
+        # batches all tasks for a (seed, env) into a single simulator run, so
+        # there's no natural per-task completion point inside the loop -- mark
+        # the group's tasks complete here, then fire the progress callback
+        # once for the group. Matches the non-BYO _execute_group convention
+        # (line ~1907 bumps completed_tasks per task; here we bump by the
+        # group's task count in one step).
+        self._progress.completed_tasks += len(tasks)
+        if self._progress_callback:
+            self._progress_callback(self._progress)
+
+        self._byo_results_last = byo_results  # also surfaced for verification
+        return
+
     # ── Internal: circuit building ──
 
     def _build_circuit_and_observable(
@@ -1743,6 +3383,33 @@ class SweepEngine:
         circuit = QuantumCircuit(num_qubits)
 
         return circuit, hamiltonian, metadata
+
+    @staticmethod
+    def _build_byo_circuit(task: SweepTask):
+        """Per-task BYO build seam (SPEC-002 §7.5).
+
+        Assembles the factory kwargs as fixed ∪ disorder ∪ grid-point and builds
+        the concrete circuit for this task. The same disorder object was attached
+        to every grid point in the task's seed at expansion time, so the
+        cross-grid invariant already holds (verified once per experiment in
+        _expand_byo_experiment); this method just realizes one point.
+
+        Returns the LoadedCircuit (circuit + extracted connectivity), which the
+        BYO execution path uses for placement (connectivity, not a topology
+        library entry) and counts-based evaluation. Not yet invoked by
+        _execute_group — the BYO execution path lands with Gap B/D3.
+        """
+        from lumi_hpc_qc.sweep.byo_sweep import assemble_build_kwargs
+        from lumi_hpc_qc.sweep.circuit_loader import load_circuit
+
+        build_kwargs = assemble_build_kwargs(
+            task.fixed_params, task.disorder_instance, task.circuit_params,
+        )
+        return load_circuit(
+            script_file=task.circuit_script,
+            script_function=task.circuit_function,
+            script_params=build_kwargs,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
