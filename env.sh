@@ -20,7 +20,7 @@ export PYTHONHASHSEED="${PYTHONHASHSEED:-0}"
 
 # ── Container paths ──
 # GPU container (qiskit-aer with ROCm/hipBLAS for MI250X)
-export HPCQC_GPU_CONTAINER="${HPCQC_GPU_CONTAINER:-/appl/local/quantum/qiskit/qiskit_2.3.0_csc.sif}"
+export HPCQC_GPU_CONTAINER="${HPCQC_GPU_CONTAINER:-/appl/local/quantum/qiskit/iqm-client_34.0.4_qiskit_2.1.2_qiskit-aer_0.17.2.sif}"
 
 # CPU container (same image works for CPU, or set a different one)
 export HPCQC_CPU_CONTAINER="${HPCQC_CPU_CONTAINER:-${HPCQC_GPU_CONTAINER}}"
