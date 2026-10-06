@@ -45,7 +45,7 @@ def _write_yaml(tmp_path, *, with_output_dir):
               shots: 8
               noise_configs: [noiseless]
         """
-    ).replace("__OUTPUT_DIR__", od.rstrip("\n"))
+    ).replace("__OUTPUT_DIR__", od)
     p = tmp_path / "sweep.yaml"
     p.write_text(text, encoding="utf-8")
     return p

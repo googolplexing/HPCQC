@@ -288,6 +288,9 @@ class _FakeTask:
         self.calibration_path = "cal/path.json"
         self.circuit_params = {"num_kicks": 4}
         self.circuit_script = "examples/byo/floquet_dtc.py"
+        self.circuit_function = "build_circuit"
+        self.observable_name = "default"
+        self.topology_name = "chain"
         self.noise_configs = []          # noiseless -> wants_device_cal = False
         self.physical_qubits = physical_qubits
         self.max_placements = 7          # distinctive: must be forwarded verbatim
@@ -314,6 +317,7 @@ def _engine_with(spy, task):
     eng._cal_cache = {task.calibration_path: ("cal_id", {}, _FakeDeviceCal())}
     eng._timing = defaultdict(float)
     eng._solver = spy
+    eng._byo_placement_cache = {}
     eng._build_byo_circuit = lambda _t: _FakeLoaded()
     return eng
 
@@ -334,6 +338,8 @@ def test_field_absent_dispatches_to_solver_with_verbatim_args():
         "strategy": "max_fidelity",
         "max_placements": 7,
         "manual_qubit_name_lists": None,
+        "solver_top_n": None,
+        "diversity": None,
     }
 
 
@@ -353,4 +359,6 @@ def test_field_present_bypasses_solver():
         "strategy": "max_fidelity",
         "max_placements": 7,
         "manual_qubit_name_lists": [["QB1", "QB2", "QB3"]],
+        "solver_top_n": 7,
+        "diversity": None,
     }
