@@ -1,0 +1,2513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Q50 Cross-Experiment Packing — Michael Mucciardi</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0a0e17;--surface:#111827;--surface2:#1a2236;--border:#2a3650;--text:#e2e8f0;--text2:#8896b0;--text3:#555868;--accent:#38bdf8;--accent2:#818cf8;--green:#34d399;--amber:#fbbf24;--rose:#fb7185;--cyan:#22d3ee;--orange:#fb923c;--purple:#a78bfa;--pink:#f472b6;--lime:#a3e635;--mono:'JetBrains Mono',monospace;--serif:'Source Serif 4',Georgia,serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--serif);line-height:1.7;padding:2rem;max-width:1300px;margin:0 auto}
+h1{font-family:var(--mono);font-size:1.6rem;font-weight:700;color:var(--accent);margin-bottom:.5rem}
+h1 span{color:var(--text2);font-weight:400}
+.subtitle{color:var(--text2);font-size:.95rem;margin-bottom:2.5rem;font-family:var(--mono)}
+h2{font-family:var(--mono);font-size:1.1rem;font-weight:600;color:var(--amber);margin:2.5rem 0 1rem;padding-bottom:.4rem;border-bottom:1px solid var(--border)}
+h2 .sn{display:inline-block;background:var(--amber);color:var(--bg);width:1.5rem;height:1.5rem;text-align:center;line-height:1.5rem;border-radius:4px;font-size:.85rem;margin-right:.5rem}
+h3{font-family:var(--mono);font-size:.95rem;font-weight:600;color:var(--accent);margin:1.5rem 0 .8rem}
+p{margin-bottom:1rem;font-size:.95rem}
+.callout{background:var(--surface2);border-left:3px solid var(--accent);padding:1rem 1.2rem;margin:1.5rem 0;border-radius:0 6px 6px 0;font-size:.9rem}
+.callout strong{color:var(--accent)}.callout.green{border-left-color:var(--green)}.callout.green strong{color:var(--green)}.callout.amber{border-left-color:var(--amber)}.callout.amber strong{color:var(--amber)}.callout.rose{border-left-color:var(--rose)}.callout.rose strong{color:var(--rose)}
+.viz-box{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin:1.5rem 0}
+.viz-title{font-family:var(--mono);font-size:.8rem;color:var(--text2);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+.btn{padding:6px 14px;font:600 12px var(--mono);background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text2);cursor:pointer;transition:all .2s}
+.btn:hover{border-color:var(--accent);color:var(--text)}.btn.active{background:rgba(56,189,248,.12);border-color:var(--accent);color:var(--accent)}
+.stats-row{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+.stat-card{background:var(--surface2);border-radius:8px;padding:10px 14px;flex:1;min-width:110px}
+.stat-val{font:700 20px var(--mono);color:var(--accent)}.stat-val.green{color:var(--green)}.stat-val.amber{color:var(--amber)}.stat-val.rose{color:var(--rose)}
+.stat-lbl{font:10px var(--mono);color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.05em}
+.tbl{width:100%;border-collapse:collapse;margin:1rem 0;font-family:var(--mono);font-size:.78rem}
+.tbl th{text-align:left;padding:.5rem .7rem;border-bottom:2px solid var(--border);color:var(--text2);font-weight:600;font-size:.68rem;text-transform:uppercase;letter-spacing:.05em}
+.tbl th.r{text-align:right}.tbl td{padding:.5rem .7rem;border-bottom:1px solid var(--border)}.tbl td.r{text-align:right}.tbl td.g{color:var(--green);font-weight:700}.tbl td.a{color:var(--amber);font-weight:700}.tbl td.ro{color:var(--rose);font-weight:700}.tbl tr.hl td{background:rgba(52,211,153,.05)}
+.seed-colors{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0}
+.seed-chip{padding:3px 8px;border-radius:4px;font:600 10px var(--mono);color:#fff}
+.level-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:12px 0}
+.level-tab{padding:8px 14px;font:600 11px var(--mono);background:var(--surface2);border:1px solid var(--border);border-radius:6px;cursor:pointer;transition:all .2s;color:var(--text2)}
+.level-tab:hover{border-color:var(--accent)}.level-tab.active{border-color:var(--green);background:rgba(52,211,153,.08);color:var(--green)}
+.timeline-wrap{display:flex;gap:20px;align-items:flex-start;margin:16px 0;flex-wrap:wrap}
+.timeline-col{flex:1;min-width:320px}
+.timeline-bar-wrap{position:relative;margin:8px 0}
+.timeline-bar{display:flex;flex-direction:column;border-radius:6px;overflow:hidden;border:1px solid var(--border)}
+.tl-seg{display:flex;align-items:center;padding:0 10px;font:600 10px var(--mono);color:#fff;overflow:hidden;white-space:nowrap;transition:height .5s ease;min-height:0}
+.tl-seg .tl-label{flex:1;overflow:hidden;text-overflow:ellipsis}.tl-seg .tl-dur{margin-left:8px;opacity:.8;font-weight:400}
+.tl-circuit-row:hover{opacity:1 !important;filter:brightness(1.3)}
+.timeline-total{font:700 13px var(--mono);color:var(--text);margin-top:8px;text-align:center}
+.chip-col{width:380px;flex-shrink:0}
+.chip-wrapper{position:relative;width:312px;height:312px}
+.chip-grid{display:grid;grid-template-columns:repeat(9,32px);gap:3px;margin:8px 0;position:relative;z-index:2}
+.chip-edges{position:absolute;top:8px;left:0;z-index:1;pointer-events:none}
+.chip-q.missing-q{background:transparent;border:1px dashed var(--rose);opacity:0.4}
+.chip-q{width:32px;height:32px;border-radius:4px;display:flex;align-items:center;justify-content:center;font:600 7px var(--mono);transition:all .3s}
+.chip-q.idle{background:#1a1d28;border:1px dashed var(--border);color:var(--text3)}
+.chip-q.active{border:2px solid;color:#fff;font-weight:700}
+.chip-q.hub{border-width:3px !important;font-weight:900}
+.chip-q.empty{visibility:hidden}
+.chip-q.glow{box-shadow:0 0 8px 3px rgba(255,255,255,0.7);z-index:10;position:relative;transform:scale(1.1);border-color:#fff !important}
+.stepper{display:flex;align-items:center;gap:8px;margin:12px 0}
+.stepper-btn{width:32px;height:32px;border:1px solid var(--border);background:var(--surface2);border-radius:6px;color:var(--text);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center}
+.stepper-btn:hover{border-color:var(--accent)}
+.stepper-info{font:600 12px var(--mono);color:var(--text2);min-width:200px;text-align:center}
+.util-bars{display:flex;gap:3px;align-items:flex-end;height:160px;margin:16px 0}
+.util-bar{flex:1;border-radius:3px 3px 0 0;transition:height .4s;position:relative;cursor:pointer;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden}
+.util-seg{width:100%;transition:height .4s}
+.util-bar .tip{position:absolute;top:-32px;left:50%;transform:translateX(-50%);font:600 9px var(--mono);color:var(--text);background:var(--surface2);padding:2px 6px;border-radius:4px;white-space:nowrap;opacity:0;transition:opacity .2s;pointer-events:none;z-index:10}
+.util-bar:hover .tip{opacity:1}
+.util-labels{display:flex;gap:3px;margin-top:4px}
+.util-labels span{flex:1;text-align:center;font:9px var(--mono);color:var(--text3)}
+.pipeline{display:flex;flex-direction:column;gap:8px;margin:16px 0}
+.batch-row{display:flex;align-items:center;gap:8px}
+.batch-label{font:600 11px var(--mono);color:var(--text2);width:60px;flex-shrink:0}
+.batch-bar{flex:1;height:28px;background:var(--surface2);border-radius:4px;overflow:hidden;display:flex}
+.batch-seg{height:100%;transition:width .5s;display:flex;align-items:center;justify-content:center;font:600 8px var(--mono);color:rgba(255,255,255,.8);overflow:hidden;white-space:nowrap}
+.batch-count{font:600 11px var(--mono);color:var(--text2);width:80px;text-align:right;flex-shrink:0}
+.code-block{background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:16px;font:13px/1.6 var(--mono);color:#c9d1d9;overflow-x:auto;margin:12px 0}
+.code-block .kw{color:#ff7b72}.code-block .str{color:#a5d6ff}.code-block .num{color:#79c0ff}.code-block .cm{color:#8b949e}
+.footer{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);font-family:var(--mono);font-size:.7rem;color:var(--text2)}
+.chip-q.decoherent{background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(251,113,133,0.15) 3px,rgba(251,113,133,0.15) 6px) !important;border-style:dashed !important;opacity:0.5 !important}
+.chip-q.selected{box-shadow:0 0 10px 4px rgba(255,255,255,0.9);z-index:10;position:relative;transform:scale(1.15);border-color:#fff !important}
+.seed-chip.highlighted{box-shadow:0 0 6px 2px rgba(255,255,255,0.6);transform:scale(1.1);outline:2px solid #fff}
+.seed-chip.exhausted{opacity:0.25;text-decoration:line-through;filter:grayscale(1)}
+.ansatz-panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin:8px 0;min-height:60px;display:flex;flex-direction:column;align-items:center}
+.ansatz-title{font:600 10px var(--mono);color:var(--text2);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.ansatz-info{font:11px var(--mono);color:var(--text3);margin-top:6px;line-height:1.5}
+.ansatz-info .warn{color:var(--rose);font-weight:600}
+.ansatz-info .ok{color:var(--green);font-weight:600}
+.decohere-tag{display:inline-block;padding:2px 6px;border-radius:3px;font:600 9px var(--mono);margin-left:4px}
+.decohere-tag.danger{background:rgba(251,113,133,0.15);color:var(--rose)}
+.decohere-tag.caution{background:rgba(251,191,36,0.15);color:var(--amber)}
+.decohere-tag.safe{background:rgba(52,211,153,0.15);color:var(--green)}
+@media(max-width:800px){.timeline-wrap{flex-direction:column}.chip-col{width:100%}.stats-row{flex-direction:column}}
+</style>
+<link id="css-theme" rel="stylesheet" type="text/css" href="/css-theme_4b96c92914994f66f21e7c30e831d3d827a435df.css">
+<script id="scripts" type="text/javascript" src="/scripts_5b78a9a0ebbbbb75eda23b4e12a60813ca1e257a.js"></script>
+<meta name="referrer" content="same-origin" />
+<meta name="rc-sdk-transport-enabled" content="off" />
+
+			<link rel="icon" sizes="16x16" type="image/png" href=/assets/favicon_16.png />
+			<link rel="icon" sizes="32x32" type="image/png" href=/assets/favicon_32.png />
+<title>Rc.csc.fi</title><meta name="application-name" content="Rc.csc.fi"><meta name="apple-mobile-web-app-title" content="Rc.csc.fi">
+<meta http-equiv="content-language" content=""><meta name="language" content="">
+<meta name="robots" content="NOINDEX,NOFOLLOW">
+<meta name="msvalidate.01" content="">
+<meta name="google-site-verification" content="">
+<meta property="fb:app_id" content="">
+<base href="/">
+<meta name="rc-message-parser-max-length" content="0" />
+</head>
+<body>
+
+<noscript style="color: white; text-align:center">
+	You need to enable JavaScript to run this app.
+</noscript>
+<div id="react-root">
+	<div class="page-loading" role="alert" aria-busy="true" aria-live="polite" aria-label="loading">
+		<div class="loading__animation">
+			<div class="loading__animation__bounce"></div>
+			<div class="loading__animation__bounce"></div>
+			<div class="loading__animation__bounce"></div>
+		</div>
+	</div>
+</div>
+
+<style id='css-variables'> :root {}</style>
+
+
+<h1>Q50 Cross-Experiment Packing <span>— The Throughput Multiplier</span></h1>
+<p class="subtitle">Michael Mucciardi · HPCQC × ANIMLL · VTT Q50 (53 qubits) · TFIM 4-Qubit Star · Real Q50 Timing Data (April 7, 2026)</p>
+
+<!-- ═══════ SECTION 1 ═══════ -->
+<h2><span class="sn">1</span> Q50 Recap</h2>
+<p>VTT Q50: 53-qubit superconducting QPU, 82 CZ edges, rotated square lattice. For 4-qubit star (K₁,₃) topology, the placement solver finds <strong>108 unique placements</strong> across 36 hub qubits. DSatur graph coloring packs them into <strong>16 non-overlapping rounds</strong> (provably optimal). Each round is one composite circuit.</p>
+<p>For TFIM, each placement requires <strong>2 measurement circuits</strong> (Z-basis + X-basis). So 1 seed = 108 placements × 2 Pauli groups = <strong>216 measurement tasks</strong> packed into <strong>32 composite circuits</strong> (16 rounds × 2 bases).</p>
+<div class="callout"><strong>Key numbers:</strong> 53 qubits · 82 CZ edges · 108 star placements · 16 DSatur rounds · 2 Pauli groups (TFIM) · 32 circuits per seed · 4096 shots per circuit</div>
+
+<!-- ═══════ SECTION 2 ═══════ -->
+<h2><span class="sn">2</span> The QPU Time Budget — Real Q50 Measurements</h2>
+<p>Every batch submission to VTT Q50 passes through 6 timed phases. These were captured from 5 live jobs on April 7, 2026:</p>
+<p style="font:11px var(--mono);color:var(--text3);margin-bottom:6px"><strong style="color:var(--text2)">Table 1 — QPU Phase Timing.</strong> <em>Batch:</em> job label (count × circuit type). <em>Circuits:</em> number of circuits submitted in one <code>.run()</code> call. <em>Width:</em> number of physical qubits per circuit. <em>QX Overhead:</em> fixed cost to serialize, authenticate, and submit the batch to the QX middleware. <em>Queue Wait:</em> time spent in the QPU job queue before execution begins (varies with QPU load). <em>QPU Execute:</em> total wall time the QPU spends running all circuits in the batch (≈ per-circuit time × count). <em>Postprocess:</em> server-side result aggregation and readout-error mitigation. <em>Delivery:</em> network transfer of result payload back to the LUMI node. <em>Per Circuit:</em> QPU Execute ÷ circuit count — the marginal cost of adding one more circuit. <em>Per Shot:</em> Per Circuit ÷ 4096 shots — cost of a single shot (measurement repetition).</p>
+<table class="tbl">
+<thead><tr><th>Batch</th><th>Circuits</th><th>Width</th><th class="r">QX Overhead</th><th class="r">Queue Wait</th><th class="r">QPU Execute</th><th class="r">Postprocess</th><th class="r">Delivery</th><th class="r">Per Circuit</th><th class="r">Per Shot</th></tr></thead>
+<tbody>
+<tr><td>A: 10× SU2(r=2, 4q)</td><td>10</td><td>4q</td><td class="r">1.16s</td><td class="r a">22.13s</td><td class="r">17.86s</td><td class="r">0.23s</td><td class="r">0.72s</td><td class="r">1.786s</td><td class="r">436µs</td></tr>
+<tr><td>B: 1× SU2(r=2, 4q)</td><td>1</td><td>4q</td><td class="r">1.13s</td><td class="r g">0.02s</td><td class="r">2.41s</td><td class="r">0.20s</td><td class="r">0.45s</td><td class="r">2.411s</td><td class="r">589µs</td></tr>
+<tr><td>C: 1× SU2(r=1, 4q)</td><td>1</td><td>4q</td><td class="r">1.13s</td><td class="r g">0.02s</td><td class="r">2.40s</td><td class="r">5.51s</td><td class="r">1.00s</td><td class="r">2.402s</td><td class="r">586µs</td></tr>
+<tr><td>D: 1× Bell(2q)</td><td>1</td><td>2q</td><td class="r">1.12s</td><td class="r ro">41.95s</td><td class="r">2.59s</td><td class="r">0.53s</td><td class="r">2.57s</td><td class="r">2.591s</td><td class="r">633µs</td></tr>
+<tr><td>E: 10× H-all(53q)</td><td>10</td><td>53q</td><td class="r">1.15s</td><td class="r g">0.02s</td><td class="r">17.59s</td><td class="r">1.20s</td><td class="r">1.69s</td><td class="r">1.759s</td><td class="r">430µs</td></tr>
+</tbody>
+</table>
+<div class="callout rose"><strong>Critical finding:</strong> Queue wait dominates (0.02s–42s) and is identical whether you submit 1 circuit or 100. Fixed per-batch overhead (QX + postprocess + delivery) averages ~4s. Per-circuit QPU time is ~1.77s in batches. <em>Every unused circuit slot in a batch is wasted overhead you already paid for.</em></div>
+<div class="callout green"><strong>Width is free:</strong> Batch A (4-qubit circuits) and Batch E (53-qubit circuits) show nearly identical per-circuit times (1.786s vs 1.759s) and per-shot times (436µs vs 430µs). DSatur packing has zero QPU time penalty — you pay the same whether 4 qubits or 53 are active.</div>
+
+<!-- ═══════ SECTION 2b ═══════ -->
+<h2><span class="sn">2b</span> Five Levels of Packing Efficiency</h2>
+<p>Each level shows: (1) the Q50 chip with active qubits color-coded by star placement, (2) a timeline waterfall showing all phases for the batch, and (3) throughput metrics. Click a level to compare. All timing uses measured Q50 data with 20s typical queue.</p>
+<div class="viz-box">
+<div class="level-tabs" id="level-tabs"></div>
+<div id="level-desc" style="font:12px var(--mono);color:var(--text2);margin:8px 0;min-height:40px"></div>
+<div class="timeline-wrap">
+<div class="timeline-col">
+<div class="viz-title">Batch timeline — phases to scale</div>
+<div class="timeline-bar-wrap">
+<div class="timeline-bar" id="tl-bar" style="min-height:300px"></div>
+</div>
+<div class="timeline-total" id="tl-total"></div>
+</div>
+<div class="chip-col">
+<div class="viz-title">Q50 QPU — active qubits this circuit</div>
+<div class="chip-wrapper">
+<svg class="chip-edges" id="chip-edges" width="312" height="312" viewBox="0 0 312 312"></svg>
+<div class="chip-grid" id="chip-grid"></div>
+</div>
+<div class="seed-colors" id="lv-seeds"></div>
+<div class="stepper" id="stepper" style="display:none">
+<button class="stepper-btn" onclick="stepCircuit(-1)">◀</button>
+<button class="stepper-btn" onclick="stepPlay()">▶</button>
+<button class="stepper-btn" onclick="stepCircuit(1)">▶▶</button>
+<div class="stepper-info" id="stepper-info">Circuit 1 / 32</div>
+</div>
+</div>
+</div>
+<div class="ansatz-panel" id="ansatz-panel" style="display:none">
+<div class="ansatz-title">Ansatz Circuit — <span id="ansatz-label">click a subcircuit</span></div>
+<svg id="ansatz-svg" width="100%" height="120"></svg>
+<div class="ansatz-info" id="ansatz-info"></div>
+</div>
+<div class="stats-row">
+<div class="stat-card"><div class="stat-val" id="lv-placements">1</div><div class="stat-lbl">Placements evaluated</div></div>
+<div class="stat-card"><div class="stat-val" id="lv-circuits">2</div><div class="stat-lbl">Circuits in batch</div></div>
+<div class="stat-card"><div class="stat-val" id="lv-wall">28s</div><div class="stat-lbl">Wall time (20s queue)</div></div>
+<div class="stat-card"><div class="stat-val green" id="lv-rate">128</div><div class="stat-lbl">Placements / hour</div></div>
+<div class="stat-card"><div class="stat-val amber" id="lv-mult">1×</div><div class="stat-lbl">vs Level 0</div></div>
+<div class="stat-card"><div class="stat-val" id="lv-util">7.5%</div><div class="stat-lbl">Mean qubit utilization</div></div>
+<div class="stat-card"><div class="stat-val green" id="lv-peak">7.5%</div><div class="stat-lbl">Peak circuit util</div></div>
+<div class="stat-card"><div class="stat-val amber" id="lv-theo">7.5%</div><div class="stat-lbl">Theoretical max</div></div>
+<div class="stat-card"><div class="stat-val" id="lv-batches">1</div><div class="stat-lbl">Batches</div></div>
+<div class="stat-card"><div class="stat-val green" id="lv-coherent">100%</div><div class="stat-lbl">Subcircuits coherent</div></div>
+</div>
+</div>
+
+<!-- ═══════ SECTION 3 ═══════ -->
+<h2><span class="sn">3</span> The Throughput Ladder — Corrected with Real Timing</h2>
+<p>Each level adds one optimization to the previous. All wall times use 20s typical queue wait. The "stars/circuit" column shows how many non-overlapping 4-qubit star subcircuits are packed onto one 53-qubit composite circuit — more stars = more science per QPU shot.</p>
+<p style="font:11px var(--mono);color:var(--text3);margin-bottom:6px"><strong style="color:var(--text2)">Table 2 — Throughput Ladder.</strong> <em>Level:</em> packing strategy name. <em>What changes:</em> the single optimization added at this level vs the previous one. <em>Stars/Circ:</em> number of non-overlapping K₁,₃ subcircuits packed into each composite circuit — this is the "density" of science on the QPU per shot. <em>Circuits:</em> number of composite circuits submitted in one <code>.run()</code> batch call. <em>Placements:</em> unique star placements evaluated in one batch — each yields one energy expectation value; this is the science output. <em>Qubit Util:</em> fraction of the 53 physical qubits that carry science payload (averaged across all circuits). <em>Wall Time:</em> total elapsed seconds from batch submission to result delivery = QX overhead (1.14s) + queue wait (20s) + QPU execute (0.65s + 1.77s × circuits) + postprocess (1.53s) + delivery (1.29s). <em>Throughput:</em> placements evaluated per hour = placements ÷ wall time × 3600. <em>Speedup:</em> throughput multiplier vs Level 0 — how many times more placements per hour this level achieves compared to submitting one star at a time.</p>
+<table class="tbl">
+<thead><tr><th>Level</th><th>What changes</th><th class="r">Stars/Circ</th><th class="r">Circuits</th><th class="r">Placements</th><th class="r">Qubit Util</th><th class="r">Wall Time</th><th class="r">Throughput</th><th class="r">Speedup</th></tr></thead>
+<tbody id="throughput-table"></tbody>
+</table>
+<div class="callout green"><strong>Even with 20s queue wait, Level 4 achieves massive throughput gains over Level 0</strong> — on the same hardware, same physics, same shot count. With an empty queue (which occurs when jobs chain quickly), the gain is even larger.</div>
+
+<!-- ═══════ SECTION 4 ═══════ -->
+<h2><span class="sn">4</span> The Utilization Problem — 16 DSatur Rounds</h2>
+<p>Step through the 16 DSatur rounds for a single seed of 4q stars. Watch utilization decay as placement options thin out.</p>
+<div class="viz-box">
+<div class="viz-title">Qubit utilization per DSatur round — single seed, 108 star placements</div>
+<div class="util-bars" id="util-bars-s4"></div>
+<div class="util-labels" id="util-labels-s4"></div>
+<div class="stats-row">
+<div class="stat-card"><div class="stat-val amber" id="ub-avg">51%</div><div class="stat-lbl">Mean utilization</div></div>
+<div class="stat-card"><div class="stat-val green" id="ub-best">75%</div><div class="stat-lbl">Best round (R1)</div></div>
+<div class="stat-card"><div class="stat-val rose" id="ub-worst">23%</div><div class="stat-lbl">Worst round (R16)</div></div>
+<div class="stat-card"><div class="stat-val rose" id="ub-waste">416</div><div class="stat-lbl">Idle qubit-slots (of 848)</div></div>
+</div>
+</div>
+
+<!-- ═══════ SECTION 5 ═══════ -->
+<h2><span class="sn">5</span> Cross-Seed Intermixing — Filling the Gaps</h2>
+<p>Instead of each seed getting its own 16 rounds, placements from <strong>multiple seeds</strong> fill the idle qubits in sparse rounds. The constraint: no two placements share physical qubits. But Seed 0's Placement #7 and Seed 3's Placement #42 use different qubits — they coexist on the same QPU shot.</p>
+<div class="viz-box">
+<div class="viz-title">Intermixed utilization — same 16 rounds, now with cross-seed backfill</div>
+<div class="util-bars" id="util-bars-ix"></div>
+<div class="util-labels" id="util-labels-ix"></div>
+<div class="stats-row">
+<div class="stat-card"><div class="stat-val green" id="ix-avg">—</div><div class="stat-lbl">Mean utilization</div></div>
+<div class="stat-card"><div class="stat-val" id="ix-placements">—</div><div class="stat-lbl">Placements in 16 rounds</div></div>
+<div class="stat-card"><div class="stat-val" id="ix-seeds-packed">—</div><div class="stat-lbl">Seeds (partial) in 16 rounds</div></div>
+<div class="stat-card"><div class="stat-val rose" id="ix-idle">—</div><div class="stat-lbl">Remaining idle qubit-slots</div></div>
+</div>
+<div id="ix-legend" class="seed-colors" style="margin-top:8px"></div>
+</div>
+<div class="callout"><strong>R1 already packs 10 stars (40 qubits).</strong> But R11–R16 drop to 3–6 stars, leaving 29–41 idle qubits per round. The intermixed chart above shows how additional seeds fill those gaps. Overall utilization jumps from ~51% to ~68%.</div>
+
+<h3>When does Pauli grouping apply?</h3>
+<p style="font:11px var(--mono);color:var(--text3);margin-bottom:6px"><strong style="color:var(--text2)">Table 3 — Pauli Group Scaling.</strong> <em>Hamiltonian:</em> the physics model being measured (determines how many distinct Pauli bases are needed). <em>Pauli Groups:</em> number of commuting groups in the Hamiltonian's Pauli decomposition — each group requires a separate measurement circuit per placement. <em>Circuits/Seed:</em> total circuits per seed = DSatur rounds (16) × Pauli groups. <em>Seeds/Batch (old):</em> how many seeds fit in one 100-circuit batch without intermixing = ⌊100 ÷ circuits/seed⌋. <em>Seeds/Batch (intermixed):</em> effective seeds per batch when cross-seed backfill is used — sparse rounds from one seed are filled with placements from another. <em>Throughput Gain:</em> percentage increase in placements/hour from intermixing vs the old sequential approach.</p>
+<table class="tbl">
+<thead><tr><th>Hamiltonian</th><th>Pauli Groups</th><th class="r">Circuits/Seed</th><th class="r">Seeds/Batch (old)</th><th class="r">Seeds/Batch (intermixed)</th><th class="r">Throughput Gain</th></tr></thead>
+<tbody>
+<tr><td>Pure ZZ (classical Ising)</td><td>1</td><td class="r">16</td><td class="r">6</td><td class="r g">7.4</td><td class="r g">+23%</td></tr>
+<tr class="hl"><td><strong>TFIM</strong> (our primary)</td><td>2</td><td class="r">32</td><td class="r">3</td><td class="r g">4.2</td><td class="r g">+40%</td></tr>
+<tr><td>Heisenberg XXZ</td><td>3</td><td class="r">48</td><td class="r">2</td><td class="r g">2.8</td><td class="r g">+40%</td></tr>
+</tbody>
+</table>
+
+<!-- ═══════ SECTION 6 ═══════ -->
+<h2><span class="sn">6</span> Multi-Batch Spillover — Seeds Flow Across Boundaries</h2>
+<p>When a seed doesn't fit entirely in one batch, its remaining placements <strong>spill into the next batch</strong>. The solver treats the campaign as a continuous stream.</p>
+<div class="viz-box">
+<div class="viz-title">Spillover pipeline (TFIM, 2× Pauli)</div>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+<label style="font:12px var(--mono);color:var(--text2)">Seeds:</label>
+<input type="range" id="seed-slider" min="1" max="50" value="20" style="flex:1;accent-color:var(--accent)">
+<span id="seed-count" style="font:700 14px var(--mono);color:var(--accent);min-width:30px">20</span>
+</div>
+<div class="pipeline" id="pipeline"></div>
+<div class="stats-row">
+<div class="stat-card"><div class="stat-val" id="sp-batches-old">—</div><div class="stat-lbl">Batches (no intermixing)</div></div>
+<div class="stat-card"><div class="stat-val green" id="sp-batches-new">—</div><div class="stat-lbl">Batches (intermixed)</div></div>
+<div class="stat-card"><div class="stat-val amber" id="sp-saved">—</div><div class="stat-lbl">Queue waits saved</div></div>
+<div class="stat-card"><div class="stat-val" id="sp-hours">—</div><div class="stat-lbl">Queue hours saved (20s Q)</div></div>
+<div class="stat-card"><div class="stat-val green" id="sp-rate-new">—</div><div class="stat-lbl">Placements/hr (intermixed)</div></div>
+</div>
+</div>
+
+<!-- ═══════ SECTION 7 ═══════ -->
+<h2><span class="sn">7</span> The Packing Manifest</h2>
+<p>Before <code>.run()</code>, the solver produces a manifest mapping each circuit to its (seed, placement, qubits, basis) tuples.</p>
+<div class="code-block"><span class="cm"># Packing manifest — one 100-circuit batch (TFIM, 2× Pauli)</span>
+manifest = {
+  <span class="num">0</span>: [  <span class="cm"># Circuit 0 — Z-basis composite, 9 non-overlapping stars (intermixed)</span>
+    {<span class="str">"seed"</span>:<span class="num">0</span>, <span class="str">"placement"</span>:<span class="num">0</span>,  <span class="str">"qubits"</span>:[<span class="num">1</span>,<span class="num">4</span>,<span class="num">5</span>,<span class="num">6</span>],    <span class="str">"basis"</span>:<span class="str">"Z"</span>},
+    {<span class="str">"seed"</span>:<span class="num">0</span>, <span class="str">"placement"</span>:<span class="num">15</span>, <span class="str">"qubits"</span>:[<span class="num">17</span>,<span class="num">24</span>,<span class="num">25</span>,<span class="num">33</span>], <span class="str">"basis"</span>:<span class="str">"Z"</span>},
+    {<span class="str">"seed"</span>:<span class="num">0</span>, <span class="str">"placement"</span>:<span class="num">42</span>, <span class="str">"qubits"</span>:[<span class="num">29</span>,<span class="num">30</span>,<span class="num">37</span>,<span class="num">38</span>], <span class="str">"basis"</span>:<span class="str">"Z"</span>},
+    {<span class="str">"seed"</span>:<span class="num">1</span>, <span class="str">"placement"</span>:<span class="num">7</span>,  <span class="str">"qubits"</span>:[<span class="num">42</span>,<span class="num">43</span>,<span class="num">48</span>,<span class="num">49</span>], <span class="str">"basis"</span>:<span class="str">"Z"</span>},
+    <span class="cm"># ... up to 9 stars from any seed, non-overlapping qubits</span>
+  ],
+  <span class="cm"># ... circuits 1–99</span>
+}
+<span class="cm"># compose_mixed_round() → device-width circuit from manifest</span>
+<span class="cm"># demux_mixed_counts() → route 53-bit results to (seed, placement, basis)</span></div>
+
+<!-- ═══════ SECTION 8 ═══════ -->
+<h2><span class="sn">8</span> Impact at Scale</h2>
+<div class="viz-box">
+<div class="viz-title">Campaign scaling — TFIM, 2× Pauli, 20s typical queue</div>
+<p style="font:11px var(--mono);color:var(--text3);margin-bottom:6px"><strong style="color:var(--text2)">Table 4 — Impact at Scale.</strong> <em>Seeds:</em> number of random parameter seeds in the campaign (each seed = one VQE ansatz with different initial parameters). <em>Placements:</em> total unique placements across all seeds = seeds × 108. <em>Old Batches:</em> number of batch submissions needed without intermixing (3 seeds per batch, 96 circuits, 4 wasted slots). <em>New Batches:</em> batches needed with cross-seed intermixing (9 stars per circuit, 100 circuits fully utilized, 450 placements per batch). <em>Saved:</em> batch submissions eliminated — each saved batch = one fewer queue wait + fixed overhead. <em>Queue hrs saved:</em> cumulative queue wait time saved = saved batches × 20s, converted to hours. <em>Old Rate:</em> placements evaluated per hour without intermixing. <em>New Rate:</em> placements per hour with intermixing. <em>Gain:</em> percentage improvement in throughput rate (new vs old).</p>
+<table class="tbl">
+<thead><tr><th class="r">Seeds</th><th class="r">Placements</th><th class="r">Old Batches</th><th class="r">New Batches</th><th class="r">Saved</th><th class="r">Queue hrs saved</th><th class="r">Old Rate</th><th class="r">New Rate</th><th class="r">Gain</th></tr></thead>
+<tbody id="scale-table"></tbody>
+</table>
+</div>
+
+<!-- ═══════ SECTION 9 ═══════ -->
+<h2><span class="sn">9</span> What Blue Needs to Build</h2>
+<p style="font:11px var(--mono);color:var(--text3);margin-bottom:6px"><strong style="color:var(--text2)">Table 5 — Implementation Status.</strong> <em>Component:</em> the functional capability required for cross-experiment packing. <em>Module:</em> the Python source file where this capability lives (or would live) in the HPCQC framework. <em>Status:</em> whether this component already exists in the current codebase (green = exists in v1.3.0, red = needs to be built).</p>
+<table class="tbl">
+<thead><tr><th>Component</th><th>Module</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Mixed-circuit composition</td><td><code>mixed_packing.py</code> (E6b)</td><td class="g">Exists</td></tr>
+<tr><td><code>compose_mixed_round()</code></td><td><code>mixed_packing.py</code></td><td class="g">Exists</td></tr>
+<tr><td><code>demux_mixed_counts()</code></td><td><code>mixed_packing.py</code></td><td class="g">Exists</td></tr>
+<tr><td>DSatur graph coloring</td><td>Placement solver + <code>rustworkx</code></td><td class="g">Exists</td></tr>
+<tr><td>QPU job timing capture</td><td><code>qx_client.py</code> (v1.3.0)</td><td class="g">Exists</td></tr>
+<tr><td><strong>Cross-group packing solver</strong></td><td>—</td><td class="ro">Missing</td></tr>
+<tr><td><strong>Backfill compatibility checker</strong></td><td>—</td><td class="ro">Missing</td></tr>
+<tr><td><strong>Campaign packing orchestrator</strong></td><td>—</td><td class="ro">Missing</td></tr>
+<tr><td><strong>Packing manifest generator</strong></td><td>—</td><td class="ro">Missing</td></tr>
+</tbody>
+</table>
+
+<div class="footer">Michael Mucciardi · HPCQC × ANIMLL Consortium · Cross-Experiment Packing · April 2026 · Q50 timing data from April 7 2026</div>
+
+<script>
+// ═══════ REAL Q50 TOPOLOGY — 53 qubits, 82 CZ edges ═══════
+// Extracted from q50_calibration_20260330.json
+const Q50_EDGES = [
+  [1,2],[1,5],[2,6],[3,4],[3,9],[4,5],[4,10],[5,6],[5,11],[6,7],[6,12],[7,13],
+  [8,9],[8,16],[9,10],[9,17],[10,11],[11,12],[11,19],[12,13],[13,14],[13,21],[14,22],
+  [15,16],[15,23],[16,17],[16,24],[17,18],[17,25],[18,19],[18,26],[19,27],
+  [20,21],[21,22],[21,29],[22,30],[23,24],[24,25],[25,26],[25,33],[26,27],[26,34],
+  [27,28],[27,35],[28,29],[28,36],[29,30],[29,37],[30,31],[30,38],[31,39],
+  [33,34],[33,41],[34,35],[34,42],[35,36],[35,43],[36,37],[36,44],[37,38],[37,45],
+  [38,39],[38,46],[40,41],[41,42],[41,47],[42,43],[42,48],[43,44],[43,49],[44,50],
+  [45,46],[45,51],[47,48],[48,49],[48,52],[49,50],[49,53],[50,51],[50,54],[52,53],[53,54]
+];
+
+// Grid positions — 9 rows × 9 cols, derived from rotated square lattice topology
+const Q50_POS = {
+  1:{r:0,c:4}, 2:{r:0,c:5},
+  3:{r:1,c:2}, 4:{r:1,c:3}, 5:{r:1,c:4}, 6:{r:1,c:5}, 7:{r:1,c:6},
+  8:{r:2,c:1}, 9:{r:2,c:2}, 10:{r:2,c:3}, 11:{r:2,c:4}, 12:{r:2,c:5}, 13:{r:2,c:6}, 14:{r:2,c:7},
+  15:{r:3,c:0}, 16:{r:3,c:1}, 17:{r:3,c:2}, 18:{r:3,c:3}, 19:{r:3,c:4}, 20:{r:3,c:5}, 21:{r:3,c:6}, 22:{r:3,c:7},
+  23:{r:4,c:0}, 24:{r:4,c:1}, 25:{r:4,c:2}, 26:{r:4,c:3}, 27:{r:4,c:4}, 28:{r:4,c:5}, 29:{r:4,c:6}, 30:{r:4,c:7}, 31:{r:4,c:8},
+  33:{r:5,c:2}, 34:{r:5,c:3}, 35:{r:5,c:4}, 36:{r:5,c:5}, 37:{r:5,c:6}, 38:{r:5,c:7}, 39:{r:5,c:8},
+  40:{r:6,c:1}, 41:{r:6,c:2}, 42:{r:6,c:3}, 43:{r:6,c:4}, 44:{r:6,c:5}, 45:{r:6,c:6}, 46:{r:6,c:7},
+  47:{r:7,c:2}, 48:{r:7,c:3}, 49:{r:7,c:4}, 50:{r:7,c:5}, 51:{r:7,c:6},
+  52:{r:8,c:3}, 53:{r:8,c:4}, 54:{r:8,c:5}
+};
+
+// Real DSatur solution — 108 K₁,₃ star placements in 16 rounds
+// Each star: [hub, leaf1, leaf2, leaf3]
+// Sorted by round size descending, computed via rustworkx-equivalent DSatur
+const DSATUR_SOLUTION = [
+  [[6,2,5,7],[11,10,12,19],[16,8,17,24],[21,13,20,22],[26,18,25,34],[28,27,29,36],[38,30,37,39],[41,33,40,47],[43,35,42,49],[50,44,51,54]], // R1: 10 stars
+  [[5,1,4,6],[9,3,8,10],[13,7,12,21],[19,11,18,27],[25,17,24,33],[30,22,29,38],[34,26,35,42],[36,28,37,44],[49,43,48,50]], // R2: 9 stars
+  [[4,3,5,10],[12,6,11,13],[16,8,15,24],[17,9,18,25],[27,19,26,28],[29,21,30,37],[34,33,35,42],[44,36,43,50],[48,47,49,52]], // R3: 9 stars
+  [[10,4,9,11],[13,7,12,14],[16,15,17,24],[26,18,25,27],[29,21,28,37],[30,22,31,38],[35,34,36,43],[41,33,42,47],[50,44,49,51]], // R4: 9 stars
+  [[5,1,4,11],[6,2,7,12],[9,3,8,17],[26,18,27,34],[30,22,29,31],[36,35,37,44],[41,33,40,42],[49,43,48,53]], // R5: 8 stars
+  [[11,5,12,19],[17,9,16,18],[22,14,21,30],[26,25,27,34],[37,29,36,38],[43,35,42,44],[49,48,50,53]], // R6: 7 stars
+  [[11,5,10,19],[13,12,14,21],[17,16,18,25],[34,26,33,35],[37,29,36,45],[38,30,39,46],[43,42,44,49]], // R7: 7 stars
+  [[11,5,10,12],[13,7,14,21],[17,9,16,25],[29,28,30,37],[34,26,33,42],[35,27,36,43],[50,44,49,54]], // R8: 7 stars
+  [[6,5,7,12],[25,17,26,33],[29,21,28,30],[35,27,34,43],[37,36,38,45],[41,40,42,47],[50,49,51,54]], // R9: 7 stars
+  [[6,2,5,12],[18,17,19,26],[24,16,23,25],[35,27,34,36],[37,29,38,45],[42,41,43,48],[53,49,52,54]], // R10: 7 stars
+  [[5,1,6,11],[9,8,10,17],[27,26,28,35],[30,29,31,38],[42,34,43,48],[45,37,46,51]], // R11: 6 stars
+  [[5,4,6,11],[9,3,10,17],[21,13,22,29],[27,19,26,35],[38,30,37,46],[42,34,41,43]], // R12: 6 stars
+  [[21,13,20,29],[25,17,24,26],[38,37,39,46],[42,34,41,48],[43,35,44,49]], // R13: 5 stars
+  [[16,8,15,17],[21,20,22,29],[33,25,34,41],[36,28,35,37],[48,42,47,49]], // R14: 5 stars
+  [[25,24,26,33],[27,19,28,35],[48,42,49,52]], // R15: 3 stars
+  [[36,28,35,44],[48,42,47,52],[49,43,50,53]], // R16: 3 stars
+];
+
+const DSATUR_STARS = DSATUR_SOLUTION.map(r => r.length);
+
+// ═══════ ADDITIONAL TOPOLOGY PLACEMENTS (computed by placement_solver) ═══════
+const STAR4_PL = [
+  [3, 4, 5, 10],
+  [1, 4, 5, 6],
+  [1, 4, 5, 11],
+  [1, 5, 6, 11],
+  [4, 5, 6, 11],
+  [2, 5, 6, 7],
+  [2, 5, 6, 12],
+  [2, 6, 7, 12],
+  [5, 6, 7, 12],
+  [3, 8, 9, 10],
+  [3, 8, 9, 17],
+  [3, 9, 10, 17],
+  [8, 9, 10, 17],
+  [4, 9, 10, 11],
+  [5, 10, 11, 12],
+  [5, 10, 11, 19],
+  [5, 11, 12, 19],
+  [10, 11, 12, 19],
+  [6, 11, 12, 13],
+  [7, 12, 13, 14],
+  [7, 12, 13, 21],
+  [7, 13, 14, 21],
+  [12, 13, 14, 21],
+  [8, 15, 16, 17],
+  [8, 15, 16, 24],
+  [8, 16, 17, 24],
+  [15, 16, 17, 24],
+  [9, 16, 17, 18],
+  [9, 16, 17, 25],
+  [9, 17, 18, 25],
+  [16, 17, 18, 25],
+  [17, 18, 19, 26],
+  [11, 18, 19, 27],
+  [13, 20, 21, 22],
+  [13, 20, 21, 29],
+  [13, 21, 22, 29],
+  [20, 21, 22, 29],
+  [14, 21, 22, 30],
+  [16, 23, 24, 25],
+  [17, 24, 25, 26],
+  [17, 24, 25, 33],
+  [17, 25, 26, 33],
+  [24, 25, 26, 33],
+  [18, 25, 26, 27],
+  [18, 25, 26, 34],
+  [18, 26, 27, 34],
+  [25, 26, 27, 34],
+  [19, 26, 27, 28],
+  [19, 26, 27, 35],
+  [19, 27, 28, 35],
+  [26, 27, 28, 35],
+  [27, 28, 29, 36],
+  [21, 28, 29, 30],
+  [21, 28, 29, 37],
+  [21, 29, 30, 37],
+  [28, 29, 30, 37],
+  [22, 29, 30, 31],
+  [22, 29, 30, 38],
+  [22, 30, 31, 38],
+  [29, 30, 31, 38],
+  [25, 33, 34, 41],
+  [26, 33, 34, 35],
+  [26, 33, 34, 42],
+  [26, 34, 35, 42],
+  [33, 34, 35, 42],
+  [27, 34, 35, 36],
+  [27, 34, 35, 43],
+  [27, 35, 36, 43],
+  [34, 35, 36, 43],
+  [28, 35, 36, 37],
+  [28, 35, 36, 44],
+  [28, 36, 37, 44],
+  [35, 36, 37, 44],
+  [29, 36, 37, 38],
+  [29, 36, 37, 45],
+  [29, 37, 38, 45],
+  [36, 37, 38, 45],
+  [30, 37, 38, 39],
+  [30, 37, 38, 46],
+  [30, 38, 39, 46],
+  [37, 38, 39, 46],
+  [33, 40, 41, 42],
+  [33, 40, 41, 47],
+  [33, 41, 42, 47],
+  [40, 41, 42, 47],
+  [34, 41, 42, 43],
+  [34, 41, 42, 48],
+  [34, 42, 43, 48],
+  [41, 42, 43, 48],
+  [35, 42, 43, 44],
+  [35, 42, 43, 49],
+  [35, 43, 44, 49],
+  [42, 43, 44, 49],
+  [36, 43, 44, 50],
+  [37, 45, 46, 51],
+  [42, 47, 48, 49],
+  [42, 47, 48, 52],
+  [42, 48, 49, 52],
+  [47, 48, 49, 52],
+  [43, 48, 49, 50],
+  [43, 48, 49, 53],
+  [43, 49, 50, 53],
+  [48, 49, 50, 53],
+  [44, 49, 50, 51],
+  [44, 49, 50, 54],
+  [44, 50, 51, 54],
+  [49, 50, 51, 54],
+  [49, 52, 53, 54],
+];
+const SQUARE4_PL = [
+  [1, 2, 5, 6],
+  [3, 4, 9, 10],
+  [4, 5, 10, 11],
+  [5, 6, 11, 12],
+  [6, 7, 12, 13],
+  [8, 9, 16, 17],
+  [13, 14, 21, 22],
+  [15, 16, 23, 24],
+  [16, 17, 24, 25],
+  [17, 18, 25, 26],
+  [18, 19, 26, 27],
+  [21, 22, 29, 30],
+  [25, 26, 33, 34],
+  [26, 27, 34, 35],
+  [27, 28, 35, 36],
+  [28, 29, 36, 37],
+  [29, 30, 37, 38],
+  [30, 31, 38, 39],
+  [33, 34, 41, 42],
+  [34, 35, 42, 43],
+  [35, 36, 43, 44],
+  [37, 38, 45, 46],
+  [41, 42, 47, 48],
+  [42, 43, 48, 49],
+  [43, 44, 49, 50],
+  [48, 49, 52, 53],
+  [49, 50, 53, 54],
+];
+const LADDER8_PL = [
+  [3, 4, 5, 6, 9, 10, 11, 12],
+  [4, 5, 6, 7, 10, 11, 12, 13],
+  [13, 14, 21, 22, 29, 30, 37, 38],
+  [15, 16, 17, 18, 23, 24, 25, 26],
+  [16, 17, 18, 19, 24, 25, 26, 27],
+  [17, 18, 25, 26, 33, 34, 41, 42],
+  [18, 19, 26, 27, 34, 35, 42, 43],
+  [21, 22, 29, 30, 37, 38, 45, 46],
+  [25, 26, 27, 28, 33, 34, 35, 36],
+  [25, 26, 33, 34, 41, 42, 47, 48],
+  [26, 27, 28, 29, 34, 35, 36, 37],
+  [26, 27, 34, 35, 42, 43, 48, 49],
+  [27, 28, 29, 30, 35, 36, 37, 38],
+  [27, 28, 35, 36, 43, 44, 49, 50],
+  [28, 29, 30, 31, 36, 37, 38, 39],
+  [33, 34, 35, 36, 41, 42, 43, 44],
+  [34, 35, 42, 43, 48, 49, 52, 53],
+  [35, 36, 43, 44, 49, 50, 53, 54],
+  [41, 42, 43, 44, 47, 48, 49, 50],
+];
+const BOWTIE8_PL = [
+  [1, 4, 5, 6, 10, 11, 12, 19],
+  [1, 2, 4, 5, 6, 7, 11, 12],
+  [3, 8, 9, 10, 16, 17, 18, 25],
+  [7, 12, 13, 14, 20, 21, 22, 29],
+  [8, 9, 15, 16, 17, 18, 24, 25],
+  [9, 16, 17, 18, 24, 25, 26, 33],
+  [13, 20, 21, 22, 28, 29, 30, 37],
+  [17, 18, 24, 25, 26, 27, 33, 34],
+  [18, 25, 26, 27, 33, 34, 35, 42],
+  [18, 19, 25, 26, 27, 28, 34, 35],
+  [19, 26, 27, 28, 34, 35, 36, 43],
+  [21, 28, 29, 30, 36, 37, 38, 45],
+  [21, 22, 28, 29, 30, 31, 37, 38],
+  [22, 29, 30, 31, 37, 38, 39, 46],
+  [26, 33, 34, 35, 41, 42, 43, 48],
+  [26, 27, 33, 34, 35, 36, 42, 43],
+  [27, 34, 35, 36, 42, 43, 44, 49],
+  [27, 28, 34, 35, 36, 37, 43, 44],
+  [28, 29, 35, 36, 37, 38, 44, 45],
+  [29, 30, 36, 37, 38, 39, 45, 46],
+  [33, 34, 40, 41, 42, 43, 47, 48],
+  [34, 41, 42, 43, 47, 48, 49, 52],
+  [34, 35, 41, 42, 43, 44, 48, 49],
+  [35, 42, 43, 44, 48, 49, 50, 53],
+  [42, 43, 47, 48, 49, 50, 52, 53],
+  [43, 44, 48, 49, 50, 51, 53, 54],
+];
+const TWOSQ8_PL = [
+  [1, 2, 3, 4, 5, 6, 9, 10],
+  [3, 4, 9, 10, 16, 17, 24, 25],
+  [3, 4, 9, 10, 17, 18, 25, 26],
+  [3, 4, 5, 6, 9, 10, 11, 12],
+  [4, 5, 8, 9, 10, 11, 16, 17],
+  [4, 5, 6, 7, 10, 11, 12, 13],
+  [4, 5, 10, 11, 18, 19, 26, 27],
+  [5, 6, 11, 12, 18, 19, 26, 27],
+  [5, 6, 11, 12, 13, 14, 21, 22],
+  [6, 7, 12, 13, 21, 22, 29, 30],
+  [8, 9, 16, 17, 18, 19, 26, 27],
+  [8, 9, 16, 17, 25, 26, 33, 34],
+  [13, 14, 21, 22, 28, 29, 36, 37],
+  [13, 14, 21, 22, 29, 30, 37, 38],
+  [13, 14, 21, 22, 30, 31, 38, 39],
+  [15, 16, 17, 18, 23, 24, 25, 26],
+  [15, 16, 23, 24, 25, 26, 33, 34],
+  [16, 17, 18, 19, 24, 25, 26, 27],
+  [16, 17, 24, 25, 26, 27, 34, 35],
+  [16, 17, 24, 25, 33, 34, 41, 42],
+  [17, 18, 25, 26, 33, 34, 41, 42],
+  [17, 18, 25, 26, 27, 28, 35, 36],
+  [17, 18, 25, 26, 34, 35, 42, 43],
+  [18, 19, 26, 27, 33, 34, 41, 42],
+  [18, 19, 26, 27, 34, 35, 42, 43],
+  [18, 19, 26, 27, 28, 29, 36, 37],
+  [18, 19, 26, 27, 35, 36, 43, 44],
+  [21, 22, 27, 28, 29, 30, 35, 36],
+  [21, 22, 29, 30, 37, 38, 45, 46],
+  [25, 26, 33, 34, 41, 42, 47, 48],
+  [25, 26, 27, 28, 33, 34, 35, 36],
+  [25, 26, 33, 34, 35, 36, 43, 44],
+  [25, 26, 33, 34, 42, 43, 48, 49],
+  [26, 27, 34, 35, 41, 42, 47, 48],
+  [26, 27, 34, 35, 42, 43, 48, 49],
+  [26, 27, 28, 29, 34, 35, 36, 37],
+  [26, 27, 34, 35, 43, 44, 49, 50],
+  [27, 28, 33, 34, 35, 36, 41, 42],
+  [27, 28, 35, 36, 42, 43, 48, 49],
+  [27, 28, 35, 36, 43, 44, 49, 50],
+  [27, 28, 29, 30, 35, 36, 37, 38],
+  [27, 28, 35, 36, 37, 38, 45, 46],
+  [28, 29, 34, 35, 36, 37, 42, 43],
+  [28, 29, 36, 37, 43, 44, 49, 50],
+  [28, 29, 30, 31, 36, 37, 38, 39],
+  [29, 30, 35, 36, 37, 38, 43, 44],
+  [33, 34, 35, 36, 41, 42, 43, 44],
+  [33, 34, 41, 42, 43, 44, 49, 50],
+  [33, 34, 41, 42, 48, 49, 52, 53],
+  [34, 35, 42, 43, 48, 49, 52, 53],
+  [34, 35, 42, 43, 49, 50, 53, 54],
+  [35, 36, 41, 42, 43, 44, 47, 48],
+  [35, 36, 43, 44, 48, 49, 52, 53],
+  [35, 36, 43, 44, 49, 50, 53, 54],
+  [35, 36, 37, 38, 43, 44, 45, 46],
+  [41, 42, 43, 44, 47, 48, 49, 50],
+  [41, 42, 47, 48, 49, 50, 53, 54],
+];
+
+// 379 unique 4q chain (P4) placements on real Q50 (82 edges)
+const CHAIN4_PL = [
+  [1,2,4,5],[1,2,5,6],[1,2,5,11],[1,2,6,7],[1,2,6,12],[1,3,4,5],[1,4,5,10],[1,5,6,7],[1,5,6,12],[1,5,10,11],[1,5,11,12],[1,5,11,19],
+  [2,4,5,6],[2,5,6,11],[2,6,7,13],[2,6,11,12],[2,6,12,13],[3,4,5,6],[3,4,5,9],[3,4,5,11],[3,4,8,9],[3,4,9,10],[3,4,9,17],[3,4,10,11],
+  [3,8,9,16],[3,9,10,11],[3,9,16,17],[3,9,17,18],[3,9,17,25],[4,5,6,7],[4,5,6,10],[4,5,6,12],[4,5,9,10],[4,5,10,11],[4,5,11,12],[4,5,11,19],
+  [4,8,9,10],[4,9,10,17],[4,10,11,12],[4,10,11,19],[5,6,7,11],[5,6,7,13],[5,6,10,11],[5,6,11,12],[5,6,11,19],[5,6,12,13],[5,9,10,11],
+  [5,11,12,13],[5,11,18,19],[5,11,19,27],[6,7,11,12],[6,7,12,13],[6,7,13,14],[6,7,13,21],[6,10,11,12],[6,11,12,19],[6,12,13,14],[6,12,13,21],
+  [7,11,12,13],[7,13,14,22],[7,13,20,21],[7,13,21,22],[7,13,21,29],[8,9,10,11],[8,9,10,16],[8,9,15,16],[8,9,16,17],[8,9,16,24],[8,9,17,18],
+  [8,9,17,25],[8,15,16,23],[8,16,17,18],[8,16,17,25],[8,16,23,24],[8,16,24,25],[9,10,11,12],[9,10,11,17],[9,10,11,19],[9,10,16,17],[9,10,17,18],
+  [9,10,17,25],[9,15,16,17],[9,16,17,24],[9,17,18,19],[9,17,18,26],[9,17,24,25],[9,17,25,26],[9,17,25,33],[10,11,12,13],[10,11,18,19],[10,11,19,27],
+  [11,12,13,14],[11,12,13,19],[11,12,13,21],[11,12,18,19],[11,12,19,27],[11,17,18,19],[11,18,19,26],[11,19,26,27],[11,19,27,28],[11,19,27,35],
+  [12,13,14,22],[12,13,20,21],[12,13,21,22],[12,13,21,29],[13,14,20,21],[13,14,21,22],[13,14,21,29],[13,14,22,30],[13,21,22,30],[13,21,28,29],
+  [13,21,29,30],[13,21,29,37],[14,20,21,22],[14,21,22,29],[14,22,29,30],[14,22,30,31],[14,22,30,38],[15,16,17,18],[15,16,17,23],[15,16,17,25],
+  [15,16,23,24],[15,16,24,25],[15,23,24,25],[16,17,18,19],[16,17,18,24],[16,17,18,26],[16,17,23,24],[16,17,24,25],[16,17,25,26],[16,17,25,33],
+  [16,24,25,26],[16,24,25,33],[17,18,19,25],[17,18,19,27],[17,18,24,25],[17,18,25,26],[17,18,25,33],[17,18,26,27],[17,18,26,34],[17,23,24,25],
+  [17,25,26,27],[17,25,26,34],[17,25,33,34],[17,25,33,41],[18,19,25,26],[18,19,26,27],[18,19,26,34],[18,19,27,28],[18,19,27,35],[18,24,25,26],
+  [18,25,26,33],[18,26,27,28],[18,26,27,35],[18,26,33,34],[18,26,34,35],[18,26,34,42],[19,25,26,27],[19,26,27,34],[19,27,28,29],[19,27,28,36],
+  [19,27,34,35],[19,27,35,36],[19,27,35,43],[20,21,22,30],[20,21,28,29],[20,21,29,30],[20,21,29,37],[21,22,28,29],[21,22,29,30],[21,22,29,37],
+  [21,22,30,31],[21,22,30,38],[21,27,28,29],[21,28,29,36],[21,29,30,31],[21,29,30,38],[21,29,36,37],[21,29,37,38],[21,29,37,45],[22,28,29,30],
+  [22,29,30,37],[22,30,31,39],[22,30,37,38],[22,30,38,39],[22,30,38,46],[23,24,25,26],[23,24,25,33],[24,25,26,27],[24,25,26,34],[24,25,33,34],
+  [24,25,33,41],[25,26,27,28],[25,26,27,33],[25,26,27,35],[25,26,33,34],[25,26,33,41],[25,26,34,35],[25,26,34,42],[25,33,34,35],[25,33,34,42],
+  [25,33,40,41],[25,33,41,42],[25,33,41,47],[26,27,28,29],[26,27,28,34],[26,27,28,36],[26,27,33,34],[26,27,34,35],[26,27,34,42],[26,27,35,36],
+  [26,27,35,43],[26,33,34,41],[26,34,35,36],[26,34,35,43],[26,34,41,42],[26,34,42,43],[26,34,42,48],[27,28,29,30],[27,28,29,35],[27,28,29,37],
+  [27,28,34,35],[27,28,35,36],[27,28,35,43],[27,28,36,37],[27,28,36,44],[27,33,34,35],[27,34,35,42],[27,35,36,37],[27,35,36,44],[27,35,42,43],
+  [27,35,43,44],[27,35,43,49],[28,29,30,31],[28,29,30,36],[28,29,30,38],[28,29,35,36],[28,29,36,37],[28,29,36,44],[28,29,37,38],[28,29,37,45],
+  [28,34,35,36],[28,35,36,43],[28,36,37,38],[28,36,37,45],[28,36,43,44],[28,36,44,50],[29,30,31,37],[29,30,31,39],[29,30,36,37],[29,30,37,38],
+  [29,30,37,45],[29,30,38,39],[29,30,38,46],[29,35,36,37],[29,36,37,44],[29,37,38,39],[29,37,38,46],[29,37,45,46],[29,37,45,51],[30,31,37,38],
+  [30,31,38,39],[30,31,38,46],[30,36,37,38],[30,37,38,45],[30,38,45,46],[31,37,38,39],[31,38,39,46],[33,34,35,36],[33,34,35,41],[33,34,35,43],
+  [33,34,40,41],[33,34,41,42],[33,34,41,47],[33,34,42,43],[33,34,42,48],[33,41,42,43],[33,41,42,48],[33,41,47,48],[34,35,36,37],[34,35,36,42],
+  [34,35,36,44],[34,35,41,42],[34,35,42,43],[34,35,42,48],[34,35,43,44],[34,35,43,49],[34,40,41,42],[34,41,42,47],[34,42,43,44],[34,42,43,49],
+  [34,42,47,48],[34,42,48,49],[34,42,48,52],[35,36,37,38],[35,36,37,43],[35,36,37,45],[35,36,42,43],[35,36,43,44],[35,36,43,49],[35,36,44,50],
+  [35,41,42,43],[35,42,43,48],[35,43,44,50],[35,43,48,49],[35,43,49,50],[35,43,49,53],[36,37,38,39],[36,37,38,44],[36,37,38,46],[36,37,43,44],
+  [36,37,44,45],[36,37,44,50],[36,37,45,46],[36,37,45,51],[36,42,43,44],[36,43,44,49],[36,44,49,50],[36,44,50,51],[36,44,50,54],[37,38,39,45],
+  [37,38,45,46],[37,38,45,51],[37,45,50,51],[38,39,45,46],[38,45,46,51],[40,41,42,43],[40,41,42,48],[40,41,47,48],[41,42,43,44],[41,42,43,47],
+  [41,42,43,49],[41,42,47,48],[41,42,48,49],[41,42,48,52],[41,47,48,49],[41,47,48,52],[42,43,44,48],[42,43,44,50],[42,43,47,48],[42,43,48,49],
+  [42,43,48,52],[42,43,49,50],[42,43,49,53],[42,48,49,50],[42,48,49,53],[42,48,52,53],[43,44,48,49],[43,44,49,50],[43,44,49,53],[43,44,50,51],
+  [43,44,50,54],[43,47,48,49],[43,48,49,52],[43,49,50,51],[43,49,50,54],[43,49,52,53],[43,49,53,54],[44,45,50,51],[44,48,49,50],[44,49,50,53],
+  [44,50,53,54],[45,46,50,51],[45,49,50,51],[45,50,51,54],[47,48,49,50],[47,48,49,53],[47,48,52,53],[48,49,50,51],[48,49,50,52],[48,49,50,54],
+  [48,49,52,53],[48,49,53,54],[48,52,53,54],[49,50,51,53],[49,50,52,53],[49,50,53,54],[50,51,53,54],[50,52,53,54]
+];
+
+const TOPO_COLORS = {
+  'star4': '#3b82f6',    // electric blue
+  'square4': '#eab308',  // gold/yellow
+  'chain4': '#a855f7',   // vivid purple
+  'ladder8': '#22c55e',  // emerald green
+  'bowtie8': '#ec4899',  // hot pink/magenta
+  'twosq8': '#f97316',   // bright orange
+};
+
+const TOPO_LABELS = {
+  'star4': '4q Star',
+  'square4': '4q Square',
+  'chain4': '4q Chain',
+  'ladder8': '8q Ladder',
+  'bowtie8': '8q Bowtie',
+  'twosq8': '8q TwoSq',
+};
+
+// ═══════ Q50 CALIBRATION DATA (2026-03-30) ═══════
+const Q50_CAL = {
+  cz_gate_ns: 100, single_gate_ns: 20,
+  qubits: {
+    1:{t1:32.97,t2:17.36,ro:0.986}, 2:{t1:28.23,t2:6.15,ro:0.980}, 3:{t1:47.12,t2:15.18,ro:0.940},
+    4:{t1:46.52,t2:8.91,ro:0.914}, 5:{t1:38.59,t2:6.09,ro:0.969}, 6:{t1:29.06,t2:22.39,ro:0.980},
+    7:{t1:46.63,t2:19.23,ro:0.964}, 8:{t1:47.51,t2:16.13,ro:0.977}, 9:{t1:9.4,t2:4.4,ro:0.956},
+    10:{t1:33.08,t2:2.62,ro:0.963}, 11:{t1:28.77,t2:5.1,ro:0.977}, 12:{t1:33.88,t2:4.51,ro:0.938},
+    13:{t1:26.64,t2:10.77,ro:0.981}, 14:{t1:38.74,t2:7.35,ro:0.958}, 15:{t1:28.68,t2:28.01,ro:0.969},
+    16:{t1:24.16,t2:15.4,ro:0.976}, 17:{t1:47.38,t2:16.77,ro:0.963}, 18:{t1:44.08,t2:5.67,ro:0.945},
+    19:{t1:35.42,t2:13.75,ro:0.952}, 20:{t1:14.74,t2:10.69,ro:0.972}, 21:{t1:21.13,t2:12.93,ro:0.942},
+    22:{t1:17.52,t2:8.58,ro:0.967}, 23:{t1:32.57,t2:5.65,ro:0.965}, 24:{t1:18.78,t2:12.62,ro:0.947},
+    25:{t1:35.56,t2:26.12,ro:0.972}, 26:{t1:30.72,t2:10.54,ro:0.981}, 27:{t1:23.05,t2:11.33,ro:0.962},
+    28:{t1:30.2,t2:15.69,ro:0.950}, 29:{t1:17.23,t2:7.5,ro:0.977}, 30:{t1:26.75,t2:4.66,ro:0.961},
+    31:{t1:15.27,t2:8.15,ro:0.980}, 33:{t1:37.35,t2:12.16,ro:0.925}, 34:{t1:28.69,t2:6.36,ro:0.964},
+    35:{t1:25.34,t2:3.42,ro:0.935}, 36:{t1:20.98,t2:7.4,ro:0.975}, 37:{t1:19.88,t2:4.48,ro:0.969},
+    38:{t1:8.97,t2:7.28,ro:0.944}, 39:{t1:26.33,t2:7.64,ro:0.962}, 40:{t1:43.48,t2:12.51,ro:0.965},
+    41:{t1:46.04,t2:15.05,ro:0.974}, 42:{t1:26.08,t2:13.89,ro:0.978}, 43:{t1:30.77,t2:9.49,ro:0.969},
+    44:{t1:22.7,t2:8.75,ro:0.809}, 45:{t1:14.65,t2:5.71,ro:0.964}, 46:{t1:39.4,t2:4.57,ro:0.976},
+    47:{t1:27.81,t2:3.67,ro:0.953}, 48:{t1:27.88,t2:11.62,ro:0.985}, 49:{t1:18.98,t2:5.44,ro:0.968},
+    50:{t1:33.65,t2:3.22,ro:0.970}, 51:{t1:22.98,t2:6.03,ro:0.972}, 52:{t1:31.2,t2:3.54,ro:0.968},
+    53:{t1:45.43,t2:7.02,ro:0.950}, 54:{t1:23.55,t2:0.36,ro:0.967},
+  }
+};
+
+// Ansatz info: keyed by "hamiltonian:topology" for unique circuit per experiment
+const ANSATZ_DB = {
+  'TFIM:star4':        {ansatz:'SU2',reps:1,post:14,params:16,opt:'COBYLA'},
+  'TFIM:chain4':       {ansatz:'SU2',reps:1,post:14,params:16,opt:'COBYLA'},
+  'TFIM:bowtie8':      {ansatz:'SU2',reps:1,post:26,params:32,opt:'COBYLA'},
+  'PureZZ:square4':    {ansatz:'SU2',reps:1,post:14,params:16,opt:'COBYLA'},
+  'Heisenberg:star4':  {ansatz:'HVA',reps:3,post:30,params:13,opt:'L-BFGS-B'},
+  'Heisenberg:twosq8': {ansatz:'HVA',reps:3,post:93,params:38,opt:'L-BFGS-B'},
+  'FermiHubbard:ladder8':{ansatz:'SU2',reps:2,post:49,params:48,opt:'L-BFGS-B'},
+};
+function getAnsatzInfo(topo, ham) {
+  const key = (ham||'TFIM') + ':' + (topo||'star4');
+  return ANSATZ_DB[key] || {ansatz:'SU2',reps:1,post:14,params:16,opt:'COBYLA'};
+}
+
+// Compute decoherence depth for a set of qubits
+// Returns {minT2, minT2Qubit, maxUsefulLayers, isDecoherent, perQubit}
+function computeDecoherence(qubits, circuitDepth) {
+  const layerTime_us = Q50_CAL.cz_gate_ns / 1000; // 0.1 µs per CZ layer
+  const perQubit = {};
+  let minT2 = Infinity, minT2Q = -1;
+  for (const q of qubits) {
+    const cal = Q50_CAL.qubits[q];
+    if (!cal) continue;
+    const maxLayers = Math.floor(cal.t2 / layerTime_us);
+    perQubit[q] = {t2: cal.t2, maxLayers, decoherent: circuitDepth > maxLayers};
+    if (cal.t2 < minT2) { minT2 = cal.t2; minT2Q = q; }
+  }
+  const maxUsefulLayers = Math.floor(minT2 / layerTime_us);
+  return {
+    minT2, minT2Qubit: minT2Q,
+    maxUsefulLayers,
+    isDecoherent: circuitDepth > maxUsefulLayers,
+    circuitDepth,
+    perQubit
+  };
+}
+
+// Track seed exhaustion: which seeds have all tasks placed by circuit N
+function getExhaustedSeeds(level, circuitIdx) {
+  if (level < 5) return new Set();
+  try {
+    const allCircuits = getPoolCircuits(level);
+    const seedTaskCounts = {}; // seed → total tasks
+    const seedPlacedBy = {};   // seed → tasks placed by circuitIdx
+    for (let i = 0; i < allCircuits.length; i++) {
+      for (const t of allCircuits[i]) {
+        const s = t.seed;
+        seedTaskCounts[s] = (seedTaskCounts[s] || 0) + 1;
+        if (i <= circuitIdx) {
+          seedPlacedBy[s] = (seedPlacedBy[s] || 0) + 1;
+        }
+      }
+    }
+    const exhausted = new Set();
+    for (const s of Object.keys(seedTaskCounts)) {
+      if ((seedPlacedBy[s] || 0) >= seedTaskCounts[s]) {
+        exhausted.add(parseInt(s));
+      }
+    }
+    return exhausted;
+  } catch(e) { return new Set(); }
+}
+
+// State for click-to-select
+let selectedGroup = null;
+
+// ═══════ GLOBAL POOL PACKER ═══════
+function globalPoolPack(taskPool, maxPerCircuit) {
+  // Greedy pack tasks into circuits. Each task = {topo, qubits, seed, pauli, size}
+  // Returns array of circuits, each circuit = array of tasks
+  const circuits = [];
+  const remaining = [...taskPool];
+  
+  while (remaining.length > 0) {
+    const circuit = [];
+    const usedQ = new Set();
+    const usedE = new Set();
+    const toRemove = [];
+    
+    for (let i = 0; i < remaining.length; i++) {
+      if (circuit.length >= maxPerCircuit) break;
+      const task = remaining[i];
+      const qs = new Set(task.qubits);
+      
+      // Check qubit overlap
+      let overlap = false;
+      for (const q of qs) { if (usedQ.has(q)) { overlap = true; break; } }
+      if (overlap) continue;
+      
+      // Check edge overlap (using Q50 adjacency)
+      const ie = [];
+      const qArr = task.qubits;
+      const qSet = new Set(qArr);
+      for (const q of qArr) {
+        for (const [a,b] of Q50_EDGES) {
+          if ((a===q && qSet.has(b)) || (b===q && qSet.has(a))) {
+            const ek = Math.min(a,b)+','+Math.max(a,b);
+            ie.push(ek);
+          }
+        }
+      }
+      let edgeOverlap = false;
+      for (const ek of ie) { if (usedE.has(ek)) { edgeOverlap = true; break; } }
+      if (edgeOverlap) continue;
+      
+      // No overlap — add to circuit
+      circuit.push(task);
+      for (const q of qs) usedQ.add(q);
+      for (const ek of ie) usedE.add(ek);
+      toRemove.push(i);
+    }
+    
+    // Remove packed tasks (reverse order to preserve indices)
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      remaining.splice(toRemove[i], 1);
+    }
+    
+    if (circuit.length === 0) break; // no progress possible
+    circuits.push(circuit);
+  }
+  return circuits;
+}
+
+function buildTaskPool(topoConfigs, nSeeds) {
+  // topoConfigs = [{topo:'star4', placements:STAR4_PL, pauliGroups:2, hamiltonian:'TFIM'}, ...]
+  // Returns array of tasks
+  const pool = [];
+  for (const cfg of topoConfigs) {
+    for (let seed = 0; seed < nSeeds; seed++) {
+      for (let pi = 0; pi < cfg.pauliGroups; pi++) {
+        for (const pl of cfg.placements) {
+          pool.push({
+            topo: cfg.topo,
+            qubits: pl,
+            seed: seed,
+            pauli: pi,
+            size: pl.length,
+            hamiltonian: cfg.hamiltonian,
+          });
+        }
+      }
+    }
+  }
+  // Shuffle for better packing (deterministic)
+  let s = 42;
+  for (let i = pool.length - 1; i > 0; i--) {
+    s = (s * 1103515245 + 12345) & 0x7fffffff;
+    const j = s % (i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool;
+}
+ // [10,9,9,9,8,7,7,7,7,7,6,6,5,5,3,3]
+const DSATUR_ROUNDS = 16;
+const PLACEMENTS = 108;
+const Q = 53;
+const BATCH_LIMIT = 100;
+const INTERMIXED_STARS_PER_CIRCUIT = 9; // User-specified for Level 4
+
+// ═══════ TIMING CONSTANTS FROM REAL Q50 DATA ═══════
+const QX_OVERHEAD = 1.14;
+const POSTPROCESS = 1.53;
+const DELIVERY = 1.29;
+const PER_CIRCUIT_QPU = 1.77;
+const QPU_BASE = 0.65;
+const QUEUE_TYPICAL = 20;
+
+// 16 high-contrast star colors (warm/cool alternating for max distinction)
+const STAR_COLORS = [
+  '#ef4444','#3b82f6','#f59e0b','#8b5cf6','#22c55e','#ec4899',
+  '#f97316','#06b6d4','#eab308','#a855f7','#14b8a6','#e11d48',
+  '#84cc16','#6366f1','#fb923c','#0ea5e9'
+];
+const SEED_COLORS = ['#3b82f6','#ef4444','#22c55e','#f59e0b','#ec4899','#8b5cf6','#06b6d4','#84cc16','#e11d48','#f97316','#a855f7','#14b8a6','#d946ef','#0ea5e9','#65a30d','#dc2626'];
+
+function wallTime(nCirc, queue) {
+  return QX_OVERHEAD + queue + QPU_BASE + PER_CIRCUIT_QPU * nCirc + POSTPROCESS + DELIVERY;
+}
+function rate(placements, nCirc, queue) {
+  return Math.round(placements / wallTime(nCirc, queue) * 3600);
+}
+
+// ═══════ LEVEL DEFINITIONS ═══════
+const LEVELS = [
+  { name:'Level 0 — Single Star', circuits:2, placements:1,
+    desc:'1 star (K₁,₃) placement × 2 Pauli groups = 2 circuits in 1 batch. Hub + 3 leaves = 4 of 53 qubits active. Maximum waste.' },
+  { name:'Level 1 — Best DSatur Round', circuits:2, placements:DSATUR_STARS[0],
+    desc:`Best DSatur round packs ${DSATUR_STARS[0]} non-overlapping stars (${DSATUR_STARS[0]*4} qubits). Same 2 circuits (Z+X basis), but each carries ${DSATUR_STARS[0]} stars. Width is free — same shot time!` },
+  { name:'Level 2 — Full Seed Batched', circuits:32, placements:108,
+    desc:'All 108 placements × 2 Pauli = 32 circuits. Circuits 1–16: Z-basis DSatur rounds (10→3 stars draining). Circuits 17–32: X-basis (same pattern). 1 batch, 1 queue wait.' },
+  { name:'Level 3 — 3 Seeds Batched', circuits:96, placements:324,
+    desc:'3 seeds × 32 circuits = 96. PG1: Seed 0 (C1–16), Seed 1 (C17–32), Seed 2 (C33–48). PG2: Seed 0 (C49–64), Seed 1 (C65–80), Seed 2 (C81–96). 4 wasted circuit slots.' },
+  { name:'Level 4 — Cross-Seed Intermixed', circuits:100, placements: INTERMIXED_STARS_PER_CIRCUIT * 100 / 2,
+    desc:`${(INTERMIXED_STARS_PER_CIRCUIT * 100 / 2 / 108).toFixed(1)} seeds intermixed. Every circuit independently packs ${INTERMIXED_STARS_PER_CIRCUIT} stars by backfilling sparse DSatur rounds with other seeds. The ${INTERMIXED_STARS_PER_CIRCUIT*4/53*100|0}% shown is the per-circuit utilization. Campaign mean with full task tracking = 50.9% (= DSatur chromatic mean, the theoretical ceiling for star-only packing on Q50).` },
+  { name:'Level 5 — Global Pool (5 Seeds)', circuits:167, placements:540,
+    desc:'5 seeds × 108 placements × 2 Pauli = 1,080 tasks, packed by greedy qubit-overlap solver into ~167 circuits across 2 batches. The pool packer treats every task as a flat pool — no DSatur round structure. Mean util ~49-51% (= the 50.9% DSatur ceiling). Batch 1 achieves ~60% as the packer fills dense circuits first; Batch 2 drops to ~32% with depleted pool. The advantage over Level 4: correct task tracking, deterministic, resumable.' },
+  { name:'Level 6 — Scaled Pool (15 Seeds)', circuits:485, placements:1620,
+    desc:'15 seeds × 108 placements × 2 Pauli = 3,240 tasks across ~485 circuits in 5 batches. Triple the pool of Level 5. More seeds = more consistent early-batch density: Batches 1-3 sustain ~55-63% utilization. The 50.9% mean ceiling is structural (DSatur chromatic number). The throughput gain comes from placing 3× more science in roughly 3× the circuits, at 3× the batches — same utilization, more data.' },
+  { name:'Level 7 — Mixed 4q Shapes', circuits:171, placements:405,
+    desc:'Mixed topology: 4q stars (Heisenberg XXZ, 3 Pauli groups: XX,YY,ZZ) + 4q squares (Pure ZZ, 1 group). 3 seeds, ~1,053 tasks → ~171 circuits across 2 batches. Peak single-circuit: ~44q (83%). Mean util ~47%. Different 4q shapes compete for the same central qubits, limiting gains vs star-only.' },
+  { name:'Level 8 — 4q Stars + 8q Ladders', circuits:202, placements:508,
+    desc:'Two Hamiltonians on one QPU: TFIM 4q stars (2 Pauli) + Fermi-Hubbard 8q ladders (2 Pauli). 4 seeds, ~1,016 tasks → ~202 circuits across 3 batches. Peak: 3 ladders + 6 stars = 48/53 qubits (90.6%). Mean ~44%. The 8q ladders break the star-only ceiling by filling chip regions that stars can\'t reach.' },
+  { name:'Level 9 — All Topologies (5 Shapes)', circuits:868, placements:597,
+    desc:'Full mixed campaign: 4q stars (108pl, TFIM) + 4q squares (27pl, PureZZ) + 4q chains (379pl, TFIM) + 8q bowties (26pl, TFIM) + 8q two-squares (57pl, Heisenberg). 4 seeds, 597 unique placements, ~4,668 tasks → ~868 circuits across 9 batches. 5 topologies, 3 Hamiltonians, multiple Pauli bases — all packed by qubit non-overlap. Chains dominate the pool (379 placements). Peak: 48/53 (90.6%). Batches 1-4 sustain 60-75% utilization.' }
+];
+
+let currentLevel = 0;
+let currentCircuit = 0;
+let playTimer = null;
+
+// ═══════ CHIP RENDERING ═══════
+// Build grid lookup: which cells exist at each (r,c)?
+const GRID_ROWS = 9, GRID_COLS = 9;
+const qAtPos = {};
+for (const [q, pos] of Object.entries(Q50_POS)) {
+  qAtPos[pos.r + ',' + pos.c] = parseInt(q);
+}
+
+function getStarsForCircuit(level, circIdx) {
+  // Returns array of {hub, leaves, colorIdx, seedIdx}
+  if (level === 0) {
+    // Single star from round 0
+    const s = DSATUR_SOLUTION[0][0];
+    return [{hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:0, seedIdx:0}];
+  }
+  if (level === 1) {
+    // All stars from the best round (R1)
+    return DSATUR_SOLUTION[0].map((s, i) => ({hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:i, seedIdx:0}));
+  }
+  if (level === 2) {
+    // 32 circuits: 0-15 = Z-basis rounds 0-15, 16-31 = X-basis rounds 0-15
+    const roundIdx = circIdx % 16;
+    return DSATUR_SOLUTION[roundIdx].map((s, i) => ({hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:i, seedIdx:0}));
+  }
+  if (level === 3) {
+    // 96 circuits: PG1: seed0(0-15), seed1(16-31), seed2(32-47)
+    //              PG2: seed0(48-63), seed1(64-79), seed2(80-95)
+    const seedIdx = Math.floor((circIdx % 48) / 16);
+    const roundIdx = circIdx % 16;
+    return DSATUR_SOLUTION[roundIdx].map((s, i) => ({hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:i, seedIdx:seedIdx}));
+  }
+  if (level === 4) {
+    return getIntermixedStars(circIdx);
+  }
+  if (level >= 5 && level <= 9) {
+    const circuits = getPoolCircuits(level);
+    if (circIdx >= circuits.length) return [];
+    return circuits[circIdx].map((task, i) => ({
+      hub: task.qubits[0],
+      leaves: task.qubits.slice(1),
+      colorIdx: i,
+      seedIdx: task.seed,
+      topo: task.topo,
+      pauli: task.pauli,
+      size: task.size,
+      hamiltonian: task.hamiltonian,
+    }));
+  }
+  return [];
+}
+
+// ═══════ LEVEL 5-9 POOL PACKING (cached) ═══════
+const _poolCache = {};
+function getPoolCircuits(level) {
+  if (_poolCache[level]) return _poolCache[level];
+  let configs, nSeeds, maxPer;
+  if (level === 5) {
+    configs = [{topo:'star4', placements:STAR4_PL, pauliGroups:2, hamiltonian:'TFIM'}];
+    nSeeds = 5; maxPer = 12;
+  } else if (level === 6) {
+    configs = [{topo:'star4', placements:STAR4_PL, pauliGroups:2, hamiltonian:'TFIM'}];
+    nSeeds = 15; maxPer = 12;
+  } else if (level === 7) {
+    configs = [
+      {topo:'star4', placements:STAR4_PL, pauliGroups:3, hamiltonian:'Heisenberg'},
+      {topo:'square4', placements:SQUARE4_PL, pauliGroups:1, hamiltonian:'PureZZ'},
+    ];
+    nSeeds = 3; maxPer = 12;
+  } else if (level === 8) {
+    configs = [
+      {topo:'star4', placements:STAR4_PL, pauliGroups:2, hamiltonian:'TFIM'},
+      {topo:'ladder8', placements:LADDER8_PL, pauliGroups:2, hamiltonian:'FermiHubbard'},
+    ];
+    nSeeds = 4; maxPer = 12;
+  } else if (level === 9) {
+    configs = [
+      {topo:'star4', placements:STAR4_PL, pauliGroups:2, hamiltonian:'TFIM'},
+      {topo:'square4', placements:SQUARE4_PL, pauliGroups:1, hamiltonian:'PureZZ'},
+      {topo:'chain4', placements:CHAIN4_PL, pauliGroups:2, hamiltonian:'TFIM'},
+      {topo:'bowtie8', placements:BOWTIE8_PL, pauliGroups:2, hamiltonian:'TFIM'},
+      {topo:'twosq8', placements:TWOSQ8_PL, pauliGroups:2, hamiltonian:'Heisenberg'},
+    ];
+    nSeeds = 4; maxPer = 12;
+  }
+  const pool = buildTaskPool(configs, nSeeds);
+  const circuits = globalPoolPack(pool, maxPer);
+  _poolCache[level] = circuits;
+  return circuits;
+}
+
+function getIntermixedStars(circIdx) {
+  // For level 4: 100 circuits, each with 9 stars
+  // Seed assignment: each seed needs 32 circuits worth of measurement slots
+  // With 9 stars/circuit and 108 placements/seed (2 Pauli), one seed takes ~24 circuits
+  // So ~4.2 seeds fit in 100 circuits
+  
+  // Determine which DSatur round this circuit represents for its primary seed
+  // We pack seeds continuously: seed0 gets circuits until exhausted, then seed1, etc.
+  // But with intermixing, multiple seeds contribute to each circuit
+  
+  // Simplification: compute which Pauli group and DSatur round for primary seed
+  const primarySeed = Math.floor(circIdx / 24); // ~24 circuits per seed with intermixing
+  const withinSeed = circIdx % 24;
+  
+  // Map to a DSatur round (wrapping through the 16 rounds, with some circuits
+  // handling both Z and X for the same round when stars are sparse)
+  let roundIdx, pauliGroup;
+  if (withinSeed < 16) {
+    roundIdx = withinSeed;
+    pauliGroup = 0; // Z
+  } else {
+    roundIdx = withinSeed - 16 + 8; // Start from round 8 for X-basis (sparse rounds)
+    if (roundIdx >= 16) roundIdx = roundIdx % 16;
+    pauliGroup = 1; // X
+  }
+  
+  // Get primary seed's stars for this round
+  const primaryStars = DSATUR_SOLUTION[roundIdx].map((s, i) => ({
+    hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:i, seedIdx: primarySeed % SEED_COLORS.length
+  }));
+  
+  // Fill remaining slots with stars from other seeds (backfill)
+  const usedQubits = new Set();
+  primaryStars.forEach(star => {
+    usedQubits.add(star.hub);
+    star.leaves.forEach(l => usedQubits.add(l));
+  });
+  
+  const result = [...primaryStars];
+  const backfillSeed = (primarySeed + 1) % SEED_COLORS.length;
+  
+  // Try to add stars from other rounds/seeds that don't overlap
+  let backfillRound = 0;
+  while (result.length < INTERMIXED_STARS_PER_CIRCUIT && backfillRound < 16) {
+    const candidates = DSATUR_SOLUTION[backfillRound];
+    for (const s of candidates) {
+      if (result.length >= INTERMIXED_STARS_PER_CIRCUIT) break;
+      const starQubits = [s[0], s[1], s[2], s[3]];
+      if (starQubits.every(q => !usedQubits.has(q))) {
+        starQubits.forEach(q => usedQubits.add(q));
+        result.push({hub:s[0], leaves:[s[1],s[2],s[3]], colorIdx:result.length, seedIdx:backfillSeed});
+      }
+    }
+    backfillRound++;
+  }
+  
+  return result.slice(0, INTERMIXED_STARS_PER_CIRCUIT);
+}
+
+function drawChip(lv, circIdx) {
+  const grid = document.getElementById('chip-grid');
+  grid.innerHTML = '';
+  selectedGroup = null;
+  hideAnsatzPanel();
+  
+  const stars = getStarsForCircuit(lv, circIdx);
+  
+  const qubitInfo = {};
+  const groupInfo = [];
+  stars.forEach((star, si) => {
+    let color;
+    if (lv <= 2) {
+      color = STAR_COLORS[star.colorIdx % STAR_COLORS.length];
+    } else if (lv >= 7 && star.topo) {
+      color = TOPO_COLORS[star.topo] || SEED_COLORS[star.seedIdx % SEED_COLORS.length];
+    } else {
+      color = SEED_COLORS[star.seedIdx % SEED_COLORS.length];
+    }
+    const bright = (si % 2 === 1) ? '50' : '30';
+    const allQubits = [star.hub, ...star.leaves];
+    const topo = star.topo || 'star4';
+    const ham = star.hamiltonian || 'TFIM';
+    const aInfo = getAnsatzInfo(topo, ham);
+    aInfo.ham = ham; aInfo.topo = topo;
+    const deco = computeDecoherence(allQubits, aInfo.post);
+    
+    groupInfo[si] = {color, topo, ham, seed: star.seedIdx, qubits: allQubits, decoherence: deco, ansatz: aInfo};
+    
+    qubitInfo[star.hub] = {color, bright, isHub:true, group:si, decoherent: deco.perQubit[star.hub]?.decoherent};
+    star.leaves.forEach(l => {
+      qubitInfo[l] = {color, bright, isHub:false, group:si, decoherent: deco.perQubit[l]?.decoherent};
+    });
+  });
+  
+  window._currentGroupInfo = groupInfo;
+  
+  const MISSING_QB = {32: {r:5, c:1}};
+  
+  for (let r = 0; r < GRID_ROWS; r++) {
+    for (let c = 0; c < GRID_COLS; c++) {
+      const cell = document.createElement('div');
+      cell.className = 'chip-q';
+      const q = qAtPos[r + ',' + c];
+      const isMissing = Object.values(MISSING_QB).some(p => p.r === r && p.c === c);
+      if (q === undefined && !isMissing) {
+        cell.classList.add('empty');
+      } else if (isMissing) {
+        cell.classList.add('missing-q');
+        cell.textContent = '32';
+      } else if (qubitInfo[q]) {
+        const info = qubitInfo[q];
+        cell.classList.add('active');
+        if (info.isHub) cell.classList.add('hub');
+        if (info.decoherent) cell.classList.add('decoherent');
+        cell.dataset.group = info.group;
+        cell.style.borderColor = info.color;
+        cell.style.background = info.color + info.bright;
+        cell.style.color = '#fff';
+        cell.textContent = q;
+        // Click to select/deselect
+        const grp = info.group;
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (selectedGroup === grp) { selectedGroup = null; clearGroupHighlight(); hideAnsatzPanel(); }
+          else { selectedGroup = grp; applyGroupHighlight(grp); showAnsatzPanel(grp); }
+        });
+        cell.addEventListener('mouseenter', () => { if (selectedGroup === null) { applyGroupHighlight(info.group); } });
+        cell.addEventListener('mouseleave', () => { if (selectedGroup === null) { clearGroupHighlight(); } });
+      } else {
+        cell.classList.add('idle');
+        cell.textContent = q;
+      }
+      grid.appendChild(cell);
+    }
+  }
+  
+  drawEdges(qubitInfo);
+}
+
+function drawEdges(qubitInfo) {
+  const svg = document.getElementById('chip-edges');
+  svg.innerHTML = '';
+  function pos(q) {
+    const p = Q50_POS[q];
+    if (!p) return null;
+    return { x: p.c * 35 + 16, y: p.r * 35 + 16 };
+  }
+  for (const [a, b] of Q50_EDGES) {
+    const pa = pos(a), pb = pos(b);
+    if (!pa || !pb) continue;
+    let stroke = 'rgba(42,54,80,0.5)', width = 1;
+    const ia = qubitInfo[a], ib = qubitInfo[b];
+    if (ia && ib && ia.group === ib.group) { stroke = ia.color + '80'; width = 2; }
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', pa.x); line.setAttribute('y1', pa.y);
+    line.setAttribute('x2', pb.x); line.setAttribute('y2', pb.y);
+    line.setAttribute('stroke', stroke); line.setAttribute('stroke-width', width);
+    line.setAttribute('stroke-linecap', 'round');
+    svg.appendChild(line);
+  }
+}
+
+function applyGroupHighlight(groupIdx) {
+  document.querySelectorAll('.chip-q.active').forEach(cell => {
+    const g = parseInt(cell.dataset.group);
+    if (g === groupIdx) { cell.classList.add('glow'); cell.classList.remove('decoherent'); }
+    else { cell.style.opacity = '0.35'; }
+  });
+  const gInfo = window._currentGroupInfo?.[groupIdx];
+  if (gInfo) highlightSeedChip(gInfo.seed);
+}
+
+function clearGroupHighlight() {
+  document.querySelectorAll('.chip-q.active').forEach(cell => {
+    cell.classList.remove('glow');
+    cell.style.opacity = '';
+    const gi = parseInt(cell.dataset.group);
+    const gInfo = window._currentGroupInfo?.[gi];
+    if (gInfo) {
+      const q = parseInt(cell.textContent);
+      if (gInfo.decoherence.perQubit[q]?.decoherent) cell.classList.add('decoherent');
+    }
+  });
+  clearSeedChipHighlight();
+}
+
+function highlightSeedChip(seedIdx) {
+  if (seedIdx === undefined) return;
+  document.querySelectorAll('#lv-seeds .seed-chip').forEach(chip => {
+    if (chip.dataset.seed == seedIdx) chip.classList.add('highlighted');
+  });
+}
+function clearSeedChipHighlight() {
+  document.querySelectorAll('#lv-seeds .seed-chip.highlighted').forEach(c => c.classList.remove('highlighted'));
+}
+
+function showAnsatzPanel(groupIdx) {
+  const panel = document.getElementById('ansatz-panel');
+  const gInfo = window._currentGroupInfo?.[groupIdx];
+  if (!gInfo) { hideAnsatzPanel(); return; }
+  panel.style.display = 'block';
+  const a = gInfo.ansatz, d = gInfo.decoherence;
+  document.getElementById('ansatz-label').textContent =
+    (TOPO_LABELS[gInfo.topo]||gInfo.topo) + ' \u00b7 Seed ' + gInfo.seed + ' \u00b7 ' + a.ham + ' \u00b7 ' + a.ansatz + ' r=' + a.reps + ' \u00b7 ' + (a.opt||'COBYLA');
+  drawAnsatzSVG(document.getElementById('ansatz-svg'), gInfo);
+  const pct = d.isDecoherent ? Math.round(d.maxUsefulLayers / d.circuitDepth * 100) : 100;
+  let html = '';
+  if (d.isDecoherent) {
+    html = '<span class="warn">\u26a0 DECOHERENT:</span> Depth ' + d.circuitDepth + ' exceeds T\u2082. ' +
+      'Worst: QB' + d.minT2Qubit + ' (T\u2082=' + d.minT2.toFixed(1) + '\u00b5s \u2192 ' + d.maxUsefulLayers + ' layers). ' +
+      'Only ' + pct + '% useful. <span class="decohere-tag danger">Layer ' + d.maxUsefulLayers + '+ is noise</span>';
+  } else {
+    html = '<span class="ok">\u2713 COHERENT:</span> Depth ' + d.circuitDepth + ' within T\u2082. ' +
+      'Weakest: QB' + d.minT2Qubit + ' (T\u2082=' + d.minT2.toFixed(1) + '\u00b5s \u2192 ' + d.maxUsefulLayers + 'L). ' +
+      '<span class="decohere-tag safe">Full circuit valid</span>';
+  }
+  const qd = gInfo.qubits.map(q => {
+    const pq = d.perQubit[q]; if (!pq) return '';
+    const tag = pq.decoherent ? 'danger' : (pq.maxLayers < d.circuitDepth * 1.5 ? 'caution' : 'safe');
+    return 'QB'+q+': T\u2082='+pq.t2+'\u00b5s <span class="decohere-tag '+tag+'">'+pq.maxLayers+'L</span>';
+  }).join(' \u00b7 ');
+  document.getElementById('ansatz-info').innerHTML = html + '<br><span style="color:var(--text3);font-size:10px">' + qd + '</span>';
+}
+function hideAnsatzPanel() { document.getElementById('ansatz-panel').style.display = 'none'; }
+
+function drawAnsatzSVG(svg, gInfo) {
+  const a = gInfo.ansatz, d = gInfo.decoherence;
+  const nq = gInfo.qubits.length;
+  const wireGap = 44; let gateW = 30, gateH = 30; const startX = 50;
+  const headerH = 32; // section headers height
+  const wireStartY = headerH + 18;
+  
+  // Compute internal edges
+  const qSet = new Set(gInfo.qubits);
+  const qIdx = {}; gInfo.qubits.forEach((q,i)=>qIdx[q]=i);
+  const intEdges = [];
+  for (const [ea,eb] of Q50_EDGES) {
+    if (qSet.has(ea)&&qSet.has(eb)) intEdges.push([qIdx[ea],qIdx[eb]]);
+  }
+  
+  const GC = {Ry:'#22c55e',Rz:'#3b82f6',X:'#ef4444',H:'#60a5fa',
+    RXX:'#f97316',RYY:'#ec4899',RZZ:'#a855f7',CZ:'#38bdf8',M:'#94a3b8'};
+  
+  // Build gate sequence with timing and parameter indices
+  const gates = [];
+  let paramIdx = 0;
+  
+  if (a.ansatz === 'HVA') {
+    const initT=[]; for(let i=0;i<nq;i+=2) initT.push([i]);
+    gates.push({type:'1q',label:'X',color:GC.X,targets:initT,time_ns:20,params:[]});
+    for(let rep=0;rep<a.reps;rep++) {
+      for(const [i,j] of intEdges) {
+        gates.push({type:'2q',label:'RXX',color:GC.RXX,targets:[[i,j]],time_ns:100,params:[paramIdx]});
+        gates.push({type:'2q',label:'RYY',color:GC.RYY,targets:[[i,j]],time_ns:100,params:[paramIdx]});
+        gates.push({type:'2q',label:'RZZ',color:GC.RZZ,targets:[[i,j]],time_ns:100,params:[paramIdx]});
+        paramIdx++;
+      }
+    }
+    const ryT=[]; for(let i=0;i<nq;i++){ryT.push([i])}
+    const ryP=[]; for(let i=0;i<nq;i++){ryP.push(paramIdx++);}
+    gates.push({type:'1q',label:'Ry',color:GC.Ry,targets:ryT,time_ns:20,params:ryP});
+  } else {
+    for(let rep=0;rep<=a.reps;rep++) {
+      const ryT=[],rzT=[],ryP=[],rzP=[];
+      for(let i=0;i<nq;i++){ryT.push([i]);ryP.push(paramIdx++);}
+      gates.push({type:'1q',label:'Ry',color:GC.Ry,targets:ryT,time_ns:20,params:ryP});
+      for(let i=0;i<nq;i++){rzT.push([i]);rzP.push(paramIdx++);}
+      gates.push({type:'1q',label:'Rz',color:GC.Rz,targets:rzT,time_ns:20,params:rzP});
+      if(rep<a.reps) {
+        for(let i=0;i<nq-1;i++) {
+          gates.push({type:'1q',label:'H',color:GC.H,targets:[[i+1]],time_ns:20,params:[]});
+          gates.push({type:'2q',label:'CZ',color:GC.CZ,targets:[[i,i+1]],time_ns:100,params:[]});
+          gates.push({type:'1q',label:'H',color:GC.H,targets:[[i+1]],time_ns:20,params:[]});
+        }
+      }
+    }
+  }
+  // Measurement
+  const mT=[]; for(let i=0;i<nq;i++) mT.push([i]);
+  gates.push({type:'meas',label:'M',color:GC.M,targets:mT,time_ns:0,params:[]});
+  
+  // Find measurement gate index and ansatz boundary
+  const measIdx = gates.length - 1;
+  
+  // Timing + decoherence
+  const minT2_ns = d.minT2*1000;
+  let cumTime=0, decoGateIdx=gates.length;
+  for(let gi=0;gi<gates.length;gi++){
+    cumTime+=gates[gi].time_ns;
+    if(cumTime>minT2_ns && decoGateIdx===gates.length) decoGateIdx=gi;
+  }
+  const totalTime_us = cumTime/1000;
+  
+  const totalLayers = gates.length;
+  // Adaptive layout: fit within container without scrollbar
+  const maxContainerW = 880; // max usable width in px
+  const nominalStepW = 34;
+  // For shallow circuits: show all gates at full size
+  // For deep circuits: cap drawn gates to fit container
+  // Head/tail rendering for truncated circuits
+  const headN = 20, tailN = 15;
+  const maxContW = maxContainerW;
+  const needsTruncation = totalLayers > (headN + tailN);
+  const gapW = 60; // width of the "..." gap
+  let drawSlots, truncated;
+  if (needsTruncation) {
+    drawSlots = headN + tailN;
+    truncated = true;
+  } else {
+    drawSlots = totalLayers;
+    truncated = false;
+  }
+  const nomStepW = 34;
+  const stepW = Math.min(nomStepW, Math.floor((maxContW - startX - 80 - (truncated?gapW:0)) / drawSlots));
+  gateW = Math.max(22, Math.round(30 * stepW / nomStepW));
+  gateH = Math.max(22, Math.round(30 * stepW / nomStepW));
+  const feedbackH = 150;
+  const totalDrawW = drawSlots * stepW + (truncated ? gapW : 0) + 20;
+  const circuitAreaW = startX + totalDrawW + 20;
+  const feedbackAreaW = 420; // 3 boxes + arrows need ~420px
+  const svgW = Math.max(circuitAreaW, feedbackAreaW + 20);
+  const svgH = wireStartY + nq*wireGap + 46 + feedbackH;
+
+  svg.setAttribute('width', svgW);
+  svg.setAttribute('height', svgH);
+  svg.setAttribute('viewBox','0 0 '+svgW+' '+svgH);
+  svg.style.display = 'block';
+  svg.style.margin = '0 auto';
+  svg.innerHTML = '';
+
+  // Map draw position (0..drawSlots-1) to gate index and x position
+  function slotToX(slot) {
+    if (!truncated) return startX + slot * stepW + 13;
+    if (slot < headN) return startX + slot * stepW + 13;
+    // After head, add gap
+    return startX + headN * stepW + gapW + (slot - headN) * stepW + 13;
+  }
+  function slotToGateIdx(slot) {
+    if (!truncated) return slot;
+    if (slot < headN) return slot;
+    return totalLayers - tailN + (slot - headN);
+  }
+  const lastSlotX = slotToX(drawSlots - 1);
+  const wireEndX = lastSlotX + stepW;
+
+  // ═══ SECTION HEADERS ═══
+  const measGateSlot = truncated ? (drawSlots - 1) : measIdx;
+  const ansatzEndX = slotToX(Math.min(measGateSlot - 1, drawSlots - 2)) + stepW/2;
+  const measStartX2 = slotToX(measGateSlot) - stepW/2;
+
+  const ah = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  ah.setAttribute('x',startX-4); ah.setAttribute('y',2); ah.setAttribute('width',ansatzEndX-startX+8);
+  ah.setAttribute('height',headerH-4); ah.setAttribute('rx',6);
+  ah.setAttribute('fill','rgba(99,102,241,0.12)'); ah.setAttribute('stroke','rgba(99,102,241,0.3)');
+  ah.setAttribute('stroke-width',1); svg.appendChild(ah);
+  const at = document.createElementNS('http://www.w3.org/2000/svg','text');
+  at.setAttribute('x',(startX+ansatzEndX)/2); at.setAttribute('y',18);
+  at.setAttribute('text-anchor','middle'); at.setAttribute('fill','#818cf8');
+  at.setAttribute('font-size','13'); at.setAttribute('font-weight','600');
+  at.setAttribute('font-family','JetBrains Mono');
+  at.textContent = a.ansatz+' Ansatz \u00b7 '+(a.ham||gInfo.ham||'TFIM')+' \u00b7 r='+a.reps;
+  svg.appendChild(at);
+
+  // Measurement header
+  const mhw = stepW + 20;
+  const mh = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  mh.setAttribute('x',measStartX2); mh.setAttribute('y',2); mh.setAttribute('width',mhw);
+  mh.setAttribute('height',headerH-4); mh.setAttribute('rx',6);
+  mh.setAttribute('fill','rgba(148,163,184,0.12)'); mh.setAttribute('stroke','rgba(148,163,184,0.3)');
+  mh.setAttribute('stroke-width',1); svg.appendChild(mh);
+  const mt2 = document.createElementNS('http://www.w3.org/2000/svg','text');
+  mt2.setAttribute('x',measStartX2+mhw/2); mt2.setAttribute('y',18);
+  mt2.setAttribute('text-anchor','middle'); mt2.setAttribute('fill','#94a3b8');
+  mt2.setAttribute('font-size','12'); mt2.setAttribute('font-weight','600');
+  mt2.setAttribute('font-family','JetBrains Mono');
+  mt2.textContent='Meas'; svg.appendChild(mt2);
+
+  // ═══ QUBIT LABELS + WIRES ═══
+  for(let i=0;i<nq;i++){
+    const y=wireStartY+i*wireGap, q=gInfo.qubits[i];
+    const isDecoQ = d.perQubit[q]?.decoherent;
+    const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+    txt.setAttribute('x',4); txt.setAttribute('y',y+5);
+    txt.setAttribute('fill',isDecoQ?'#fb7185':'#8896b0');
+    txt.setAttribute('font-size','13'); txt.setAttribute('font-weight','600');
+    txt.setAttribute('font-family','JetBrains Mono');
+    txt.textContent='q'+i; svg.appendChild(txt);
+    const pq = document.createElementNS('http://www.w3.org/2000/svg','text');
+    pq.setAttribute('x',28); pq.setAttribute('y',y+5);
+    pq.setAttribute('fill','#475569'); pq.setAttribute('font-size','10');
+    pq.setAttribute('font-family','JetBrains Mono');
+    pq.textContent='QB'+q; svg.appendChild(pq);
+    // Wire: draw through head, gap, tail
+    if (truncated) {
+      // Head wire
+      const hEnd = startX + headN * stepW;
+      const w1 = document.createElementNS('http://www.w3.org/2000/svg','line');
+      w1.setAttribute('x1',startX); w1.setAttribute('y1',y); w1.setAttribute('x2',hEnd); w1.setAttribute('y2',y);
+      w1.setAttribute('stroke','#334155'); w1.setAttribute('stroke-width',1); svg.appendChild(w1);
+      // Tail wire
+      const tStart = hEnd + gapW;
+      const w2 = document.createElementNS('http://www.w3.org/2000/svg','line');
+      w2.setAttribute('x1',tStart); w2.setAttribute('y1',y); w2.setAttribute('x2',wireEndX); w2.setAttribute('y2',y);
+      w2.setAttribute('stroke','#334155'); w2.setAttribute('stroke-width',1); svg.appendChild(w2);
+    } else {
+      const wire = document.createElementNS('http://www.w3.org/2000/svg','line');
+      wire.setAttribute('x1',startX); wire.setAttribute('y1',y); wire.setAttribute('x2',wireEndX); wire.setAttribute('y2',y);
+      wire.setAttribute('stroke','#334155'); wire.setAttribute('stroke-width',1); svg.appendChild(wire);
+    }
+  }
+
+  // ═══ GAP INDICATOR ═══
+  if (truncated) {
+    const gapX = startX + headN * stepW + gapW/2;
+    const skipped = totalLayers - headN - tailN;
+    // Dots on each wire
+    for(let i=0;i<nq;i++){
+      const y=wireStartY+i*wireGap;
+      const dt = document.createElementNS('http://www.w3.org/2000/svg','text');
+      dt.setAttribute('x',gapX); dt.setAttribute('y',y+5); dt.setAttribute('fill','#555');
+      dt.setAttribute('font-size','20'); dt.setAttribute('font-family','JetBrains Mono');
+      dt.setAttribute('text-anchor','middle');
+      dt.textContent='\u00b7\u00b7\u00b7'; svg.appendChild(dt);
+    }
+    // "N steps omitted" — ABOVE the circuit headers
+    const gl = document.createElementNS('http://www.w3.org/2000/svg','text');
+    gl.setAttribute('x',gapX); gl.setAttribute('y',headerH + 12); gl.setAttribute('text-anchor','middle');
+    gl.setAttribute('fill','#94a3b8'); gl.setAttribute('font-size','13'); gl.setAttribute('font-weight','600');
+    gl.setAttribute('font-family','JetBrains Mono');
+    gl.textContent=skipped+' steps omitted'; svg.appendChild(gl);
+    // "total circuit: X.Xµs" — BELOW wires, above separator
+    const gl2 = document.createElementNS('http://www.w3.org/2000/svg','text');
+    const belowWiresY = wireStartY + nq*wireGap + 28;
+    gl2.setAttribute('x',gapX); gl2.setAttribute('y',belowWiresY);
+    gl2.setAttribute('text-anchor','middle');
+    gl2.setAttribute('fill','#94a3b8'); gl2.setAttribute('font-size','13'); gl2.setAttribute('font-weight','600');
+    gl2.setAttribute('font-family','JetBrains Mono');
+    gl2.textContent='total circuit: '+totalTime_us.toFixed(1)+'\u00b5s'; svg.appendChild(gl2);
+  }
+
+  // ═══ DECOHERENCE LINE ═══
+  // Draw at the correct position (may be in head, gap, or tail)
+  let decoDrawn = false;
+  if (decoGateIdx < totalLayers) {
+    let decoX;
+    if (!truncated) {
+      decoX = slotToX(decoGateIdx) - 8;
+    } else if (decoGateIdx < headN) {
+      decoX = slotToX(decoGateIdx) - 8;
+    } else if (decoGateIdx >= totalLayers - tailN) {
+      decoX = slotToX(headN + (decoGateIdx - (totalLayers - tailN))) - 8;
+    } else {
+      // Decoherence is in the gap — draw line in center of gap
+      decoX = startX + headN * stepW + gapW/2;
+    }
+    decoDrawn = true;
+    const fade = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    fade.setAttribute('x',decoX); fade.setAttribute('y',wireStartY-12);
+    fade.setAttribute('width',wireEndX-decoX+10);
+    fade.setAttribute('height',nq*wireGap+24);
+    fade.setAttribute('fill','rgba(251,113,133,0.06)'); svg.appendChild(fade);
+    const mk = document.createElementNS('http://www.w3.org/2000/svg','line');
+    mk.setAttribute('x1',decoX); mk.setAttribute('y1',wireStartY-12);
+    mk.setAttribute('x2',decoX); mk.setAttribute('y2',wireStartY+nq*wireGap+12);
+    mk.setAttribute('stroke','#fb7185'); mk.setAttribute('stroke-width',2);
+    mk.setAttribute('stroke-dasharray','5,3'); svg.appendChild(mk);
+    const lb = document.createElementNS('http://www.w3.org/2000/svg','text');
+    lb.setAttribute('x',decoX+3); lb.setAttribute('y',wireStartY+nq*wireGap+16);
+    lb.setAttribute('fill','#fb7185'); lb.setAttribute('font-size','10');
+    lb.setAttribute('font-family','JetBrains Mono');
+    lb.textContent='\u2190 T\u2082 QB'+d.minT2Qubit+' ('+d.minT2.toFixed(1)+'\u00b5s)';
+    svg.appendChild(lb);
+  }
+
+  // ═══ RENDER GATES ═══
+  let lastGateX = startX;
+  for(let slot=0; slot<drawSlots; slot++){
+    const gi = slotToGateIdx(slot);
+    const gate = gates[gi];
+    const x = slotToX(slot);
+    lastGateX = x;
+    const pastDeco = gi >= decoGateIdx;
+    const op = pastDeco ? 0.18 : 1;
+    const dead='#1a1d28', deadS='#2a2d38', deadT='#3a3d48';
+
+    if(gate.type==='1q'){
+      for(let ti=0;ti<gate.targets.length;ti++){
+        const [wi]=gate.targets[ti];
+        const y=wireStartY+wi*wireGap-gateH/2;
+        const g=document.createElementNS('http://www.w3.org/2000/svg','rect');
+        g.setAttribute('x',x-gateW/2); g.setAttribute('y',y);
+        g.setAttribute('width',gateW); g.setAttribute('height',gateH);
+        g.setAttribute('rx',4);
+        g.setAttribute('fill',pastDeco?dead:gate.color+'25');
+        g.setAttribute('stroke',pastDeco?deadS:gate.color);
+        g.setAttribute('stroke-width',1.5); g.setAttribute('opacity',op);
+        svg.appendChild(g);
+        const gt=document.createElementNS('http://www.w3.org/2000/svg','text');
+        gt.setAttribute('x',x); gt.setAttribute('y',y+11);
+        gt.setAttribute('text-anchor','middle');
+        gt.setAttribute('fill',pastDeco?deadT:'#e2e8f0');
+        gt.setAttribute('font-size',gate.label.length>2?'9':'11');
+        gt.setAttribute('font-weight','600');
+        gt.setAttribute('font-family','JetBrains Mono');
+        gt.textContent=gate.label; gt.setAttribute('opacity',op);
+        svg.appendChild(gt);
+        if(gate.params.length>0 && ti<gate.params.length && !pastDeco){
+          const ps=document.createElementNS('http://www.w3.org/2000/svg','text');
+          ps.setAttribute('x',x); ps.setAttribute('y',y+gateH-2);
+          ps.setAttribute('text-anchor','middle');
+          ps.setAttribute('fill',gate.color); ps.setAttribute('font-size','8');
+          ps.setAttribute('font-family','JetBrains Mono');
+          ps.textContent='\u03b8'+gate.params[ti]; svg.appendChild(ps);
+        }
+      }
+    } else if(gate.type==='meas'){
+      for(const [wi] of gate.targets){
+        const y=wireStartY+wi*wireGap-gateH/2;
+        const g=document.createElementNS('http://www.w3.org/2000/svg','rect');
+        g.setAttribute('x',x-gateW/2); g.setAttribute('y',y);
+        g.setAttribute('width',gateW+2); g.setAttribute('height',gateH+2);
+        g.setAttribute('rx',3);
+        g.setAttribute('fill',pastDeco?dead:'#1e293b');
+        g.setAttribute('stroke',pastDeco?deadS:'#64748b');
+        g.setAttribute('stroke-width',2); g.setAttribute('opacity',op);
+        svg.appendChild(g);
+        if(!pastDeco){
+          const cy2=y+gateH/2+1, r2=6;
+          const arc=document.createElementNS('http://www.w3.org/2000/svg','path');
+          arc.setAttribute('d','M'+(x-r2)+' '+(cy2+3)+' A '+r2+' '+r2+' 0 0 1 '+(x+r2)+' '+(cy2+3));
+          arc.setAttribute('stroke','#94a3b8'); arc.setAttribute('fill','none');
+          arc.setAttribute('stroke-width',1.5); svg.appendChild(arc);
+          const needle=document.createElementNS('http://www.w3.org/2000/svg','line');
+          needle.setAttribute('x1',x); needle.setAttribute('y1',cy2+3);
+          needle.setAttribute('x2',x+4); needle.setAttribute('y2',cy2-4);
+          needle.setAttribute('stroke','#94a3b8'); needle.setAttribute('stroke-width',1.5);
+          svg.appendChild(needle);
+        }
+        if(!pastDeco){
+          const cline=document.createElementNS('http://www.w3.org/2000/svg','line');
+          cline.setAttribute('x1',x); cline.setAttribute('y1',y+gateH+2);
+          cline.setAttribute('x2',x); cline.setAttribute('y2',y+gateH+10);
+          cline.setAttribute('stroke','#64748b'); cline.setAttribute('stroke-width',1);
+          cline.setAttribute('stroke-dasharray','2,2'); svg.appendChild(cline);
+        }
+      }
+    } else {
+      for(const [w1,w2] of gate.targets){
+        const y1=wireStartY+w1*wireGap, y2=wireStartY+w2*wireGap, yMid=(y1+y2)/2;
+        const ln=document.createElementNS('http://www.w3.org/2000/svg','line');
+        ln.setAttribute('x1',x); ln.setAttribute('y1',y1); ln.setAttribute('x2',x); ln.setAttribute('y2',y2);
+        ln.setAttribute('stroke',pastDeco?deadS:gate.color);
+        ln.setAttribute('stroke-width',2); ln.setAttribute('opacity',op); svg.appendChild(ln);
+        for(const y of [y1,y2]){
+          const dot=document.createElementNS('http://www.w3.org/2000/svg','circle');
+          dot.setAttribute('cx',x); dot.setAttribute('cy',y); dot.setAttribute('r',5);
+          dot.setAttribute('fill',pastDeco?deadS:gate.color);
+          dot.setAttribute('opacity',op); svg.appendChild(dot);
+        }
+        const lbw = Math.max(gate.label.length*8+10, 28);
+        const lbh = 20;
+        const lbg=document.createElementNS('http://www.w3.org/2000/svg','rect');
+        lbg.setAttribute('x',x-lbw/2); lbg.setAttribute('y',yMid-lbh/2);
+        lbg.setAttribute('width',lbw); lbg.setAttribute('height',lbh);
+        lbg.setAttribute('rx',3); lbg.setAttribute('fill',pastDeco?dead:gate.color+'20');
+        lbg.setAttribute('stroke',pastDeco?deadS:gate.color);
+        lbg.setAttribute('stroke-width',1.5); lbg.setAttribute('opacity',op);
+        svg.appendChild(lbg);
+        const lbl=document.createElementNS('http://www.w3.org/2000/svg','text');
+        lbl.setAttribute('x',x); lbl.setAttribute('y',yMid+4);
+        lbl.setAttribute('text-anchor','middle');
+        lbl.setAttribute('fill',pastDeco?deadT:'#e2e8f0');
+        lbl.setAttribute('font-size','10'); lbl.setAttribute('font-weight','600');
+        lbl.setAttribute('font-family','JetBrains Mono');
+        lbl.setAttribute('opacity',op); lbl.textContent=gate.label; svg.appendChild(lbl);
+        if(gate.params.length>0 && !pastDeco){
+          const ps=document.createElementNS('http://www.w3.org/2000/svg','text');
+          ps.setAttribute('x',x+lbw/2+3); ps.setAttribute('y',yMid+4);
+          ps.setAttribute('fill',gate.color); ps.setAttribute('font-size','8');
+          ps.setAttribute('font-family','JetBrains Mono');
+          ps.textContent='\u03b8'+gate.params[0]; svg.appendChild(ps);
+        }
+      }
+    }
+  }
+
+  // ═══ CLASSICAL FEEDBACK LOOP ═══
+  const fbY = wireStartY + nq*wireGap + 62;
+  // Separator line between circuit and feedback
+  const sepY = wireStartY + nq*wireGap + 42;
+  const sep = document.createElementNS('http://www.w3.org/2000/svg','line');
+  sep.setAttribute('x1',10); sep.setAttribute('y1',sepY);
+  sep.setAttribute('x2',svgW-10); sep.setAttribute('y2',sepY);
+  sep.setAttribute('stroke','#2a3650'); sep.setAttribute('stroke-width',1);
+  sep.setAttribute('stroke-dasharray','3,5'); svg.appendChild(sep);
+  const sepLabel = document.createElementNS('http://www.w3.org/2000/svg','text');
+  sepLabel.setAttribute('x',svgW/2); sepLabel.setAttribute('y',sepY+10);
+  sepLabel.setAttribute('text-anchor','middle'); sepLabel.setAttribute('fill','#475569');
+  sepLabel.setAttribute('font-size','11'); sepLabel.setAttribute('font-family','JetBrains Mono');
+  sepLabel.textContent='Classical Feedback Loop'; svg.appendChild(sepLabel);
+  
+  // Center three boxes spanning circuit width + slight overhang
+  const fbLeftX = startX - 10;
+  const fbRightX = wireEndX + 10;
+  const fbTotalW = fbRightX - fbLeftX;
+  const boxGap = 16;
+  const chgW = Math.floor((fbTotalW - 2*boxGap) * 0.28);
+  const curveW2 = Math.floor((fbTotalW - 2*boxGap) * 0.44);
+  const calcW = Math.floor((fbTotalW - 2*boxGap) * 0.28);
+  const chgX = fbLeftX;
+  const curveX = chgX + chgW + boxGap;
+  const calcX = curveX + curveW2 + boxGap;
+  const optName = a.opt || 'COBYLA';
+  
+  // Arrow definitions
+  const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
+  const mkr=document.createElementNS('http://www.w3.org/2000/svg','marker');
+  mkr.setAttribute('id','arrFb'); mkr.setAttribute('markerWidth','8');
+  mkr.setAttribute('markerHeight','8'); mkr.setAttribute('refX','7'); mkr.setAttribute('refY','4');
+  mkr.setAttribute('orient','auto');
+  const mkp=document.createElementNS('http://www.w3.org/2000/svg','path');
+  mkp.setAttribute('d','M 0 1 L 8 4 L 0 7 Z'); mkp.setAttribute('fill','#f59e0b');
+  mkr.appendChild(mkp); defs.appendChild(mkr); svg.appendChild(defs);
+  
+  // "Calculate cost function" box (right)
+
+  const calcR=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  calcR.setAttribute('x',calcX); calcR.setAttribute('y',fbY);
+  calcR.setAttribute('width',calcW); calcR.setAttribute('height',48);
+  calcR.setAttribute('rx',5); calcR.setAttribute('fill','rgba(249,115,22,0.1)');
+  calcR.setAttribute('stroke','#f97316'); calcR.setAttribute('stroke-width',1);
+  svg.appendChild(calcR);
+  const calcT1=document.createElementNS('http://www.w3.org/2000/svg','text');
+  calcT1.setAttribute('x',calcX+calcW/2); calcT1.setAttribute('y',fbY+20);
+  calcT1.setAttribute('text-anchor','middle'); calcT1.setAttribute('fill','#fb923c');
+  calcT1.setAttribute('font-size','13'); calcT1.setAttribute('font-weight','600');
+  calcT1.setAttribute('font-family','JetBrains Mono');
+  calcT1.textContent='Calculate'; svg.appendChild(calcT1);
+  const calcT2=document.createElementNS('http://www.w3.org/2000/svg','text');
+  calcT2.setAttribute('x',calcX+calcW/2); calcT2.setAttribute('y',fbY+37);
+  calcT2.setAttribute('text-anchor','middle'); calcT2.setAttribute('fill','#fb923c');
+  calcT2.setAttribute('font-size','12'); calcT2.setAttribute('font-family','JetBrains Mono');
+  calcT2.textContent='E(\u03b8) = \u27e8\u03a8|H|\u03a8\u27e9'; svg.appendChild(calcT2);
+  
+  // Convergence curve (center)
+
+  const curveR=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  curveR.setAttribute('x',curveX); curveR.setAttribute('y',fbY-2);
+  curveR.setAttribute('width',curveW2); curveR.setAttribute('height',64);
+  curveR.setAttribute('rx',6); curveR.setAttribute('fill','rgba(245,158,11,0.08)');
+  curveR.setAttribute('stroke','rgba(245,158,11,0.25)'); curveR.setAttribute('stroke-width',1);
+  svg.appendChild(curveR);
+  // C(θ) label
+  const cL=document.createElementNS('http://www.w3.org/2000/svg','text');
+  cL.setAttribute('x',curveX+4); cL.setAttribute('y',fbY+10); cL.setAttribute('fill','#94a3b8');
+  cL.setAttribute('font-size','10'); cL.setAttribute('font-family','JetBrains Mono');
+  cL.textContent='E(\u03b8)'; svg.appendChild(cL);
+  // Axis
+  const axY=document.createElementNS('http://www.w3.org/2000/svg','line');
+  axY.setAttribute('x1',curveX+16); axY.setAttribute('y1',fbY+6);
+  axY.setAttribute('x2',curveX+16); axY.setAttribute('y2',fbY+38);
+  axY.setAttribute('stroke','#475569'); axY.setAttribute('stroke-width',1); svg.appendChild(axY);
+  const axX=document.createElementNS('http://www.w3.org/2000/svg','line');
+  axX.setAttribute('x1',curveX+16); axX.setAttribute('y1',fbY+38);
+  axX.setAttribute('x2',curveX+curveW2-8); axX.setAttribute('y2',fbY+38);
+  axX.setAttribute('stroke','#475569'); axX.setAttribute('stroke-width',1); svg.appendChild(axX);
+  // Convergence curve path (exponential decay)
+  let curvePath = 'M '+(curveX+18)+' '+(fbY+10);
+  for(let cx=0;cx<curveW2-22;cx+=2){
+    const cy = 26*Math.exp(-cx/20)+2;
+    curvePath += ' L '+(curveX+18+cx)+' '+(fbY+10+cy);
+  }
+  const cp=document.createElementNS('http://www.w3.org/2000/svg','path');
+  cp.setAttribute('d',curvePath); cp.setAttribute('stroke','#f59e0b');
+  cp.setAttribute('fill','none'); cp.setAttribute('stroke-width',1.5); svg.appendChild(cp);
+  // Optimizer label
+  const oL=document.createElementNS('http://www.w3.org/2000/svg','text');
+  oL.setAttribute('x',curveX+curveW2/2); oL.setAttribute('y',fbY+10);
+  oL.setAttribute('text-anchor','middle'); oL.setAttribute('fill','#fbbf24');
+  oL.setAttribute('font-size','13'); oL.setAttribute('font-weight','600');
+  oL.setAttribute('font-family','JetBrains Mono');
+  oL.textContent=optName; svg.appendChild(oL);
+  // #iteration label
+  const iL=document.createElementNS('http://www.w3.org/2000/svg','text');
+  iL.setAttribute('x',curveX+curveW2-50); iL.setAttribute('y',fbY+46);
+  iL.setAttribute('fill','#64748b'); iL.setAttribute('font-size','10');
+  iL.setAttribute('font-family','JetBrains Mono');
+  iL.textContent='#iteration'; svg.appendChild(iL);
+  
+  // "Change parameters" box (left)
+
+  const chgR=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  chgR.setAttribute('x',chgX); chgR.setAttribute('y',fbY);
+  chgR.setAttribute('width',chgW); chgR.setAttribute('height',48);
+  chgR.setAttribute('rx',5); chgR.setAttribute('fill','rgba(249,115,22,0.1)');
+  chgR.setAttribute('stroke','#f97316'); chgR.setAttribute('stroke-width',1);
+  svg.appendChild(chgR);
+  const chgT1=document.createElementNS('http://www.w3.org/2000/svg','text');
+  chgT1.setAttribute('x',chgX+chgW/2); chgT1.setAttribute('y',fbY+20);
+  chgT1.setAttribute('text-anchor','middle'); chgT1.setAttribute('fill','#fb923c');
+  chgT1.setAttribute('font-size','13'); chgT1.setAttribute('font-weight','600');
+  chgT1.setAttribute('font-family','JetBrains Mono');
+  chgT1.textContent='Update \u03b8'; svg.appendChild(chgT1);
+  const chgT2=document.createElementNS('http://www.w3.org/2000/svg','text');
+  chgT2.setAttribute('x',chgX+chgW/2); chgT2.setAttribute('y',fbY+37);
+  chgT2.setAttribute('text-anchor','middle'); chgT2.setAttribute('fill','#fb923c');
+  chgT2.setAttribute('font-size','12'); chgT2.setAttribute('font-family','JetBrains Mono');
+  chgT2.textContent=a.params+' parameters'; svg.appendChild(chgT2);
+  
+  // Connecting arrows: smooth curved paths
+  const firstGateX = startX + 13;
+  const r = 12; // corner radius
+  const measOutY = wireStartY + (nq-1)*wireGap + gateH/2 + 4;
+  const calcMidX = calcX + calcW/2;
+  const calcTopY = fbY;
+  const curveMidY = fbY + 20;
+  const chgMidX = chgX + chgW/2;
+  const curveRightX = curveX + curveW2;
+  const curveLeftX = curveX;
+  const chgRightX = chgX + chgW;
+  
+  // 1. Meas → Calculate: straight down to top of Calculate box
+  
+  const p1 = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p1.setAttribute('d',
+    'M '+calcMidX+' '+(sepY)+
+    ' L '+calcMidX+' '+(calcTopY-2));
+  p1.setAttribute('stroke','#64748b'); p1.setAttribute('stroke-width',1.5);
+  p1.setAttribute('fill','none'); p1.setAttribute('stroke-dasharray','4,3');
+  p1.setAttribute('marker-end','url(#arrFb)'); svg.appendChild(p1);
+  
+  // 2. Calculate → Curve: exit left, curve down then horizontal
+  const p2 = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p2.setAttribute('d',
+    'M '+calcX+' '+curveMidY+
+    ' L '+(curveRightX+r)+' '+curveMidY+
+    ' Q '+curveRightX+' '+curveMidY+' '+curveRightX+' '+(curveMidY));
+  p2.setAttribute('stroke','#f59e0b'); p2.setAttribute('stroke-width',1.5);
+  p2.setAttribute('fill','none'); p2.setAttribute('stroke-dasharray','6,4');
+  p2.setAttribute('marker-end','url(#arrFb)'); svg.appendChild(p2);
+  
+  // 3. Curve → Update: smooth horizontal
+  const p3 = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p3.setAttribute('d',
+    'M '+curveLeftX+' '+curveMidY+
+    ' L '+(chgRightX)+' '+curveMidY);
+  p3.setAttribute('stroke','#f59e0b'); p3.setAttribute('stroke-width',1.5);
+  p3.setAttribute('fill','none'); p3.setAttribute('stroke-dasharray','6,4');
+  p3.setAttribute('marker-end','url(#arrFb)'); svg.appendChild(p3);
+  
+  // 4. Update θ: short upward arrow (mirrors the Calculate downward arrow)
+  const p4 = document.createElementNS('http://www.w3.org/2000/svg','path');
+  p4.setAttribute('d',
+    'M '+chgMidX+' '+fbY+
+    ' L '+chgMidX+' '+(fbY-30));
+  p4.setAttribute('stroke','#f59e0b'); p4.setAttribute('stroke-width',1.5);
+  p4.setAttribute('fill','none'); p4.setAttribute('stroke-dasharray','4,3');
+  p4.setAttribute('marker-end','url(#arrFb)'); svg.appendChild(p4);
+  // Label above arrow
+  const p4l = document.createElementNS('http://www.w3.org/2000/svg','text');
+  p4l.setAttribute('x',chgMidX); p4l.setAttribute('y',fbY-34);
+  p4l.setAttribute('text-anchor','middle'); p4l.setAttribute('fill','#f59e0b');
+  p4l.setAttribute('font-size','10'); p4l.setAttribute('font-family','JetBrains Mono');
+  p4l.textContent='\u03b8\u2080..\u03b8'+String(a.params-1); svg.appendChild(p4l);
+  
+  // Bottom info line
+  const bL=document.createElementNS('http://www.w3.org/2000/svg','text');
+  bL.setAttribute('x',startX); bL.setAttribute('y',svgH-4); bL.setAttribute('fill','#475569');
+  bL.setAttribute('font-size','11'); bL.setAttribute('font-family','JetBrains Mono');
+  bL.textContent=a.ansatz+' r='+a.reps+' \u00b7 '+(a.ham||gInfo.ham||'TFIM')+' \u00b7 '+
+    totalLayers+' steps \u00b7 '+a.params+' params \u00b7 '+totalTime_us.toFixed(1)+'\u00b5s \u00b7 '+optName;
+  svg.appendChild(bL);
+}
+
+function drawSeedLegend(lv) {
+  const div = document.getElementById('lv-seeds');
+  div.innerHTML = '';
+  if (lv <= 1) {
+    // Show star color legend for level 0-1
+    const stars = getStarsForCircuit(lv, 0);
+    stars.forEach((s, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      chip.style.background = STAR_COLORS[i % STAR_COLORS.length];
+      chip.textContent = `★${i} [${s.hub},${s.leaves.join(',')}]`;
+      div.appendChild(chip);
+    });
+  } else if (lv === 2) {
+    // Show color chips for stars in current circuit's round
+    const stars = getStarsForCircuit(lv, currentCircuit);
+    stars.forEach((s, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      chip.style.background = STAR_COLORS[s.colorIdx % STAR_COLORS.length];
+      chip.textContent = `★${i}`;
+      div.appendChild(chip);
+    });
+    const note = document.createElement('span');
+    note.style.cssText = 'font:10px var(--mono);color:var(--text3);padding:3px 8px';
+    note.textContent = stars.length + ' subcircuits · Use ◀▶ to step through 32 circuits';
+    div.appendChild(note);
+  } else if (lv === 5 || lv === 6) {
+    // Levels 5-6: single topology (stars), multiple seeds — show seed legend
+    const nSeeds = lv === 5 ? 5 : 15;
+    const exhausted = getExhaustedSeeds(lv, currentCircuit);
+    for (let s = 0; s < nSeeds; s++) {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      if (exhausted.has(s)) chip.classList.add('exhausted');
+      chip.dataset.seed = s;
+      chip.style.background = SEED_COLORS[s % SEED_COLORS.length];
+      chip.textContent = 'Seed ' + s + (exhausted.has(s) ? ' ✓' : '');
+      div.appendChild(chip);
+    }
+    const note = document.createElement('span');
+    note.style.cssText = 'font:10px var(--mono);color:var(--text3);padding:3px 8px';
+    note.textContent = 'Click subcircuit to inspect · Greyed = seed exhausted';
+    div.appendChild(note);
+  } else if (lv >= 7) {
+    // Levels 7-9: mixed topologies — show topology color legend
+    const topoList = lv === 7 ? ['star4','square4'] :
+                     lv === 8 ? ['star4','ladder8'] :
+                     ['star4','square4','chain4','bowtie8','twosq8'];
+    for (const t of topoList) {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      chip.style.background = TOPO_COLORS[t];
+      chip.textContent = TOPO_LABELS[t];
+      div.appendChild(chip);
+    }
+    const note = document.createElement('span');
+    note.style.cssText = 'font:10px var(--mono);color:var(--text3);padding:3px 8px';
+    note.textContent = 'Click subcircuit to inspect ansatz + decoherence';
+    div.appendChild(note);
+  } else {
+    const maxSeed = lv === 3 ? 3 : 5;
+    for (let s = 0; s < maxSeed; s++) {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      chip.dataset.seed = s;
+      chip.style.background = SEED_COLORS[s];
+      chip.textContent = 'Seed ' + s;
+      div.appendChild(chip);
+    }
+    const note = document.createElement('span');
+    note.style.cssText = 'font:10px var(--mono);color:var(--text3);padding:3px 8px';
+    note.textContent = 'Use ◀▶ to step through circuits';
+    div.appendChild(note);
+  }
+}
+
+// ═══════ LEVEL TABS + SELECTION ═══════
+function drawLevelTabs() {
+  const container = document.getElementById('level-tabs');
+  LEVELS.forEach((lv, i) => {
+    const tab = document.createElement('button');
+    tab.className = 'level-tab' + (i === 0 ? ' active' : '');
+    tab.textContent = lv.name;
+    tab.onclick = () => setLevel(i);
+    container.appendChild(tab);
+  });
+}
+
+function setLevel(lv) {
+  currentLevel = lv;
+  currentCircuit = 0;
+  if (playTimer) { clearInterval(playTimer); playTimer = null; }
+  document.querySelectorAll('.level-tab').forEach((t, i) => t.classList.toggle('active', i === lv));
+  const L = LEVELS[lv];
+  document.getElementById('level-desc').textContent = L.desc;
+
+  // Compute utilization for this level
+  let util, peakUtil;
+  let effectiveCircuits = L.circuits;
+  const THEO_MAX = [7.5, 75.5, 50.9, 50.9, 67.9, 83.0, 83.0, 75.5, 90.6, 90.6];
+  // Theoretical max: L0=1star, L1=R1(10), L2-3=DSatur mean, L4=9stars(per-circ),
+  // L5-6=11stars(star max), L7=10×4q, L8=3lad+6star, L9=4×8q+4×4q
+
+  if (lv === 0) { util = 4 / 53; peakUtil = util; }
+  else if (lv === 1) { util = DSATUR_STARS[0] * 4 / 53; peakUtil = util; }
+  else if (lv <= 3) {
+    const totalActive = DSATUR_STARS.reduce((a, s) => a + s * 4, 0);
+    util = totalActive / (53 * 16);
+    peakUtil = DSATUR_STARS[0] * 4 / 53;
+  } else if (lv === 4) {
+    util = INTERMIXED_STARS_PER_CIRCUIT * 4 / 53;
+    peakUtil = util; // per-circuit, not campaign mean
+  } else {
+    // Levels 5-9: compute actual utilization from pool-packed circuits
+    try {
+      const pc = getPoolCircuits(lv);
+      effectiveCircuits = pc.length;
+      let totalQ = 0;
+      let maxQ = 0;
+      for (let i = 0; i < pc.length; i++) {
+        const qs = new Set();
+        pc[i].forEach(t => t.qubits.forEach(q => qs.add(q)));
+        totalQ += qs.size;
+        if (qs.size > maxQ) maxQ = qs.size;
+      }
+      util = totalQ / (53 * pc.length);
+      peakUtil = maxQ / 53;
+    } catch(e) { util = 0.9; peakUtil = 0.9; effectiveCircuits = L.circuits; }
+  }
+
+  const nBatches = Math.ceil(effectiveCircuits / 100);
+  const wt = wallTime(effectiveCircuits, QUEUE_TYPICAL);
+  const r = rate(L.placements, effectiveCircuits, QUEUE_TYPICAL);
+  const r0 = rate(1, 2, QUEUE_TYPICAL);
+  const mult = (r / r0).toFixed(0);
+  document.getElementById('lv-placements').textContent = L.placements;
+  document.getElementById('lv-circuits').textContent = effectiveCircuits;
+  document.getElementById('lv-wall').textContent = wt.toFixed(1) + 's';
+  document.getElementById('lv-rate').textContent = r.toLocaleString();
+  document.getElementById('lv-mult').textContent = mult + '×';
+  document.getElementById('lv-util').textContent = Math.round(util * 100) + '%';
+  document.getElementById('lv-peak').textContent = Math.round(peakUtil * 100) + '%';
+  document.getElementById('lv-theo').textContent = THEO_MAX[lv] + '%';
+  document.getElementById('lv-batches').textContent = nBatches;
+  
+  // Compute coherence percentage across all subcircuits
+  let totalSubs = 0, coherentSubs = 0;
+  const layerTime_us = Q50_CAL.cz_gate_ns / 1000;
+  if (lv >= 5) {
+    try {
+      const allCirc = getPoolCircuits(lv);
+      for (const circ of allCirc) {
+        for (const task of circ) {
+          totalSubs++;
+          const ai = getAnsatzInfo(task.topo, task.hamiltonian);
+          // Compute cumulative execution time for this ansatz
+          const nqT = task.qubits.length;
+          const intE = [];
+          for (const [ea,eb] of Q50_EDGES) {
+            if (task.qubits.includes(ea) && task.qubits.includes(eb)) intE.push(1);
+          }
+          let gateTime = 0;
+          if (ai.ansatz === 'HVA') {
+            gateTime = 20 + (intE.length * 3 * ai.reps * 100) + 20; // X + edges*3*reps*CZ + Ry
+          } else {
+            gateTime = (ai.reps+1)*40 + ai.reps*(nqT-1)*140; // (reps+1)*(Ry+Rz) + reps*(n-1)*(H+CZ+H)
+          }
+          const minT2 = Math.min(...task.qubits.map(q => Q50_CAL.qubits[q]?.t2 || 999));
+          if (gateTime / 1000 <= minT2) coherentSubs++;
+        }
+      }
+    } catch(e) {}
+  } else {
+    // Levels 0-4: all stars, SU2 r=1
+    const stars = getStarsForCircuit(lv, 0);
+    const nCirc = lv <= 1 ? 2 : lv === 2 ? 32 : lv === 3 ? 96 : 100;
+    totalSubs = stars.length * nCirc;
+    // Check if any star placement has a qubit with T2 too low for depth 14
+    const gateTime_us = 0.68; // SU2 r=1 4q: ~680ns
+    let decoCount = 0;
+    for (let ci = 0; ci < nCirc; ci++) {
+      const s = getStarsForCircuit(lv, ci);
+      for (const star of s) {
+        const qs = [star.hub, ...star.leaves];
+        const minT2 = Math.min(...qs.map(q => Q50_CAL.qubits[q]?.t2 || 999));
+        if (gateTime_us > minT2) decoCount++;
+      }
+    }
+    coherentSubs = totalSubs - decoCount;
+  }
+  const cohPct = totalSubs > 0 ? Math.round(coherentSubs / totalSubs * 100) : 100;
+  const cohEl = document.getElementById('lv-coherent');
+  cohEl.textContent = cohPct + '%';
+  cohEl.className = 'stat-val ' + (cohPct >= 95 ? 'green' : cohPct >= 70 ? 'amber' : 'rose');
+  if (totalSubs > 0) {
+    cohEl.title = coherentSubs + '/' + totalSubs + ' subcircuits within T\u2082 limits';
+  }
+
+  // For pool-packed levels, use actual circuit count
+  const tlLevel = {...L};
+  if (lv >= 5) {
+    const circuits = getPoolCircuits(lv);
+    tlLevel.circuits = circuits.length;
+  }
+  drawTimeline(lv, effectiveCircuits, 0);
+  drawChip(lv, 0);
+  drawSeedLegend(lv);
+
+  const stepper = document.getElementById('stepper');
+  if (effectiveCircuits > 2 || lv >= 5) { stepper.style.display = 'flex'; updateStepperInfo(); }
+  else { stepper.style.display = 'none'; }
+}
+
+// ═══════ TIMELINE WATERFALL ═══════
+function drawTimeline(lv, nCirc, highlightCirc) {
+  const bar = document.getElementById('tl-bar');
+  bar.innerHTML = '';
+  
+  // Determine batch boundaries
+  const batchSize = 100;
+  const currentBatch = Math.floor(highlightCirc / batchSize);
+  const batchStart = currentBatch * batchSize;
+  const batchEnd = Math.min(batchStart + batchSize, nCirc);
+  const batchCircuits = batchEnd - batchStart;
+  const nBatches = Math.ceil(nCirc / batchSize);
+  
+  const qpuTime = QPU_BASE + PER_CIRCUIT_QPU * batchCircuits;
+  const total = QX_OVERHEAD + QUEUE_TYPICAL + qpuTime + POSTPROCESS + DELIVERY;
+  const barHeight = 340;
+  
+  // Header: batch indicator
+  if (nBatches > 1) {
+    const batchHdr = document.createElement('div');
+    batchHdr.style.cssText = 'font:700 10px var(--mono);color:var(--accent);text-align:center;padding:4px 0;background:rgba(56,189,248,.08);border-bottom:1px solid var(--border)';
+    batchHdr.textContent = 'Batch ' + (currentBatch + 1) + ' of ' + nBatches + ' · Circuits ' + (batchStart+1) + '–' + batchEnd;
+    bar.appendChild(batchHdr);
+  }
+  
+  // Pre-QPU phases
+  const prePhases = [
+    { name: 'QX Overhead', dur: QX_OVERHEAD, color: '#ef4444' },
+    { name: 'Queue Wait', dur: QUEUE_TYPICAL, color: '#f59e0b' },
+  ];
+  prePhases.forEach(ph => {
+    const h = Math.max(16, (ph.dur / total) * barHeight);
+    const seg = document.createElement('div');
+    seg.className = 'tl-seg';
+    seg.style.height = h + 'px';
+    seg.style.background = ph.color;
+    seg.innerHTML = '<span class="tl-label">' + ph.name + '</span><span class="tl-dur">' + ph.dur.toFixed(1) + 's</span>';
+    bar.appendChild(seg);
+  });
+  
+  // QPU Execute — per-circuit rows
+  const qpuH = Math.max(80, (qpuTime / total) * barHeight);
+  const qpuContainer = document.createElement('div');
+  qpuContainer.style.cssText = 'position:relative;overflow-y:auto;overflow-x:hidden;max-height:' + Math.max(qpuH, 160) + 'px';
+  qpuContainer.id = 'tl-qpu-rows';
+  
+  const rowH = Math.max(2, Math.min(16, qpuH / batchCircuits));
+  
+  for (let ci = batchStart; ci < batchEnd; ci++) {
+    const row = document.createElement('div');
+    row.className = 'tl-circuit-row';
+    row.dataset.circuit = ci;
+    row.style.cssText = 'display:flex;height:' + rowH + 'px;min-height:2px;border-bottom:1px solid rgba(42,54,80,0.3);cursor:pointer;transition:all 0.15s';
+    
+    if (ci === highlightCirc) {
+      row.style.outline = '2px solid #fff';
+      row.style.zIndex = '5';
+      row.style.position = 'relative';
+    }
+    
+    // Get circuit composition for this level
+    const stars = getStarsForCircuit(lv, ci);
+    if (stars.length > 0) {
+      // Build ordered segments matching the chip grid legend colors
+      // Key strategy depends on level:
+      //   Levels 0-2: each subcircuit has its own color (STAR_COLORS by colorIdx)
+      //   Levels 3-4: grouped by seed (SEED_COLORS by seedIdx)
+      //   Levels 5-9: grouped by topology (TOPO_COLORS by topo)
+      const orderedSegments = [];
+      const segMap = {};
+      let totalQubits = 0;
+      
+      stars.forEach((s, idx) => {
+        const nq = 1 + (s.leaves ? s.leaves.length : 0);
+        totalQubits += nq;
+        
+        let key, color;
+        if (lv <= 2) {
+          // Each subcircuit gets its own color
+          key = 'c' + s.colorIdx;
+          color = STAR_COLORS[s.colorIdx % STAR_COLORS.length];
+        } else if (lv <= 6) {
+          // Levels 3-6: same topology — group and color by seed
+          key = 's' + s.seedIdx;
+          color = SEED_COLORS[s.seedIdx % SEED_COLORS.length];
+        } else {
+          // Levels 7-9: mixed topologies — group and color by topology
+          key = s.topo || 'star4';
+          color = TOPO_COLORS[key] || SEED_COLORS[s.seedIdx % SEED_COLORS.length];
+        }
+        
+        if (!segMap[key]) {
+          segMap[key] = { qubits: 0, color: color, key: key, order: Object.keys(segMap).length };
+          orderedSegments.push(segMap[key]);
+        }
+        segMap[key].qubits += nq;
+      });
+      
+      // Render segments in original insertion order (matches legend)
+      orderedSegments.forEach(seg => {
+        const pct = (seg.qubits / 53) * 100;
+        const el = document.createElement('div');
+        el.style.cssText = 'height:100%;width:' + pct + '%;background:' + seg.color + ';opacity:0.75';
+        row.appendChild(el);
+      });
+      // Idle portion (dark)
+      const idlePct = ((53 - totalQubits) / 53) * 100;
+      if (idlePct > 0) {
+        const idle = document.createElement('div');
+        idle.style.cssText = 'height:100%;width:' + idlePct + '%;background:#1a1d28';
+        row.appendChild(idle);
+      }
+    } else {
+      row.style.background = '#22c55e30';
+    }
+    
+    // Click to navigate
+    row.onclick = function() {
+      currentCircuit = ci;
+      drawChip(currentLevel, ci);
+      updateStepperInfo();
+      highlightTimelineRow(ci);
+    };
+    
+    qpuContainer.appendChild(row);
+  }
+  
+  // QPU label overlay
+  const qpuLabel = document.createElement('div');
+  qpuLabel.style.cssText = 'position:sticky;top:0;font:600 10px var(--mono);color:#fff;background:rgba(34,197,94,0.85);padding:2px 8px;z-index:10;pointer-events:none';
+  qpuLabel.textContent = 'QPU Execute (' + batchCircuits + ' circuits) ' + qpuTime.toFixed(1) + 's';
+  qpuContainer.prepend(qpuLabel);
+  
+  bar.appendChild(qpuContainer);
+  
+  // Post-QPU phases
+  const postPhases = [
+    { name: 'Postprocess', dur: POSTPROCESS, color: '#6366f1' },
+    { name: 'Delivery', dur: DELIVERY, color: '#8b5cf6' }
+  ];
+  postPhases.forEach(ph => {
+    const h = Math.max(16, (ph.dur / total) * barHeight);
+    const seg = document.createElement('div');
+    seg.className = 'tl-seg';
+    seg.style.height = h + 'px';
+    seg.style.background = ph.color;
+    seg.innerHTML = '<span class="tl-label">' + ph.name + '</span><span class="tl-dur">' + ph.dur.toFixed(1) + 's</span>';
+    bar.appendChild(seg);
+  });
+  
+  document.getElementById('tl-total').textContent = 'Batch ' + (currentBatch+1) + ': ' + total.toFixed(1) + 's → ' + (batchEnd - batchStart) + ' circuits';
+}
+
+function highlightTimelineRow(circIdx) {
+  const rows = document.querySelectorAll('.tl-circuit-row');
+  rows.forEach(row => {
+    const ci = parseInt(row.dataset.circuit);
+    if (ci === circIdx) {
+      row.style.outline = '2px solid #fff';
+      row.style.zIndex = '5';
+      row.style.position = 'relative';
+      row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    } else {
+      row.style.outline = 'none';
+      row.style.zIndex = '';
+      row.style.position = '';
+    }
+  });
+}
+
+// ═══════ CIRCUIT STEPPER ═══════
+function stepCircuit(delta) {
+  const L = LEVELS[currentLevel];
+  let maxCirc = L.circuits - 1;
+  if (currentLevel >= 5) {
+    try { maxCirc = getPoolCircuits(currentLevel).length - 1; } catch(e) {}
+  }
+  const prevBatch = Math.floor(currentCircuit / 100);
+  currentCircuit = Math.max(0, Math.min(maxCirc, currentCircuit + delta));
+  const newBatch = Math.floor(currentCircuit / 100);
+  
+  drawChip(currentLevel, currentCircuit);
+  updateStepperInfo();
+  if (currentLevel === 2 || currentLevel === 5 || currentLevel === 6) drawSeedLegend(currentLevel);
+  
+  // If batch changed, redraw entire timeline; otherwise just highlight
+  if (newBatch !== prevBatch) {
+    const ec = currentLevel >= 5 ? getPoolCircuits(currentLevel).length : L.circuits;
+    drawTimeline(currentLevel, ec, currentCircuit);
+  } else {
+    highlightTimelineRow(currentCircuit);
+  }
+}
+function stepPlay() {
+  if (playTimer) { clearInterval(playTimer); playTimer = null; return; }
+  playTimer = setInterval(() => {
+    let maxCirc = LEVELS[currentLevel].circuits - 1;
+    if (currentLevel >= 5) {
+      try { maxCirc = getPoolCircuits(currentLevel).length - 1; } catch(e) {}
+    }
+    if (currentCircuit >= maxCirc) { clearInterval(playTimer); playTimer = null; return; }
+    stepCircuit(1);
+  }, 400);
+}
+function updateStepperInfo() {
+  const L = LEVELS[currentLevel];
+  const c = currentCircuit;
+  const stars = getStarsForCircuit(currentLevel, c);
+  let totalCirc = L.circuits;
+  if (currentLevel >= 5) {
+    try { totalCirc = getPoolCircuits(currentLevel).length; } catch(e) {}
+  }
+  let info = 'Circuit ' + (c + 1) + ' / ' + totalCirc + ' · ' + stars.length + ' subcircuits';
+  
+  if (currentLevel === 2) {
+    const roundIdx = c % 16;
+    const basis = c < 16 ? 'Z' : 'X';
+    info += ' · R' + (roundIdx + 1) + ' ' + basis + '-basis · Seed 0';
+  } else if (currentLevel === 3) {
+    const roundIdx = c % 16;
+    const seedIdx = Math.floor((c % 48) / 16);
+    const pg = c < 48 ? 1 : 2;
+    info += ' · R' + (roundIdx + 1) + ' PG' + pg + ' · Seed ' + seedIdx;
+  } else if (currentLevel === 4) {
+    const primarySeed = Math.floor(c / 24);
+    const seeds = new Set(stars.map(s => s.seedIdx));
+    info += ' · Seeds: ' + [...seeds].join(',');
+  } else if (currentLevel >= 5) {
+    const topos = new Set(stars.map(s => s.topo || 'star4'));
+    const seeds = new Set(stars.map(s => s.seedIdx));
+    const paulis = new Set(stars.map(s => s.pauli !== undefined ? (s.pauli===0?'Z':'X') : '?'));
+    const qUsed = new Set(); stars.forEach(s => { qUsed.add(s.hub); s.leaves.forEach(l => qUsed.add(l)); });
+    info += ' · ' + qUsed.size + '/53 qubits';
+    info += ' · ' + [...topos].map(t => TOPO_LABELS[t] || t).join('+');
+    if (currentLevel >= 6) {
+      const batch = c < 100 ? 1 : 2;
+      info += ' · Batch ' + batch;
+    }
+  }
+  document.getElementById('stepper-info').textContent = info;
+}
+
+// ═══════ UTILIZATION BARS — SECTION 4 (single seed) ═══════
+function drawUtilBarsS4() {
+  const container = document.getElementById('util-bars-s4');
+  const labels = document.getElementById('util-labels-s4');
+  container.innerHTML = ''; labels.innerHTML = '';
+  let totalActive = 0, totalSlots = 0;
+  DSATUR_STARS.forEach((stars, i) => {
+    const qubits = stars * 4;
+    const pct = qubits / Q;
+    totalActive += qubits;
+    totalSlots += Q;
+    const bar = document.createElement('div');
+    bar.className = 'util-bar';
+    bar.style.height = (pct * 100) + '%';
+    bar.style.background = pct > 0.6 ? 'var(--green)' : pct > 0.35 ? 'var(--amber)' : 'var(--rose)';
+    bar.style.opacity = '0.7';
+    const tip = document.createElement('div');
+    tip.className = 'tip';
+    tip.textContent = stars + '★ ' + qubits + 'q ' + Math.round(pct * 100) + '%';
+    bar.appendChild(tip);
+    container.appendChild(bar);
+    const lbl = document.createElement('span');
+    lbl.textContent = 'R' + (i + 1);
+    labels.appendChild(lbl);
+  });
+  document.getElementById('ub-avg').textContent = Math.round(totalActive / totalSlots * 100) + '%';
+  document.getElementById('ub-best').textContent = Math.round(DSATUR_STARS[0] * 4 / Q * 100) + '%';
+  document.getElementById('ub-worst').textContent = Math.round(DSATUR_STARS[15] * 4 / Q * 100) + '%';
+  document.getElementById('ub-waste').textContent = totalSlots - totalActive;
+}
+
+// ═══════ UTILIZATION BARS — SECTION 5 (intermixed) ═══════
+function drawUtilBarsIx() {
+  const container = document.getElementById('util-bars-ix');
+  const labels = document.getElementById('util-labels-ix');
+  const legend = document.getElementById('ix-legend');
+  container.innerHTML = ''; labels.innerHTML = ''; legend.innerHTML = '';
+
+  // Compute intermixed packing: seed 0 gets its DSatur allocation,
+  // remaining capacity filled by other seeds
+  // Max stars per round that can physically fit (constrained by topology)
+  // We compute the real backfill by checking non-overlapping qubits
+  
+  const ixData = DSATUR_STARS.map((s0Stars, roundIdx) => {
+    const usedQubits = new Set();
+    // Seed 0 qubits for this round
+    DSATUR_SOLUTION[roundIdx].forEach(star => {
+      [star[0], star[1], star[2], star[3]].forEach(q => usedQubits.add(q));
+    });
+    
+    // Try adding stars from other rounds (representing other seeds)
+    let s1 = 0, s2 = 0;
+    // Seed 1: try rounds that have non-overlapping stars
+    for (let otherRound = 0; otherRound < 16 && s1 + s0Stars < INTERMIXED_STARS_PER_CIRCUIT; otherRound++) {
+      if (otherRound === roundIdx) continue;
+      for (const star of DSATUR_SOLUTION[otherRound]) {
+        if (s1 + s0Stars >= INTERMIXED_STARS_PER_CIRCUIT) break;
+        const sq = [star[0], star[1], star[2], star[3]];
+        if (sq.every(q => !usedQubits.has(q))) {
+          sq.forEach(q => usedQubits.add(q));
+          s1++;
+        }
+      }
+    }
+    
+    return { s0: s0Stars, s1, s2: 0 };
+  });
+  
+  let totalActive = 0, totalSlots = 0, totalPlacements = 0;
+  let seedCounts = { 0: 0, 1: 0, 2: 0 };
+
+  ixData.forEach((d, i) => {
+    const total = d.s0 + d.s1 + d.s2;
+    const qubits = total * 4;
+    const pct = qubits / Q;
+    totalActive += qubits;
+    totalSlots += Q;
+    totalPlacements += total;
+    seedCounts[0] += d.s0;
+    seedCounts[1] += d.s1;
+    seedCounts[2] += d.s2;
+
+    const bar = document.createElement('div');
+    bar.className = 'util-bar';
+    bar.style.height = (pct * 100) + '%';
+    bar.style.background = 'transparent';
+    const tip = document.createElement('div');
+    tip.className = 'tip';
+    tip.textContent = total + '★ S0:' + d.s0 + ' S1:' + d.s1 + (d.s2 ? ' S2:' + d.s2 : '') + ' ' + Math.round(pct * 100) + '%';
+    bar.appendChild(tip);
+
+    const segs = [{ count: d.s0, color: SEED_COLORS[0] }, { count: d.s1, color: SEED_COLORS[1] }, { count: d.s2, color: SEED_COLORS[2] }];
+    segs.forEach(seg => {
+      if (seg.count > 0) {
+        const s = document.createElement('div');
+        s.className = 'util-seg';
+        s.style.height = (seg.count / total * 100) + '%';
+        s.style.background = seg.color;
+        s.style.opacity = '0.7';
+        bar.appendChild(s);
+      }
+    });
+    container.appendChild(bar);
+    const lbl = document.createElement('span');
+    lbl.textContent = 'R' + (i + 1);
+    labels.appendChild(lbl);
+  });
+
+  document.getElementById('ix-avg').textContent = Math.round(totalActive / totalSlots * 100) + '%';
+  document.getElementById('ix-placements').textContent = totalPlacements;
+  document.getElementById('ix-seeds-packed').textContent = '~' + (totalPlacements / 108).toFixed(1);
+  document.getElementById('ix-idle').textContent = totalSlots - totalActive;
+
+  [0, 1, 2].forEach(s => {
+    if (seedCounts[s] > 0) {
+      const chip = document.createElement('span');
+      chip.className = 'seed-chip';
+      chip.style.background = SEED_COLORS[s];
+      chip.textContent = 'Seed ' + s + ' (' + seedCounts[s] + ' placements)';
+      legend.appendChild(chip);
+    }
+  });
+}
+
+// ═══════ THROUGHPUT TABLE (Section 3) ═══════
+function drawThroughputTable() {
+  const tbody = document.getElementById('throughput-table');
+  const levels = [
+    { name: '0', desc: 'Submit 1 star per circuit (naive baseline)', stars: 1, circ: 2, pl: 1, util: 4/53 },
+    { name: '1', desc: 'Pack all non-overlapping stars into one circuit (width is free)', stars: DSATUR_STARS[0], circ: 2, pl: DSATUR_STARS[0], util: DSATUR_STARS[0]*4/53 },
+    { name: '2', desc: 'Batch all 16 DSatur rounds into one submission (amortize queue)', stars: '10→3', circ: 32, pl: 108, util: DSATUR_STARS.reduce((a,s)=>a+s*4,0)/(53*16) },
+    { name: '3', desc: 'Fill the 100-circuit batch with 3 seeds (minimize wasted slots)', stars: '10→3', circ: 96, pl: 324, util: DSATUR_STARS.reduce((a,s)=>a+s*4,0)/(53*16) },
+    { name: '4', desc: 'Backfill sparse rounds with other seeds (cross-experiment packing)', stars: INTERMIXED_STARS_PER_CIRCUIT, circ: 100, pl: INTERMIXED_STARS_PER_CIRCUIT * 100 / 2, util: INTERMIXED_STARS_PER_CIRCUIT*4/53 }
+  ];
+  const r0q20 = rate(1, 2, 20);
+  levels.forEach((lv, i) => {
+    const w20 = wallTime(lv.circ, QUEUE_TYPICAL);
+    const rq20 = rate(lv.pl, lv.circ, QUEUE_TYPICAL);
+    const mult = Math.round(rq20 / r0q20);
+    const utilPct = Math.round(lv.util * 100) + '%';
+    const tr = document.createElement('tr');
+    if (i >= 3) tr.className = 'hl';
+    tr.innerHTML = '<td>' + (i >= 4 ? '<strong>' : '') + lv.name + (i >= 4 ? '</strong>' : '') + '</td>'
+      + '<td style="font-size:0.72rem">' + lv.desc + '</td>'
+      + '<td class="r">' + lv.stars + '</td>'
+      + '<td class="r">' + lv.circ + '</td>'
+      + '<td class="r">' + lv.pl + '</td>'
+      + '<td class="r' + (i >= 4 ? ' g' : lv.util < 0.4 ? ' ro' : '') + '">' + utilPct + '</td>'
+      + '<td class="r">' + w20.toFixed(1) + 's</td>'
+      + '<td class="r' + (i >= 3 ? ' g' : '') + '">' + rq20.toLocaleString() + '/hr</td>'
+      + '<td class="r' + (i >= 4 ? ' g' : i >= 3 ? ' a' : '') + '">' + mult + '×</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+// ═══════ SPILLOVER PIPELINE (Section 6) ═══════
+function updatePipeline() {
+  const nSeeds = parseInt(document.getElementById('seed-slider').value);
+  document.getElementById('seed-count').textContent = nSeeds;
+  const pauliMult = 2;
+  const totalPlacements = nSeeds * PLACEMENTS;
+
+  // Old approach: 3 seeds per batch (96 circuits out of 100)
+  const circPerSeedOld = DSATUR_ROUNDS * pauliMult; // 32
+  const seedsPerBatchOld = Math.floor(BATCH_LIMIT / circPerSeedOld); // 3
+  const oldBatches = Math.ceil(nSeeds / seedsPerBatchOld);
+
+  // New approach: 9 stars per circuit, 100 circuits per batch
+  const placementsPerBatchNew = INTERMIXED_STARS_PER_CIRCUIT * BATCH_LIMIT / pauliMult; // 450
+  const newBatches = Math.ceil(totalPlacements / placementsPerBatchNew);
+
+  const saved = oldBatches - newBatches;
+  const savedHrs = saved * QUEUE_TYPICAL / 3600;
+
+  // Throughput: total placements / total wall time
+  const oldCircPerBatch = Math.min(BATCH_LIMIT, seedsPerBatchOld * circPerSeedOld);
+  const oldWall = oldBatches * wallTime(oldCircPerBatch, QUEUE_TYPICAL);
+  const newWall = newBatches * wallTime(BATCH_LIMIT, QUEUE_TYPICAL);
+  const newRate = Math.round(totalPlacements / newWall * 3600);
+
+  document.getElementById('sp-batches-old').textContent = oldBatches;
+  document.getElementById('sp-batches-new').textContent = newBatches;
+  document.getElementById('sp-saved').textContent = saved > 0 ? saved : '0';
+  document.getElementById('sp-hours').textContent = savedHrs > 0 ? savedHrs.toFixed(2) + 'h' : '0h';
+  document.getElementById('sp-rate-new').textContent = newRate.toLocaleString() + '/hr';
+
+  // Draw pipeline bars
+  const container = document.getElementById('pipeline');
+  container.innerHTML = '';
+  const maxBars = Math.min(newBatches, 12);
+  let remaining = [];
+  for (let s = 0; s < nSeeds; s++) for (let p = 0; p < PLACEMENTS; p++) remaining.push(s);
+  let pos = 0;
+  for (let b = 0; b < maxBars; b++) {
+    const batchEnd = Math.min(pos + placementsPerBatchNew, remaining.length);
+    const batchSeeds = {};
+    for (let i = pos; i < batchEnd; i++) batchSeeds[remaining[i]] = (batchSeeds[remaining[i]] || 0) + 1;
+    const row = document.createElement('div'); row.className = 'batch-row';
+    const label = document.createElement('div'); label.className = 'batch-label'; label.textContent = 'Batch ' + (b + 1);
+    const bar = document.createElement('div'); bar.className = 'batch-bar';
+    const batchSize = batchEnd - pos;
+    Object.entries(batchSeeds).forEach(([seed, count]) => {
+      const seg = document.createElement('div'); seg.className = 'batch-seg';
+      seg.style.width = (count / placementsPerBatchNew * 100) + '%';
+      seg.style.background = SEED_COLORS[seed % SEED_COLORS.length]; seg.style.opacity = '0.7';
+      if (count / placementsPerBatchNew > 0.08) seg.textContent = 'S' + seed;
+      bar.appendChild(seg);
+    });
+    const ct = document.createElement('div'); ct.className = 'batch-count'; ct.textContent = batchSize + '/' + placementsPerBatchNew;
+    row.appendChild(label); row.appendChild(bar); row.appendChild(ct);
+    container.appendChild(row);
+    pos = batchEnd;
+  }
+  if (newBatches > maxBars) {
+    const more = document.createElement('div');
+    more.style.cssText = 'font:11px var(--mono);color:var(--text3);text-align:center;padding:8px';
+    more.textContent = '... + ' + (newBatches - maxBars) + ' more batches';
+    container.appendChild(more);
+  }
+}
+document.getElementById('seed-slider').addEventListener('input', updatePipeline);
+
+// ═══════ SCALE TABLE (Section 8) — Recomputed ═══════
+function drawScaleTable() {
+  const tbody = document.getElementById('scale-table');
+  const pauliMult = 2;
+  const circPerSeedOld = DSATUR_ROUNDS * pauliMult; // 32
+  const seedsPerBatchOld = Math.floor(BATCH_LIMIT / circPerSeedOld); // 3
+  const placementsPerBatchNew = INTERMIXED_STARS_PER_CIRCUIT * BATCH_LIMIT / pauliMult; // 450
+
+  [5, 10, 20, 50, 100].forEach(n => {
+    const total = n * PLACEMENTS;
+    
+    // Old approach
+    const oldBatch = Math.ceil(n / seedsPerBatchOld);
+    const oldCircPerBatch = Math.min(BATCH_LIMIT, seedsPerBatchOld * circPerSeedOld);
+    const oldWall = oldBatch * wallTime(oldCircPerBatch, QUEUE_TYPICAL);
+    const oldRate = Math.round(total / oldWall * 3600);
+
+    // New approach (intermixed)
+    const newBatch = Math.ceil(total / placementsPerBatchNew);
+    // Last batch may be partial
+    const fullBatches = Math.floor(total / placementsPerBatchNew);
+    const remainderPlacements = total - fullBatches * placementsPerBatchNew;
+    const remainderCircuits = remainderPlacements > 0 ? Math.ceil(remainderPlacements * pauliMult / INTERMIXED_STARS_PER_CIRCUIT) : 0;
+    const newWall = fullBatches * wallTime(BATCH_LIMIT, QUEUE_TYPICAL) +
+                    (remainderCircuits > 0 ? wallTime(remainderCircuits, QUEUE_TYPICAL) : 0);
+    const newRate = Math.round(total / newWall * 3600);
+
+    const saved = oldBatch - newBatch;
+    const hrs = saved * QUEUE_TYPICAL / 3600;
+    const gain = ((newRate / oldRate - 1) * 100).toFixed(0);
+
+    const tr = document.createElement('tr');
+    if (n === 20) tr.className = 'hl';
+    tr.innerHTML = '<td class="r">' + n + '</td>'
+      + '<td class="r">' + total.toLocaleString() + '</td>'
+      + '<td class="r">' + oldBatch + '</td>'
+      + '<td class="r g">' + newBatch + '</td>'
+      + '<td class="r g">' + (saved > 0 ? saved : 0) + '</td>'
+      + '<td class="r a">' + (hrs > 0 ? hrs.toFixed(2) + 'h' : '—') + '</td>'
+      + '<td class="r">' + oldRate.toLocaleString() + '/hr</td>'
+      + '<td class="r g">' + newRate.toLocaleString() + '/hr</td>'
+      + '<td class="r g">+' + gain + '%</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+// ═══════ INIT ═══════
+drawLevelTabs();
+setLevel(0);
+drawUtilBarsS4();
+drawUtilBarsIx();
+drawThroughputTable();
+updatePipeline();
+drawScaleTable();
+</script>
+</body>
+</html>
